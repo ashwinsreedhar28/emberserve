@@ -320,10 +320,10 @@ model's own vocabulary.
 | model | arch | golden vs HF | batch-1 forward | weight-read floor | saturation tok/s, pagedserve / vLLM | TPOT p50 @ 8 req/s |
 |---|---|---|---:|---:|---:|---:|
 | Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **13,945 / 16,269 (86%)** | 2.6 / 2.1 ms |
-| Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | **2,896 / 3,188 (91%)** | 13.1 / 10.6 ms |
+| Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | **3,092 / 3,188 (97%)** | 13.2 / 10.6 ms |
 | DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | 2,519 / 2,823 (89%) ¹ | 19.0 / 12.2 ms ¹ |
 
-¹ measured with prefill-priority scheduling and the in-process engine; the 0.5B and 7B rows use the current CUDA defaults (engine process, chunked prefill with a 512-token cap).
+¹ measured with prefill-priority scheduling and the in-process engine; the 0.5B and 7B rows use the current CUDA defaults (engine process, chunked prefill with a 2048-token cap).
 
 At 7–8B the decode step is the weight read: 15–16 GB of fp16 at ~1.5 TB/s is 10–11 ms, and
 both engines land there at batch 1. The CPU-side costs that decide the 0.5B result are
@@ -331,9 +331,10 @@ both engines land there at batch 1. The CPU-side costs that decide the 0.5B resu
 measurable at 7B (2,832 → 2,859 tok/s). What did matter at 7B was *scheduling*: a 7B
 prefill of a 270-token prompt is ~30 ms of compute-bound work, and prefill-priority runs
 one for every arrival while every decoder waits, so TPOT at 16 req/s was 24.8 ms against
-vLLM's 11.5. Chunked prefill (512-token cap, decode rows and the chunk in one step) brings
-that to 17.5 ms, saturation TPOT p99 from 99.6 to 41.6 ms (vLLM: 112), and throughput to
-91% of vLLM. The first chunked run measured 2x *slower*: the mixed-step attention path
+vLLM's 11.5. Chunked prefill (decode rows and a prompt chunk in one step) brings that to
+17.6 ms and saturation throughput to 97% of vLLM with a 2048-token cap (3,092 vs 3,188
+tok/s, the same 112 ms p99 tail vLLM shows); a 512-token cap trades 6% of that throughput
+for a 42 ms tail. The first chunked run measured 2x *slower*: the mixed-step attention path
 padded every sequence's queries to the chunk length (100k padded queries per layer at 200
 decodes plus one chunk); the fix batches the decode rows and pads only the chunk rows. The
 residual at 16 req/s is that a mixed step runs eagerly, outside CUDA graphs; vLLM's

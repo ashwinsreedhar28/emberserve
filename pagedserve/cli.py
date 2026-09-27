@@ -19,14 +19,15 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--num-blocks", type=int, default=None)
     p.add_argument("--max-num-seqs", type=int, default=256)
     p.add_argument("--max-num-batched-tokens", type=int, default=None,
-                   help="prefill token budget per step (default 8192; 512 when chunked prefill is on)")
+                   help="prefill token budget per step (default 8192; 2048 when chunked prefill is on: "
+                        "512 tightens the TPOT tail at saturation for ~6%% throughput at 7B)")
     p.add_argument("--max-model-len", type=int, default=4096)
     p.add_argument("--enable-prefix-caching", action="store_true")
     p.add_argument("--enable-cuda-graphs", action="store_true")
     p.add_argument("--enable-chunked-prefill", dest="enable_chunked_prefill", action="store_true",
                    default=None,
                    help="mix decode tokens and prompt chunks in every step; --max-num-batched-tokens "
-                        "becomes the per-step cap. Default: on for --device cuda (with a 512-token "
+                        "becomes the per-step cap. Default: on for --device cuda (with a 2048-token "
                         "cap unless --max-num-batched-tokens is given), off otherwise")
     p.add_argument("--no-chunked-prefill", dest="enable_chunked_prefill", action="store_false")
 
@@ -37,7 +38,7 @@ def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
         chunked = args.device.startswith("cuda")
     budget = args.max_num_batched_tokens
     if budget is None:
-        budget = 512 if chunked else 8192
+        budget = 2048 if chunked else 8192
     return EngineConfig(model_dir=args.model, device=args.device,
                         dtype=EngineConfig.dtype_from_str(args.dtype),
                         block_size=args.block_size, num_gpu_blocks=args.num_blocks,
