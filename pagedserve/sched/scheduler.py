@@ -7,7 +7,12 @@ request by recompute when the KV cache is full.
 
 The scheduler owns the BlockManager because admission depends on block availability.
 It never touches `num_computed_tokens` (the engine advances it after the model step)
-except through `Request.reset_for_recompute()` on preemption.
+except through `Request.reset_for_recompute()` on preemption and, with prefix caching, by
+setting it to the cached-prefix length on admission (those tokens' K/V already exist).
+
+Prefix caching: every `schedule()` first publishes the hashes of the full blocks each
+running request has computed so far (its previous step wrote them), and so does
+`finish_request` right before freeing, so finished requests leave reusable blocks behind.
 """
 
 from __future__ import annotations
@@ -41,6 +46,9 @@ class Scheduler:
     def __init__(self, config: EngineConfig, block_manager: BlockManager) -> None:
         self.config = config
         self.block_manager = block_manager
+        if config.enable_prefix_caching:
+            # The engine builds a plain BlockManager; the scheduler owns the feature flag.
+            block_manager.enable_prefix_caching()
         self.waiting: deque[Request] = deque()
         self.running: list[Request] = []  # admission order, oldest first
         self._by_id: dict[str, Request] = {}  # unfinished requests only
@@ -84,6 +92,7 @@ class Scheduler:
     def _finish(self, req: Request, reason: FinishReason) -> None:
         if req in self.running:
             self.running.remove(req)
+        self._register_computed_blocks(req)
         self.block_manager.free(req.seq_id)
         req.state = RequestState.FINISHED
         req.finish_reason = reason
@@ -108,6 +117,9 @@ class Scheduler:
     # ---- scheduling ----------------------------------------------------------
     def schedule(self) -> SchedulerOutput:
         """Build the next step. Prefill wins whenever the head of `waiting` fits."""
+        if self.config.enable_prefix_caching:
+            for req in self.running:
+                self._register_computed_blocks(req)
         if self.waiting:
             out = self._schedule_prefill()
             if not out.is_empty:
@@ -126,17 +138,26 @@ class Scheduler:
         while self.waiting:
             req = self.waiting[0]
             # A preempted request has num_computed_tokens == 0, so it re-prefills its
-            # whole prompt+output history.
-            query_len = req.num_tokens - req.num_computed_tokens
+            # whole prompt+output history (minus whatever prefix the cache still holds).
+            match = bm.match_prefix(req.all_token_ids) if cfg.enable_prefix_caching else None
+            num_cached = match.num_cached_tokens if match is not None else 0
+            query_len = req.num_tokens - num_cached
             # Admitted requests are already in `running`, so it alone counts the seqs.
             if len(self.running) >= cfg.max_num_seqs:
                 break
             if budget + query_len > cfg.max_num_batched_tokens:
                 break
-            if not bm.can_allocate(req.num_tokens):
+            if match is None:
+                if not bm.can_allocate(req.num_tokens):
+                    break
+            elif not bm.can_allocate_with_prefix(req.all_token_ids, match):
                 break
             self.waiting.popleft()
-            bm.allocate(req.seq_id, req.num_tokens)
+            if match is None:
+                bm.allocate(req.seq_id, req.num_tokens)
+            else:
+                _, req.num_computed_tokens = bm.allocate_with_prefix(
+                    req.seq_id, req.all_token_ids, match)
             req.state = RequestState.RUNNING
             if req.first_scheduled_time is None:
                 req.first_scheduled_time = now
@@ -166,8 +187,16 @@ class Scheduler:
         scheduled = list(self.running)
         return SchedulerOutput(scheduled, False, [1] * len(scheduled), preempted)
 
+    def _register_computed_blocks(self, req: Request) -> None:
+        """Publish hashes for the full blocks whose K/V `req` has already written."""
+        bm = self.block_manager
+        if self.config.enable_prefix_caching and bm.has_sequence(req.seq_id):
+            bm.register_full_blocks(req.seq_id, req.all_token_ids[:req.num_computed_tokens])
+
     def _preempt_youngest(self) -> Request:
         victim = self.running.pop()
+        # Its computed blocks stay cached (evictable), so re-admission gets prefix hits.
+        self._register_computed_blocks(victim)
         self.block_manager.free(victim.seq_id)
         victim.reset_for_recompute()
         # Victims are evicted youngest-first, so appendleft keeps their original order.

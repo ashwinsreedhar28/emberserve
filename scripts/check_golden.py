@@ -1,0 +1,94 @@
+"""Correctness gate: pagedserve vs the HF golden files, on every backend that can run here.
+
+    python scripts/check_golden.py --model models/Qwen2.5-0.5B-Instruct [--backends naive,paged_torch]
+        [--device cpu|cuda|mps] [--dtype float32] [--prefix-caching]
+
+Checks (1) greedy token ids match token-for-token for all golden prompts, decoded together
+in one continuous batch and (2) all-position logits for prompt 0 match within --atol.
+Exit code 1 on any mismatch. Also importable: `run_golden_check(...)`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from pagedserve.attn.base import AttnMetadata  # noqa: E402
+from pagedserve.config import EngineConfig  # noqa: E402
+from pagedserve.engine import LLMEngine  # noqa: E402
+from pagedserve.llm import LLM  # noqa: E402
+from pagedserve.sched.request import SamplingParams  # noqa: E402
+
+
+def check_logits(engine: LLMEngine, prompt_ids: list[int], ref: torch.Tensor, atol: float) -> float:
+    n = len(prompt_ids)
+    req = engine.add_request("logits-check", prompt_ids, SamplingParams.greedy(1))
+    so = engine.scheduler.schedule()
+    input_ids, meta = engine._build_inputs(so)
+    assert isinstance(meta, AttnMetadata) and meta.is_prefill and meta.num_tokens == n
+    with torch.inference_mode():
+        logits = engine.model.forward_logits_all(input_ids, engine.backend, meta).float().cpu()
+    engine.abort_request(req.request_id)
+    engine.backend.free_sequence(req.seq_id)
+    diff = (logits - ref).abs().max().item()
+    return diff
+
+
+def run_golden_check(model_dir: str, backend: str, device: str, dtype: torch.dtype,
+                     golden_dir: str = "golden", atol: float = 1e-3,
+                     prefix_caching: bool = False, block_size: int = 16) -> bool:
+    g = torch.load(Path(golden_dir) / "greedy.pt")
+    lg = torch.load(Path(golden_dir) / "logits_prompt0.pt")
+    cfg = EngineConfig(device=device, dtype=dtype, attn_backend=backend, block_size=block_size,
+                       enable_prefix_caching=prefix_caching, max_model_len=4096)
+    engine = LLMEngine.from_pretrained(model_dir, cfg)
+    ok = True
+
+    diff = check_logits(engine, lg["prompt_ids"], lg["logits"], atol)
+    status = "ok" if diff <= atol else "FAIL"
+    print(f"[{backend}] logits prompt0 max|diff| = {diff:.2e} (atol {atol:.0e}) {status}")
+    ok &= diff <= atol
+
+    prompts = [e["prompt_ids"] for e in g["golden"]]
+    sp = SamplingParams.greedy(g["max_new_tokens"])
+    results = LLM.from_engine(engine).generate(prompts, sp)
+    for i, (r, e) in enumerate(zip(results, g["golden"])):
+        match = r.output_token_ids == e["output_ids"]
+        ok &= match
+        if match:
+            print(f"[{backend}] prompt {i}: {len(e['output_ids'])} tokens match")
+        else:
+            first = next((k for k, (a, b) in enumerate(zip(r.output_token_ids, e["output_ids"]))
+                          if a != b), min(len(r.output_token_ids), len(e["output_ids"])))
+            print(f"[{backend}] prompt {i}: MISMATCH at token {first}: "
+                  f"got {r.output_token_ids[first:first + 5]} want {e['output_ids'][first:first + 5]}")
+    return ok
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", default="models/Qwen2.5-0.5B-Instruct")
+    ap.add_argument("--golden", default="golden")
+    ap.add_argument("--backends", default="naive,paged_torch")
+    ap.add_argument("--device", default="cpu")
+    ap.add_argument("--dtype", default="float32")
+    ap.add_argument("--atol", type=float, default=1e-3)
+    ap.add_argument("--block-size", type=int, default=16)
+    ap.add_argument("--prefix-caching", action="store_true")
+    args = ap.parse_args()
+    all_ok = True
+    for b in args.backends.split(","):
+        all_ok &= run_golden_check(args.model, b.strip(), args.device,
+                                   EngineConfig.dtype_from_str(args.dtype), args.golden,
+                                   args.atol, args.prefix_caching, args.block_size)
+    print("ALL OK" if all_ok else "FAILED")
+    sys.exit(0 if all_ok else 1)
+
+
+if __name__ == "__main__":
+    main()

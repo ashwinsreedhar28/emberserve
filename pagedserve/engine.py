@@ -12,6 +12,7 @@ sampled token per scheduled sequence.
 from __future__ import annotations
 
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -80,13 +81,30 @@ class LLMEngine:
         if engine_config.attn_backend == "naive":
             # The naive backend has no shared physical blocks, so prefix reuse is impossible.
             engine_config.enable_prefix_caching = False
-        self.block_manager = BlockManager(num_blocks, engine_config.block_size)
+        # CUDA graphs need one scratch KV block the BlockManager never hands out
+        # (padding rows of a graph bucket write their k/v there). See attn/cuda_graphs.py.
+        use_graphs = (engine_config.enable_cuda_graphs and self.device.type == "cuda"
+                      and engine_config.attn_backend == "paged_flash")
+        if engine_config.enable_cuda_graphs and not use_graphs:
+            warnings.warn("enable_cuda_graphs ignored: needs device=cuda and "
+                          "attn_backend='paged_flash'", stacklevel=2)
+        self.scratch_block: int | None = num_blocks - 1 if use_graphs else None
+        self.block_manager = BlockManager(num_blocks - 1 if use_graphs else num_blocks,
+                                          engine_config.block_size)
         self.scheduler = Scheduler(engine_config, self.block_manager)
         self.backend: AttentionBackend = self._make_backend(num_blocks)
         self.sampler = Sampler(self.device)
         # Optional CUDA-graph decode runner (attn/cuda_graphs.py); installed on GPU only.
         self.graph_runner = None
+        if use_graphs:
+            from pagedserve.attn.cuda_graphs import CUDAGraphRunner
+            self.graph_runner = CUDAGraphRunner(
+                self.model, self.backend, max_model_len=engine_config.max_model_len,
+                block_size=engine_config.block_size, scratch_block=self.scratch_block,
+                max_batch=engine_config.max_num_seqs, device=self.device)
+            self.graph_runner.capture()
         self._next_seq_id = 0
+        self._final_text: dict[str, str] = {}
         self._step_count = 0
         self.stats: list[StepStats] = []
         self.keep_stats = True
@@ -223,12 +241,15 @@ class LLMEngine:
                 req.first_token_time = now
             reason = check_stop(req, tok, self.eos_token_id, self.config.max_model_len)
             text_delta, matched_stop = self.detok.update(
-                req.request_id, req.output_token_ids, req.sampling_params.stop)
+                req.request_id, req.output_token_ids, req.sampling_params.stop,
+                final=reason is not None)
             if matched_stop is not None and reason is None:
                 reason = FinishReason.STOP
             if reason is not None:
                 self.scheduler.finish_request(req, reason)
                 self.backend.free_sequence(req.seq_id)
+                self._final_text[req.request_id] = self.detok.text(req.request_id)
+                self.detok.reset(req.request_id)
             outputs.append(RequestOutput(
                 request_id=req.request_id, new_token_ids=[tok],
                 output_token_ids=list(req.output_token_ids), finished=reason is not None,
@@ -250,6 +271,9 @@ class LLMEngine:
 
     # ---- convenience -------------------------------------------------------------------
     def output_text(self, request_id: str) -> str:
+        """Text so far for a live request, or the full text of a finished one (popped)."""
+        if request_id in self._final_text:
+            return self._final_text.pop(request_id)
         return self.detok.text(request_id)
 
     def reset(self) -> None:

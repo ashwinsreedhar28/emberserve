@@ -41,6 +41,15 @@ class AttnMetadata:
     num_cached_tokens: list[int] = field(default_factory=list)
     # ---- convenience --------------------------------------------------------
     cu_seqlens_q: torch.Tensor | None = None  # [batch+1] int32 cumulative query lens
+    # ---- GPU / CUDA-graph backends (optional; never required by CPU backends) ------
+    # Device copy of `context_lens`: [batch] int32. `paged_flash` reads flash-attn's
+    # `cache_seqlens` from this tensor when it is present (and caches one here when it
+    # is not), so a captured decode step never does a host->device copy per layer.
+    context_lens_t: torch.Tensor | None = None
+    # `block_tables` with the -1 padding replaced by a valid block id (0):
+    # [batch, max_blocks] int32. flash-attn may dereference padding entries of the last
+    # KV tile (their values are masked out), so they must point at real memory.
+    block_tables_nonneg: torch.Tensor | None = None
 
     @property
     def num_seqs(self) -> int:

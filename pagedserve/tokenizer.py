@@ -44,6 +44,17 @@ class DetokenizerState:
     _pending: list[int] = field(default_factory=list)
 
 
+def _stop_prefix_len(text: str, stop: list[str]) -> int:
+    """Length of the longest suffix of `text` that is a proper prefix of a stop string."""
+    best = 0
+    for s in stop:
+        for n in range(min(len(s) - 1, len(text)), best, -1):
+            if s.startswith(text[-n:]):
+                best = n
+                break
+    return best
+
+
 class IncrementalDetokenizer:
     """Turns a growing list of output token ids into text deltas.
 
@@ -60,27 +71,32 @@ class IncrementalDetokenizer:
         self._states.pop(request_id, None)
 
     def update(self, request_id: str, output_ids: list[int], stop: list[str],
-               skip_special_tokens: bool = True) -> tuple[str, str | None]:
-        """Returns (text_delta, matched_stop_string_or_None)."""
+               skip_special_tokens: bool = True, final: bool = False) -> tuple[str, str | None]:
+        """Returns (text_delta, matched_stop_string_or_None).
+
+        Text that could still turn into a stop string (a trailing prefix of one) is held
+        back so a later match never has to retract emitted text; `final=True` flushes it.
+        """
         if self.tokenizer is None:
             return "", None
         st = self._states.setdefault(request_id, DetokenizerState())
         full = self.tokenizer.decode(output_ids, skip_special_tokens=skip_special_tokens)
         if full.endswith("�"):
             full = full[:-1]
-        if not full.startswith(st.text):
-            # Tokenizer merged differently than before (rare, e.g. byte fallback); resync.
-            delta = full
-        else:
-            delta = full[len(st.text):]
         matched = None
         for s in stop:
             idx = full.find(s)
             if idx != -1:
                 full = full[:idx]
-                delta = full[len(st.text):] if full.startswith(st.text) else full
                 matched = s
                 break
+        if matched is None and not final:
+            full = full[:len(full) - _stop_prefix_len(full, stop)]
+        if not full.startswith(st.text):
+            # Tokenizer merged differently than before (rare, e.g. byte fallback); resync.
+            delta = full
+        else:
+            delta = full[len(st.text):]
         st.text = full
         st.consumed_ids = len(output_ids)
         return delta, matched
