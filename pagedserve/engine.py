@@ -229,6 +229,10 @@ class LLMEngine:
             setattr(engine_config, k, v)
         engine_config.model_dir = str(model_dir)
         model = load_model(model_dir, device=engine_config.device, dtype=engine_config.dtype)
+        if engine_config.quantization:
+            from pagedserve.model.quant import quantize_model
+
+            quantize_model(model, engine_config.quantization)
         model_config = ModelConfig.from_hf_dir(model_dir)
         tokenizer = None
         if load_tokenizer and has_tokenizer(model_dir):

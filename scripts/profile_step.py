@@ -40,7 +40,8 @@ def build_engine(args: argparse.Namespace) -> LLMEngine:
                         enable_prefix_caching=args.enable_prefix_caching,
                         max_num_seqs=args.max_num_seqs, max_model_len=args.max_model_len,
                         max_num_batched_tokens=args.max_num_batched_tokens,
-                        num_gpu_blocks=args.num_blocks)
+                        num_gpu_blocks=args.num_blocks,
+                        quantization=getattr(args, "quantization", None))
     if args.tiny:
         from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
 
@@ -210,6 +211,8 @@ def main() -> int:
     ap.add_argument("--num-blocks", type=int, default=None)
     ap.add_argument("--enable-cuda-graphs", action="store_true")
     ap.add_argument("--enable-prefix-caching", action="store_true")
+    ap.add_argument("--quantization", default=None, choices=["int8"],
+                    help="weight-only int8 (per-channel) for every 2-D projection")
     ap.add_argument("--max-num-seqs", type=int, default=256)
     ap.add_argument("--max-num-batched-tokens", type=int, default=8192)
     ap.add_argument("--max-model-len", type=int, default=4096)

@@ -54,7 +54,8 @@ def top2_margin(engine: LLMEngine, ids: list[int]) -> float:
 
 def run_golden_check(model_dir: str, backend: str, device: str, dtype: torch.dtype,
                      golden_dir: str = "golden", atol: float | None = None,
-                     prefix_caching: bool = False, block_size: int = 16) -> bool:
+                     prefix_caching: bool = False, block_size: int = 16,
+                     quantization: str | None = None) -> bool:
     """fp32 runs must match the fp32 HF reference exactly (logits atol 1e-3, tokens
     token-for-token). Half-precision runs are held to a looser, self-calibrated bar: the
     logits gate is 1.0, and a token mismatch counts as a numeric tie-break (not a failure)
@@ -63,11 +64,18 @@ def run_golden_check(model_dir: str, backend: str, device: str, dtype: torch.dty
     g = torch.load(Path(golden_dir) / "greedy.pt")
     lg = torch.load(Path(golden_dir) / "logits_prompt0.pt")
     cfg = EngineConfig(device=device, dtype=dtype, attn_backend=backend, block_size=block_size,
-                       enable_prefix_caching=prefix_caching, max_model_len=4096)
+                       enable_prefix_caching=prefix_caching, max_model_len=4096,
+                       quantization=quantization)
     engine = LLMEngine.from_pretrained(model_dir, cfg)
     half = dtype != torch.float32
     if atol is None:
         atol = 1.0 if half else 1e-3
+    if quantization:
+        # A quality report, not an exactness gate: int8 rounding moves logits by more than
+        # half-precision noise. The tie-break rule is applied at the measured logits error,
+        # so a real quality regression shows up as a MISMATCH with a large margin.
+        atol = max(atol, 1e9)
+        backend = f"{backend}/{quantization}"
     ok = True
 
     diff = check_logits(engine, lg["prompt_ids"], lg["logits"], atol)
@@ -108,12 +116,16 @@ def main() -> None:
                     help="logits gate; default 1e-3 for fp32, 1.0 for fp16/bf16")
     ap.add_argument("--block-size", type=int, default=16)
     ap.add_argument("--prefix-caching", action="store_true")
+    ap.add_argument("--quantization", choices=["int8"], default=None,
+                    help="check the quantized model: reports token agreement with the fp16/fp32 "
+                         "reference; mismatches below the measured logits error are tie-breaks")
     args = ap.parse_args()
     all_ok = True
     for b in args.backends.split(","):
         all_ok &= run_golden_check(args.model, b.strip(), args.device,
                                    EngineConfig.dtype_from_str(args.dtype), args.golden,
-                                   args.atol, args.prefix_caching, args.block_size)
+                                   args.atol, args.prefix_caching, args.block_size,
+                                   args.quantization)
     print("ALL OK" if all_ok else "FAILED")
     sys.exit(0 if all_ok else 1)
 

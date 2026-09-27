@@ -49,6 +49,10 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
                         "token. Default: on for --device cuda (A100: 0.5B saturation 13,945 -> "
                         "14,394 tok/s, TPOT at 1 req/s 2.1 -> 1.8 ms), off otherwise")
     p.add_argument("--no-async-scheduling", dest="async_scheduling", action="store_false")
+    p.add_argument("--quantization", choices=["int8"], default=None,
+                   help="weight-only quantization after loading: int8 per-output-channel weights "
+                        "dequantized inside a Triton GEMM (half the weight bytes per decode step; "
+                        "greedy outputs may differ from fp16 on a few tokens)")
     p.add_argument("--speculative-ngram", type=int, default=0,
                    help="speculative decoding by n-gram lookup: guess the next tokens of greedy "
                         "requests from earlier occurrences of the last N tokens, verify them in one "
@@ -101,6 +105,7 @@ def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
                         piecewise_cuda_graphs=bool(piecewise),
                         enable_chunked_prefill=chunked,
                         async_scheduling=bool(async_sched),
+                        quantization=getattr(args, "quantization", None),
                         speculative_ngram=int(getattr(args, "speculative_ngram", 0) or 0),
                         num_speculative_tokens=int(getattr(args, "num_speculative_tokens", 0) or 0))
 

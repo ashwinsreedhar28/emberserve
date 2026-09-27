@@ -275,6 +275,8 @@ class EngineConfig:
     # host); the engine turns async off when this is on.
     speculative_ngram: int = 0
     num_speculative_tokens: int = 0
+    # Weight-only quantization applied after loading (model/quant.py): None or "int8".
+    quantization: str | None = None
     seed: int = 0
     extra: dict = field(default_factory=dict)
 

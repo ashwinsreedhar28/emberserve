@@ -151,6 +151,28 @@ python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/
   --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --speculative-ngram 3 --num-speculative-tokens 5" --name pagedserve_7b_text_spec
 ```
 
+### Weight-only int8
+
+Whether the flag pays is decided at 7B and batch 1 (the fp16 step is the 15 GB weight
+read). Three commands: how many greedy tokens move against the fp16 golden run, the
+batch-1 step with and without it, and the usual sweep:
+
+```bash
+python scripts/check_golden.py --model models/Qwen2.5-7B-Instruct --golden golden/Qwen2.5-7B-Instruct \
+  --device cuda --dtype float16 --backends paged_flash --block-size 256 --quantization int8
+python scripts/profile_step.py --model models/Qwen2.5-7B-Instruct --device cuda --dtype float16 \
+  --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --batches 1,8,32,128 --steps 30 \
+  --quantization int8 --out results/profile_7b_int8.json
+python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-7B-Instruct --dtype float16 \
+  --max-model-len 4096 --rates 1,2,4,8,16,inf --trace-n 200 \
+  --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --quantization int8" \
+  --name pagedserve_7b_flash_int8
+```
+
+`tests/test_int8_gpu.py` checks the Triton GEMM against the fp32 reference at every tile
+config and a full 7B-shaped projection; `PAGEDSERVE_INT8_KERNEL=0` is the torch path
+(dequantize + matmul) for an A/B of the kernel itself.
+
 ## Block size 256 with `paged_flash`
 
 Upstream flash-attn (2.6.3 through 2.8.3.post1 and `main`) hard-checks

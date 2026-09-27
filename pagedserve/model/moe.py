@@ -98,6 +98,8 @@ class SharedExperts(nn.Module):
         act = ops.silu_and_mul(self.gate_up_proj(x))
         if add_to is None:
             return self.down_proj(act)
+        if not isinstance(self.down_proj, nn.Linear):  # quantized: no weight to hand addmm
+            return self.down_proj(act) + add_to
         return torch.addmm(add_to, act, self.down_proj.weight.t())
 
 

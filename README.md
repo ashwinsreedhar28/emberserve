@@ -219,6 +219,28 @@ real compute there. So it is the default for checkpoints under 4 GB, and chunked
 the default on CUDA wherever the mixed step is not eager (everywhere but a small model
 served without graphs).
 
+### Weight-only int8
+
+`--quantization int8` (`model/quant.py`) halves the bytes of every projection after the
+checkpoint is loaded: each 2-D `nn.Linear` of the decoder and the `lm_head` is replaced,
+one at a time, by an `Int8Linear` holding `round(W / s)` in int8 with one fp32 scale per
+output row (`s[n] = max_k |W[n,k]| / 127`); the fp16 copy is freed before the next layer
+is converted, so a 7B checkpoint peaks at its fp16 size and settles at ~8 GB. Activations
+stay fp16/bf16 and the arithmetic does not change: a Triton GEMM streams the int8 weight
+tiles, converts them to the activation dtype in registers, multiplies on the tensor cores
+and applies the row scale to the fp32 accumulator (`(x @ q^T) * s`, an exact
+rearrangement of `x @ (q * s)^T`), with the bias folded into the same epilogue. Tiles
+are chosen from the row count (16x64 at decode, 128x128 for prefill). It is a quality
+trade, not an exact transform, which is why it is a flag and not a default:
+`scripts/check_golden.py --quantization int8` reports how many greedy tokens move against
+the fp16 golden run. Embeddings, MLA's `kv_b_proj` (read directly by the attention kernel)
+and the MoE expert stacks (3-D weights, their own grouped GEMM) stay in fp16/bf16. The
+point at 7B is the batch-1 decode step, which is the weight read (15 GB at ~1.5 TB/s,
+~10 ms); halving the read halves that floor, and at larger batches, where the step turns
+compute-bound, the gain shrinks to nothing. Numbers pending (next pod session:
+`README_GPU.md`, "Weight-only int8"). `PAGEDSERVE_INT8_KERNEL=0` routes through the
+torch reference for A/B and the CPU tests.
+
 ## Correctness
 
 ```bash
@@ -566,6 +588,7 @@ pagedserve/
   kv/                  block_manager.py, cache.py (paged K/V and latent tensors), prefix_cache.py
   sched/               request.py, scheduler.py (prefill-priority, preemption, chunked prefill, async lookahead)
   spec.py              speculative decoding: n-gram proposer + draft verification
+  model/quant.py       weight-only int8: per-channel quantizer, Triton dequant GEMM, Int8Linear
   sampling.py          per-request temperature / top-k / top-p / repetition penalty / seeds / stop
   engine.py            LLMEngine.step(): schedule -> build inputs -> forward -> sample -> postprocess
                        (async scheduling: launch N+1, then resolve N)
@@ -588,7 +611,8 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 * Chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
 * Speculative decoding: n-gram lookup implemented (`--speculative-ngram`); acceptance rate and speedup on ShareGPT text pending; a draft-model proposer after that.
-* Tensor parallelism (2 GPUs); weight-only int8 with a Triton dequant GEMM.
+* Weight-only int8 implemented (`--quantization int8`, Triton dequant GEMM); 7B golden diff, batch-1 step and sweep pending.
+* Tensor parallelism (2 GPUs).
 * Runpod Serverless: worker + Dockerfile in `deploy/runpod/`, endpoint not yet deployed.
 
 ## License
