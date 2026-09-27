@@ -58,7 +58,7 @@ BLOCK_MULTIPLE = 16
 SUPPORTED_HEAD_DIMS = (64, 128)
 SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 MAX_SPLITS = 16
-SPLIT_CONTEXT = 256  # never split finer than this many keys per program
+SPLIT_CONTEXT = 1024  # split-K only pays off past ~1k keys per program (A100 A/B, results/kernels_a100_*.json)
 
 
 def interpreter_enabled() -> bool:
@@ -286,7 +286,8 @@ VARIANTS = ("sum", "dot")
 
 
 def default_variant() -> str:
-    """`PAGEDSERVE_TRITON_VARIANT=sum|dot`; default `sum` (validated on the pod first).
+    """`PAGEDSERVE_TRITON_VARIANT=sum|dot`; default `dot` (A100 A/B: sum was 3.3-10.8x behind
+    flash-attn, dot is 1.2-2.4x; both validated against the fp32 golden and paged_torch).
 
     `sum`: broadcast-multiply + tl.sum on CUDA cores, GROUPS padded to a power of two,
            the [G, TILE, D] fp32 temporary limits TILE to 16-32.
@@ -294,7 +295,7 @@ def default_variant() -> str:
            storage dtype, larger TILE (up to 64). P is cast to the V dtype before PV (same
            as flash-attn), so fp16 caches lose ~1e-3 relative in P.
     """
-    v = os.environ.get("PAGEDSERVE_TRITON_VARIANT", "sum").lower()
+    v = os.environ.get("PAGEDSERVE_TRITON_VARIANT", "dot").lower()
     if v not in VARIANTS:
         raise ValueError(f"PAGEDSERVE_TRITON_VARIANT must be one of {VARIANTS}, got {v!r}")
     return v

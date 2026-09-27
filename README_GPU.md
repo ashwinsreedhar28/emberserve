@@ -72,31 +72,39 @@ python scripts/bench_kernels.py          # ms/call + effective K/V GB/s, B x ctx
 1,2,4,...,256 (capped at `max_num_seqs`). One KV block (the last id) is reserved as
 scratch for padding rows, so the BlockManager sees `num_blocks - 1`.
 
-## Kernel micro-benchmark, RTX 4090 (pre-optimization baseline)
+## Kernel micro-benchmark
 
-Decode attention only, H=14 Hkv=2 D=64 fp16, median of 20; `results/kernels.json`.
+Decode attention only, H=14 Hkv=2 D=64 fp16, median of 20; `results/kernels*.json`.
+Ratio = triton time / flash-attn time (1.0 = parity).
 
-| backend | block | ctx | B=1 | B=8 | B=32 | B=128 |
-|---|---|---|---|---|---|---|
-| paged_torch | 256 | 2048 | 0.178 ms / 6 GB/s | 0.616 ms / 14 GB/s | 2.666 ms / 13 GB/s | 10.452 ms / 13 GB/s |
-| paged_flash | 256 | 2048 | 0.020 ms / 53 GB/s | 0.020 ms / 410 GB/s | 0.035 ms / 967 GB/s | 0.170 ms / 789 GB/s |
-| paged_triton | 256 | 2048 | 0.148 ms / 7 GB/s | 0.147 ms / 57 GB/s | 0.214 ms / 157 GB/s | 0.708 ms / 190 GB/s |
-| paged_triton | 16 | 2048 | 0.147 ms / 7 GB/s | 0.147 ms / 57 GB/s | 0.212 ms / 158 GB/s | 0.700 ms / 192 GB/s |
+**A100 SXM 80 GB, tl.dot variant (now the default), split-K auto:**
 
-Reading: block 16 costs nothing over block 256 in the Triton kernel (same time at every
-shape), which is the point. The kernel is correct (max err 5e-4 vs paged_torch) but ~4x
-behind flash-attn at large batch and has a ~0.15 ms floor at small batch that came from
-splitting the context whenever `B*Hkv < 512` (the reduce launch dominates). The split
-heuristic is now occupancy-based (see `default_num_splits`). Knobs for A/B runs:
+| triton block | ctx | B=1 | B=8 | B=32 | B=128 |
+|---|---|---|---|---|---|
+| 256 | 128 | 2.04x | 1.98x | 1.98x | 1.92x |
+| 256 | 512 | 2.40x | 2.31x | 2.25x | 1.73x |
+| 256 | 2048 | 2.26x | 2.25x | 1.93x | **1.16x** (835 vs 972 GB/s) |
+| 16 | 2048 | 2.26x | 2.24x | 1.92x | 1.54x |
+
+Same GPU, the broadcast-multiply `sum` variant (the original kernel): 3.3x–10.8x behind.
+Moving QK^T and PV onto tensor cores (`tl.dot`, query heads padded 7 -> 16) is what
+closed the gap at large batch; what remains is a flat ~0.04 ms per call that does not
+scale with work (Triton launch overhead plus the padded rows), so short contexts and small
+batches stay ~2x behind. With split-K forced off, ctx <= 512 improves to 1.6-1.9x and
+ctx 2048 at block 16 degrades to 3.4x, which is why the heuristic now splits only past
+1k keys. Block 16 costs nothing over block 256 below ctx 2048.
+
+RTX 4090 baseline (sum variant, before any of this): 0.708 ms vs flash 0.170 ms at
+B=128/ctx=2048 (190 vs 789 GB/s), `results/kernels.json`.
+
+Knobs for A/B runs:
 
 ```bash
-python scripts/bench_kernels.py --variant sum            # CUDA-core path (default, validated)
-python scripts/bench_kernels.py --variant dot            # tensor-core path: tl.dot for QK^T and PV
+python scripts/bench_kernels.py --variant sum            # CUDA-core path
+python scripts/bench_kernels.py --variant dot            # tensor-core path (default)
 python scripts/bench_kernels.py --splits 1               # no split-K
-PAGEDSERVE_TRITON_VARIANT=dot PAGEDSERVE_TRITON_SPLITS=1 python scripts/gpu_smoke.py   # same knobs, engine-wide
+PAGEDSERVE_TRITON_VARIANT=sum PAGEDSERVE_TRITON_SPLITS=1 python scripts/gpu_smoke.py   # same knobs, engine-wide
 ```
-
-Each run prints a triton/flash ratio table; 1.0x is parity.
 
 ## The CUDA-graph "capture failure" that wasn't
 

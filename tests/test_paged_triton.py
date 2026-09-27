@@ -400,7 +400,7 @@ def test_variant_env_knob(monkeypatch):
     with pytest.raises(ValueError):
         default_variant()
     monkeypatch.delenv("PAGEDSERVE_TRITON_VARIANT")
-    assert default_variant() == "sum"
+    assert default_variant() == "dot"
 
 
 def test_backend_dot_variant_matches_paged_torch():
