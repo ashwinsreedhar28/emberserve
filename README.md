@@ -1,5 +1,7 @@
 # pagedserve
 
+[![ci](https://github.com/ashwinsreedhar28/pagedserve/actions/workflows/ci.yml/badge.svg)](https://github.com/ashwinsreedhar28/pagedserve/actions/workflows/ci.yml)
+
 A from-scratch LLM inference engine in PyTorch, built to understand what vLLM does and
 to measure how far a one-person implementation lands from it on the same GPU and model.
 
@@ -361,6 +363,10 @@ results/               every JSON the tables above were built from
 * Chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
 * Speculative decoding; Runpod Serverless deployment.
+
+## License
+
+MIT.
 
 ## References
 

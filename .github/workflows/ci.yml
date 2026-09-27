@@ -8,6 +8,6 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.11" }
       - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
-      - run: pip install -e '.[server,dev]' matplotlib httpx
+      - run: pip install -e '.[server,dev]' matplotlib httpx triton   # triton: CPU interpreter runs the kernels' tests
       - run: ruff check pagedserve tests scripts
       - run: python -m pytest -q -m "not gpu and not hf" --timeout=300

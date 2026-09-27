@@ -12,4 +12,6 @@ models/
 golden/*.pt
 bench/results/
 *.log
+!results/*.log
+results/*.server.log
 .DS_Store
