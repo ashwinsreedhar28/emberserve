@@ -48,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--served-model-name", default=None)
+    serve.add_argument("--engine-process", action="store_true",
+                       help="run the engine in its own process (tokenizer + HTTP stay here); "
+                            "removes the GIL contention between SSE delivery and the step loop")
 
     gen = sub.add_parser("generate", help="generate a completion for one prompt")
     _add_engine_args(gen)
@@ -66,7 +69,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     from pagedserve.server.app import build_app_from_args
 
-    app = build_app_from_args(args.model, engine_config_from_args(args), args.served_model_name)
+    app = build_app_from_args(args.model, engine_config_from_args(args), args.served_model_name,
+                              engine_process=args.engine_process)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return 0
 

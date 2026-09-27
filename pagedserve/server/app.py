@@ -28,7 +28,8 @@ except ImportError:  # pragma: no cover - depends on the environment
 from pagedserve.config import EngineConfig
 from pagedserve.engine import LLMEngine
 from pagedserve.sched.request import RequestOutput
-from pagedserve.server.async_engine import AsyncLLMEngine, EngineNotRunningError
+from pagedserve.server.async_engine import (AsyncEngineCoreClient, AsyncLLMEngine,
+                                            EngineNotRunningError)
 from pagedserve.server.openai_types import (ChatCompletionChoice, ChatCompletionChunk,
                                             ChatCompletionChunkChoice, ChatCompletionMessage,
                                             ChatCompletionRequest, ChatCompletionResponse,
@@ -56,7 +57,7 @@ def _prometheus(metrics: dict[str, int | float | bool]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def create_app(async_engine: AsyncLLMEngine, model_name: str,
+def create_app(async_engine: "AsyncLLMEngine | AsyncEngineCoreClient", model_name: str,
                manage_lifespan: bool = True) -> FastAPI:
     """Build the app. With `manage_lifespan` the async engine starts/stops with the server."""
 
@@ -196,7 +197,20 @@ def create_app(async_engine: AsyncLLMEngine, model_name: str,
 
 
 def build_app_from_args(model_dir: str, engine_config: EngineConfig,
-                        served_model_name: str | None = None) -> FastAPI:
-    """Load a model from `model_dir` and wrap it in a served app."""
+                        served_model_name: str | None = None,
+                        engine_process: bool = False) -> FastAPI:
+    """Load a model from `model_dir` and wrap it in a served app. With `engine_process`
+    the engine runs in its own process (`server/engine_core.py`) and this process keeps
+    only the tokenizer."""
+    if engine_process:
+        from pathlib import Path
+
+        from pagedserve.server.async_engine import AsyncEngineCoreClient
+        from pagedserve.server.engine_core import EngineSpec
+        from pagedserve.tokenizer import Tokenizer
+
+        tokenizer = Tokenizer(model_dir) if (Path(model_dir) / "tokenizer.json").exists() else None
+        client = AsyncEngineCoreClient(EngineSpec(engine_config, model_dir=model_dir), tokenizer)
+        return create_app(client, served_model_name or model_dir)
     engine = LLMEngine.from_pretrained(model_dir, engine_config)
     return create_app(AsyncLLMEngine(engine), served_model_name or model_dir)

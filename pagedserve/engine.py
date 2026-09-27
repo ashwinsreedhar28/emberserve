@@ -143,7 +143,7 @@ class LLMEngine:
 
     @classmethod
     def from_pretrained(cls, model_dir: str | Path, engine_config: EngineConfig | None = None,
-                        **overrides) -> "LLMEngine":
+                        load_tokenizer: bool = True, **overrides) -> "LLMEngine":
         engine_config = engine_config or EngineConfig()
         for k, v in overrides.items():
             setattr(engine_config, k, v)
@@ -151,7 +151,7 @@ class LLMEngine:
         model = load_model(model_dir, device=engine_config.device, dtype=engine_config.dtype)
         model_config = ModelConfig.from_hf_dir(model_dir)
         tokenizer = None
-        if (Path(model_dir) / "tokenizer.json").exists():
+        if load_tokenizer and (Path(model_dir) / "tokenizer.json").exists():
             try:
                 tokenizer = Tokenizer(model_dir)
             except ImportError:
