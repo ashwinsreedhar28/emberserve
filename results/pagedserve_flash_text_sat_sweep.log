@@ -1,0 +1,8 @@
+[baseline] synthetic prompt ids drawn from [2, 151936)
+[baseline] launching: /usr/local/bin/python -m pagedserve.cli serve --model models/Qwen2.5-0.5B-Instruct --port 8000 --host 127.0.0.1 --dtype float16 --max-model-len 4096 --device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs
+[baseline] waiting for http://127.0.0.1:8000/health ...
+[baseline] pagedserve_flash_text_sat @ rate=inf req/s, n=200
+[load] 10/200 done     0.8s[load] 20/200 done     0.9s[load] 30/200 done     1.1s[load] 40/200 done     1.2s[load] 50/200 done     1.3s[load] 60/200 done     1.4s[load] 70/200 done     1.6s[load] 80/200 done     1.6s[load] 90/200 done     1.8s[load] 100/200 done     1.9s[load] 110/200 done     1.9s[load] 120/200 done     2.0s[load] 130/200 done     2.1s[load] 140/200 done     2.1s[load] 150/200 done     2.2s[load] 160/200 done     2.3s[load] 170/200 done     2.4s[load] 180/200 done     2.5s[load] 190/200 done     2.6s[load] 200/200 done     2.6s
+pagedserve_flash_text_sat@inf tok/s= 20469.0 req/s= 78.93 ttft p50/p99=  487.8/  562.7ms tpot p50/p99=   5.1/   9.6ms ok=200/200
+[baseline] server-side means: ttft_ms_mean 122.4, tpot_ms_mean 5.4, e2e_ms_mean 1353.3
+[baseline] wrote results/e2e.json
