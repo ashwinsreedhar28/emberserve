@@ -19,7 +19,10 @@ def main() -> None:
 
     path = snapshot_download(
         args.repo, local_dir=str(out),
-        allow_patterns=["*.safetensors", "*.json", "merges.txt", "vocab.json", "*.txt"],
+        # *.py / *.model / *.tiktoken: checkpoints that ship their own tokenizer or modeling
+        # code (Moonlight's tiktoken tokenizer, DeepSeek's modeling files).
+        allow_patterns=["*.safetensors", "*.json", "merges.txt", "vocab.json", "*.txt",
+                        "*.py", "*.model", "*.tiktoken"],
     )
     print(f"downloaded {args.repo} -> {path}")
 
