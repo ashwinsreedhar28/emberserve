@@ -44,8 +44,8 @@ Against vLLM on the A100 with Qwen2.5-0.5B: throughput parity to 16 req/s (100%)
 latency than vLLM at every offered rate (TPOT 1.8 vs 2.0 ms and TTFT 9.4 vs 12.9 ms at
 1 req/s; TPOT 6.0 vs 8.1 ms at saturation), 92% of its saturation throughput, up from 23% at
 the first measurement the same night. At 7B (Qwen2.5-7B-Instruct) both engines sit on the
-weight-read floor and pagedserve reaches 97% of vLLM at saturation once chunked prefill is
-on; DeepSeek-R1-Distill-Llama-8B runs on the same code, and Moonlight-16B-A3B (DeepSeek-V3's
+weight-read floor and pagedserve reaches 99% of vLLM at saturation with chunked prefill and
+async scheduling; DeepSeek-R1-Distill-Llama-8B runs on the same code, and Moonlight-16B-A3B (DeepSeek-V3's
 latent attention + MoE) reaches 84% with a batch-1 step of 6.2 ms against vLLM's 7.1 ms
 TPOT. The [gap analysis](#the-gap-against-vllm) has the per-phase profile and the eight
 fixes it drove, in order; [Models](#models) has the per-model table.
@@ -196,8 +196,10 @@ each decoder layer is three pieces, `pre` (input norm + residual add, projection
 per-layer graphs on rows padded up to a token bucket, and padded rows never reach the KV
 cache. A mixed step is then two replays plus the attention launches per layer. On the A100
 it turned chunked prefill at 0.5B from an 11% loss into a 4% gain (14,904 tok/s) and halved
-TTFT at low load (9.4 ms vs 19.8 eager, vLLM 12.9), so it is the default whenever CUDA
-graphs are on, and chunked prefill is the default at every model size.
+TTFT at low load (9.4 ms vs 19.8 eager, vLLM 12.9). At 7B it costs 1%: the padded chunk is
+real compute there. So it is the default for checkpoints under 4 GB, and chunked prefill is
+the default on CUDA wherever the mixed step is not eager (everywhere but a small model
+served without graphs).
 
 ## Correctness
 
@@ -429,7 +431,7 @@ prompt ids drawn from each model's own vocabulary.
 | model | arch | golden vs HF | batch-1 forward | weight-read floor | saturation tok/s, pagedserve / vLLM | TPOT p50 @ 8 req/s |
 |---|---|---|---:|---:|---:|---:|
 | Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **14,904 / 16,269 (92%)** | **2.0** / 2.1 ms |
-| Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | **3,092 / 3,188 (97%)** | 13.2 / 10.6 ms |
+| Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | **3,166 / 3,188 (99%)** | 12.6 / 10.6 ms |
 | DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | 2,519 / 2,823 (89%) ¹ | 19.0 / 12.2 ms ¹ |
 | Moonshot Moonlight-16B-A3B-Instruct | deepseek_v3, 27L, MLA (kv_lora 512 + rope 64), 64 experts top-6 + 2 shared, 3B active | all tokens (bf16; 2–3 tie-breaks inside noise, both paths) | 6.2 ms ² | ~3 ms (3B active + 0.7 GB lm_head) | **2,697 / 3,223 (84%)** ³ | 18.8 / 13.4 ms ³ |
 
@@ -448,9 +450,13 @@ vLLM's 11.5. Chunked prefill (decode rows and a prompt chunk in one step) brings
 tok/s, the same 112 ms p99 tail vLLM shows); a 512-token cap trades 6% of that throughput
 for a 42 ms tail. The first chunked run measured 2x *slower*: the mixed-step attention path
 padded every sequence's queries to the chunk length (100k padded queries per layer at 200
-decodes plus one chunk); the fix batches the decode rows and pads only the chunk rows. The
-residual at 16 req/s is that a mixed step runs eagerly, outside CUDA graphs; vLLM's
-piecewise graphs keep everything but attention captured. Any `model_type: qwen2 | llama | mistral | deepseek_v2 | deepseek_v3` snapshot loads with
+decodes plus one chunk); the fix batches the decode rows and pads only the chunk rows.
+Async scheduling then took it to 99% (3,166 tok/s) and 16.5 ms at 16 req/s
+(`results/pagedserve_7b_flash_v7.json`). Piecewise CUDA graphs, the fix for the same
+eager mixed steps at 0.5B, *lose* 1% here and lengthen the tail (19.9 ms at 16 req/s): a
+7B chunk is compute-bound, so padding it up to a token bucket costs real FLOPs, whereas at
+0.5B the launches it removes were the whole cost. Hence the default is by size (piecewise
+below 4 GB); finer token buckets would likely recover the 7B case. Any `model_type: qwen2 | llama | mistral | deepseek_v2 | deepseek_v3` snapshot loads with
 `scripts/download_model.py --repo <hf repo>`; DeepSeek-R1-Distill-Qwen, Mistral-7B and
 DeepSeek-V2-Lite are the same code paths as the rows above.
 
@@ -552,6 +558,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 ## Roadmap
 
 * Close the last 8% at 0.5B saturation: TTFT there is 543 vs 421 ms, a matter of how many prompt pieces are admitted per step at the very start of a burst (a smaller first chunk, or vLLM-style prefill token budgeting).
+* Finer token buckets (or bucket-free capture) for piecewise graphs, so the padded chunk stops costing compute at 7B and the mode can be the default at every size.
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.

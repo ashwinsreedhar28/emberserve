@@ -28,16 +28,19 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--piecewise-cuda-graphs", dest="piecewise_cuda_graphs", action="store_true",
                    default=None,
                    help="also replay prefill / mixed (chunked-prefill) steps from per-layer graphs "
-                        "with attention run eagerly between them. Default: on whenever "
-                        "--enable-cuda-graphs is (A100, 0.5B: chunked prefill went from -11%% to "
-                        "+4%% at saturation, TTFT at 1 req/s 20 -> 9 ms)")
+                        "with attention run eagerly between them. Default: on with "
+                        "--enable-cuda-graphs for checkpoints under 4 GB (A100, 0.5B: chunked "
+                        "prefill went from -11%% to +4%% at saturation, TTFT at 1 req/s 20 -> 9 ms), "
+                        "off above (7B: -1%% and a longer TPOT tail, the bucket padding costs real "
+                        "compute there)")
     p.add_argument("--no-piecewise-cuda-graphs", dest="piecewise_cuda_graphs", action="store_false")
     p.add_argument("--enable-chunked-prefill", dest="enable_chunked_prefill", action="store_true",
                    default=None,
                    help="mix decode tokens and prompt chunks in every step; --max-num-batched-tokens "
-                        "becomes the per-step cap. Default: on for --device cuda (with piecewise CUDA "
-                        "graphs it wins at every model size measured: +8%% at 7B, +4%% at 0.5B), off "
-                        "otherwise; 2048-token cap unless --max-num-batched-tokens is given")
+                        "becomes the per-step cap. Default: on for --device cuda except for a small "
+                        "checkpoint served without CUDA graphs (an eager mixed step loses to a "
+                        "graph-replayed decode step: -11%% at 0.5B); +8%% at 7B, +4%% at 0.5B with "
+                        "piecewise graphs; 2048-token cap unless --max-num-batched-tokens is given")
     p.add_argument("--no-chunked-prefill", dest="enable_chunked_prefill", action="store_false")
     p.add_argument("--async-scheduling", dest="async_scheduling", action="store_true", default=None,
                    help="launch step N+1 before reading step N's tokens back (vLLM v1 style): the "
@@ -58,18 +61,23 @@ def checkpoint_bytes(model_dir: str | None) -> int:
         return 0
 
 
+SMALL_CHECKPOINT_BYTES = 4 * 1024 ** 3  # below: a step is launches; above: it is math
+
+
 def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
     cuda = args.device.startswith("cuda")
+    small = checkpoint_bytes(args.model) < SMALL_CHECKPOINT_BYTES
     piecewise = args.piecewise_cuda_graphs
     if piecewise is None:
-        piecewise = bool(args.enable_cuda_graphs)
+        # Piecewise graphs trade bucket padding (compute) for launches (CPU). A100: at 0.5B
+        # chunked prefill went from -11% to +4% at saturation and TTFT halved; at 7B the
+        # padded chunk costs real FLOPs (-1%, TPOT tail 16.5 -> 19.9 ms at 16 req/s).
+        piecewise = bool(args.enable_cuda_graphs) and small
     chunked = args.enable_chunked_prefill
     if chunked is None:
-        # With piecewise graphs a mixed step replays from graphs too, and chunked prefill
-        # wins at every size measured on the A100 (7B: +8%; 0.5B: +4% and half the TTFT).
-        # Without them mixed steps run eagerly, which cost 11% at 0.5B; then it is only
-        # worth it from a few billion parameters up.
-        chunked = cuda and (piecewise or checkpoint_bytes(args.model) >= 4 * 1024 ** 3)
+        # Chunked prefill wins wherever the mixed step is not paying eager launch overhead:
+        # +8% at 7B (any mode), +4% at 0.5B on piecewise graphs, -11% at 0.5B eagerly.
+        chunked = cuda and (piecewise or not small)
     budget = args.max_num_batched_tokens
     if budget is None:
         budget = 2048 if chunked else 8192

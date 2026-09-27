@@ -34,14 +34,16 @@ time; `nvidia-smi --query-gpu=memory.used --format=csv` should read ~0 MiB befor
 
 `pagedserve serve --device cuda --enable-cuda-graphs` defaults to the engine in its own
 process (`--no-engine-process` for the single-process path), async scheduling
-(`--no-async-scheduling`), piecewise CUDA graphs for prefill and mixed steps
-(`--no-piecewise-cuda-graphs`), and chunked prefill with a 2048-token per-step cap
+(`--no-async-scheduling`), chunked prefill with a 2048-token per-step cap
 (`--no-chunked-prefill`; `--max-num-batched-tokens 512` for a tighter TPOT tail at ~6%
-throughput). All measured on the A100 with Qwen2.5-0.5B: the process split took
-saturation from 10.6k to 13.9k tok/s, async scheduling to 14.4k, chunked prefill on
-piecewise graphs to 14.9k (chunked prefill on *eager* mixed steps was 12.8k, which is why
-without `--enable-cuda-graphs` chunked prefill defaults on only for checkpoints of 4 GB and
-up). At 7B chunked prefill took the engine from 89% to 97% of vLLM.
+throughput), and, for checkpoints under 4 GB, piecewise CUDA graphs for prefill and mixed
+steps (`--piecewise-cuda-graphs` / `--no-piecewise-cuda-graphs` to force). Measured on the
+A100 with Qwen2.5-0.5B: the process split took saturation from 10.6k to 13.9k tok/s, async
+scheduling to 14.4k, chunked prefill on piecewise graphs to 14.9k (chunked prefill on
+*eager* mixed steps was 12.8k, which is why a small checkpoint served without graphs stays
+prefill-priority). Qwen2.5-7B: chunked prefill took it from 89% to 97% of vLLM and async
+scheduling to 99% (3,166 tok/s); piecewise graphs there cost 1% and a longer tail, because
+the padded chunk is real compute at that size, so they are off by default above 4 GB.
 
 ### Async scheduling A/B
 

@@ -17,7 +17,8 @@ the chunks aggregated (`return_aggregate_stream`).
 Environment (all optional): MODEL_DIR (a snapshot baked into the image; default
 /models/model), MODEL_REPO (download at cold start instead), DTYPE (float16), ATTN_BACKEND
 (paged_flash), BLOCK_SIZE (256), MAX_MODEL_LEN (4096), MAX_NUM_SEQS (256), CUDA_GRAPHS (1),
-PIECEWISE_CUDA_GRAPHS (1), CHUNKED_PREFILL (default: on with piecewise graphs),
+PIECEWISE_CUDA_GRAPHS (default: on for checkpoints under 4 GB), CHUNKED_PREFILL (default: on
+except small checkpoints without graphs),
 ASYNC_SCHEDULING (1), MAX_CONCURRENCY (jobs per worker, 64).
 """
 
@@ -41,10 +42,14 @@ def env(name: str, default: str) -> str:
 def engine_config(model_dir: str | None = None) -> EngineConfig:
     """Same defaults as `pagedserve serve --device cuda`: CUDA graphs (full-step for decode,
     piecewise for prefill / mixed steps), chunked prefill, async scheduling."""
+    from pagedserve.cli import SMALL_CHECKPOINT_BYTES, checkpoint_bytes
+
     graphs = env("CUDA_GRAPHS", "1") == "1"
-    piecewise = env("PIECEWISE_CUDA_GRAPHS", "1") == "1" and graphs
+    small = checkpoint_bytes(model_dir) < SMALL_CHECKPOINT_BYTES
+    forced_pw = os.environ.get("PIECEWISE_CUDA_GRAPHS")
+    piecewise = graphs and (forced_pw == "1" if forced_pw is not None else small)
     forced = os.environ.get("CHUNKED_PREFILL")
-    chunked = forced == "1" if forced is not None else piecewise
+    chunked = forced == "1" if forced is not None else (piecewise or not small)
     return EngineConfig(
         device="cuda", dtype=EngineConfig.dtype_from_str(env("DTYPE", "float16")),
         attn_backend=env("ATTN_BACKEND", "paged_flash"), block_size=int(env("BLOCK_SIZE", "256")),
