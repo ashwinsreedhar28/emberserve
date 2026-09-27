@@ -196,6 +196,26 @@ heads padded 7 -> 16) closed the gap at large batch; what remains is a flat ~0.0
 that does not scale with work, so short contexts and small batches stay ~2x behind.
 `paged_torch` on the same shape: 7.41 ms, 18 GB/s.
 
+### A100 ablation (`results/ablation_a100.json`, 8 req/s, 64-token shared prefix, before the five fixes)
+
+Every backend at its own minimum block size (`paged_flash` 256, the rest 16):
+
+| config | block | tok/s | TTFT p50 | KV slot utilization |
+|---|---:|---:|---:|---:|
+| paged_torch | 16 | 584 | 28 ms | 99% |
+| paged_flash | 256 | 1,054 | 20 | 79% |
+| paged_flash + graphs | 256 | 1,407 | 20 | 76% |
+| paged_triton | 16 | 918 | 28 | 98% |
+| paged_triton + graphs | 16 | 1,394 | 28 | 98% |
+| paged_triton + graphs + prefix | 16 | 1,394 | 28 | 98% |
+| paged_flash + graphs + chunked | 256 | 1,406 | 27 | 76% |
+
+![A100 ablation](results/plots/ablation.png)
+
+The Triton path at block 16 keeps up with flash at block 256 (1,394 vs 1,407 tok/s) with
+22 points more slot utilization; its +8 ms TTFT is the gather-path prefill fallback, not
+the kernel. Chunked prefill changes nothing on a 208-token-median trace, as expected.
+
 ### A100, pagedserve over HTTP vs vLLM (`results/vllm.json`, `results/pagedserve_*.json`)
 
 Same load generator, same trace, same GPU, both servers fp16 with `max_model_len 4096`.
@@ -212,6 +232,12 @@ pagedserve: `paged_flash`, block 256, CUDA graphs. vLLM from its own venv, defau
 
 pagedserve rows 1–4 are from `pagedserve_flash_v4.json` and 8–inf from `_v5.json` (the
 commit between them changed only per-sequence CPU costs, invisible below 8 req/s).
+
+![throughput vs offered load](results/plots/throughput_vs_rate.png)
+![TPOT vs offered load](results/plots/tpot_vs_rate.png)
+
+(`results/pagedserve_flash_final.json` is those v4/v5 rows merged; regenerate the figures with
+`python -m pagedserve.bench.plot results/vllm.json results/pagedserve_flash.json results/pagedserve_flash_final.json --labels "vLLM,pagedserve (first run),pagedserve (after 5 fixes)" --ablation results/ablation_a100.json`.)
 
 Rates 1–8 are latency comparisons (throughput equals offered load for both); 16 and the
 saturation row compare capacity. The `paged_triton` server at block 16 matches these to

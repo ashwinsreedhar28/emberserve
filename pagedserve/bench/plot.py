@@ -159,11 +159,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("sweeps", nargs="*", help="sweep JSON files from run_vllm_baseline")
     p.add_argument("--ablation", default=None, help="ablation JSON from ablation.py")
     p.add_argument("--out-dir", default="results/plots")
+    p.add_argument("--labels", default=None,
+                   help="comma-separated legend labels, one per sweep file (default: the file's system name)")
     args = p.parse_args(argv)
+    labels = args.labels.split(",") if args.labels else [None] * len(args.sweeps)
+    if len(labels) != len(args.sweeps):
+        raise SystemExit("--labels must have one entry per sweep file")
     sweeps: dict[str, Any] = {}
-    for f in args.sweeps:
+    for f, label in zip(args.sweeps, labels):
         data = json.loads(Path(f).read_text())
-        sweeps[data.get("system") or Path(f).stem] = data
+        sweeps[label or data.get("system") or Path(f).stem] = data
     ablation = json.loads(Path(args.ablation).read_text()) if args.ablation else None
     for path in plot_all(sweeps, ablation, Path(args.out_dir)):
         print(f"wrote {path}", file=sys.stderr)
