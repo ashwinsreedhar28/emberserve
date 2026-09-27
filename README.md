@@ -662,7 +662,9 @@ Async scheduling then took it to 99% (3,166 tok/s) and 16.5 ms at 16 req/s
 eager mixed steps at 0.5B, *lose* 1% here and lengthen the tail (19.9 ms at 16 req/s): a
 7B chunk is compute-bound, so padding it up to a token bucket costs real FLOPs, whereas at
 0.5B the launches it removes were the whole cost. Hence the default is by size (piecewise
-below 4 GB); finer token buckets would likely recover the 7B case. Any `model_type: qwen2 | llama | mistral | deepseek_v2 | deepseek_v3` snapshot loads with
+below 4 GB). Finer token buckets (`--piecewise-bucket-step 256`) recover the saturation
+loss (3,168 tok/s) but not the tail (18.3 ms at 16 req/s), so the padding was only part
+of the cost. Any `model_type: qwen2 | llama | mistral | deepseek_v2 | deepseek_v3` snapshot loads with
 `scripts/download_model.py --repo <hf repo>`; DeepSeek-R1-Distill-Qwen, Mistral-7B and
 DeepSeek-V2-Lite are the same code paths as the rows above.
 
@@ -773,7 +775,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 ## Roadmap
 
 * Close the last 8% at 0.5B saturation. (The TTFT-at-saturation gap that used to be listed here was the single-process load generator: server-side, pagedserve's is lower than vLLM's.)
-* Finer token buckets for piecewise graphs (`--piecewise-bucket-step 256` is implemented; 7B A/B pending) so the padded chunk stops costing compute at 7B and the mode can be the default at every size.
+* Piecewise graphs at 7B: `--piecewise-bucket-step 256` recovers the 1% saturation loss (3,168 vs v7's 3,166 tok/s) but not the tail (TPOT 18.3 vs 16.5 ms at 16 req/s; `results/pagedserve_7b_flash_v8b.json`), so the mode stays off above 4 GB; the remaining cost is the static-buffer copies and the eager attention launches, which a full-step graph does not pay.
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
