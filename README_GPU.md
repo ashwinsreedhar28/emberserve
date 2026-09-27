@@ -32,14 +32,16 @@ time; `nvidia-smi --query-gpu=memory.used --format=csv` should read ~0 MiB befor
 
 ## Serving defaults on CUDA
 
-`pagedserve serve --device cuda` defaults to the engine in its own process
-(`--engine-process`; `--no-engine-process` for the single-process path), async scheduling
-(`--no-async-scheduling` to compare), and chunked prefill with a 2048-token per-step cap for
-checkpoints of 4 GB and up (`--enable-chunked-prefill` / `--no-chunked-prefill` to force;
-`--max-num-batched-tokens 512` for a tighter TPOT tail at ~6% throughput). All measured on
-the A100: the process split took Qwen2.5-0.5B from 10.6k to 13.9k tok/s at saturation and
-async scheduling to 14.4k; chunked prefill took Qwen2.5-7B from 89% to 97% of vLLM but
-costs 11% at 0.5B, where an eager mixed step loses to a graph-replayed decode step.
+`pagedserve serve --device cuda --enable-cuda-graphs` defaults to the engine in its own
+process (`--no-engine-process` for the single-process path), async scheduling
+(`--no-async-scheduling`), piecewise CUDA graphs for prefill and mixed steps
+(`--no-piecewise-cuda-graphs`), and chunked prefill with a 2048-token per-step cap
+(`--no-chunked-prefill`; `--max-num-batched-tokens 512` for a tighter TPOT tail at ~6%
+throughput). All measured on the A100 with Qwen2.5-0.5B: the process split took
+saturation from 10.6k to 13.9k tok/s, async scheduling to 14.4k, chunked prefill on
+piecewise graphs to 14.9k (chunked prefill on *eager* mixed steps was 12.8k, which is why
+without `--enable-cuda-graphs` chunked prefill defaults on only for checkpoints of 4 GB and
+up). At 7B chunked prefill took the engine from 89% to 97% of vLLM.
 
 ### Async scheduling A/B
 
@@ -59,16 +61,17 @@ parity with and without graphs first.
 
 ### Piecewise CUDA graphs A/B
 
-`--piecewise-cuda-graphs` (with `--enable-cuda-graphs`) replays prefill and mixed steps
-from per-layer graphs with attention eager in between (README, "CUDA graphs"). GPU parity
-tests first, then the 0.5B chunked sweep against `pagedserve_flash_v7.json` (12,786 tok/s,
-chunked without piecewise) and `_v7b.json` (14,394, prefill-priority):
+`--piecewise-cuda-graphs` replays prefill and mixed steps from per-layer graphs with
+attention eager in between (README, "CUDA graphs"); default on with `--enable-cuda-graphs`.
+The A/B that made it the default: `pagedserve_flash_v7.json` (chunked, eager mixed steps:
+12,786 tok/s), `_v7b.json` (prefill-priority: 14,394), `_v8.json` (chunked on piecewise
+graphs: 14,904, TTFT at 1 req/s 9.4 ms). To repeat it:
 
 ```bash
 python -m pytest tests/test_cuda_graphs_gpu.py tests/test_mla_triton_gpu.py -q -k piecewise
 python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 \
-  --max-model-len 4096 --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --enable-chunked-prefill --piecewise-cuda-graphs" \
-  --rates 1,2,4,8,16,inf --trace-n 200 --name pagedserve_flash_v8
+  --max-model-len 4096 --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs" \
+  --rates 1,2,4,8,16,inf --trace-n 200 --name pagedserve_flash_v8      # add --no-piecewise-cuda-graphs for the other arm
 ```
 
 ## DeepSeek / Moonlight checkpoints

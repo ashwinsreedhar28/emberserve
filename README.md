@@ -33,22 +33,22 @@ output median 131), seed 0, same trace for every row. Raw files in `results/`.
 | | RTX 4090 | A100 SXM 80 GB |
 |---|---:|---:|
 | naive per-sequence cache, 8 req/s | 343 tok/s | |
-| paged_flash + CUDA graphs, 8 req/s | 1,441 tok/s, TPOT p50 3.8 ms | 1,380 tok/s, TPOT p50 2.2 ms (HTTP) |
-| paged_flash + CUDA graphs, all 200 at t=0 | 5,459 tok/s (in-process) | **14,394 tok/s** (HTTP, engine process + async scheduling) |
+| paged_flash + CUDA graphs, 8 req/s | 1,441 tok/s, TPOT p50 3.8 ms | 1,381 tok/s, TPOT p50 2.0 ms (HTTP) |
+| paged_flash + CUDA graphs, all 200 at t=0 | 5,459 tok/s (in-process) | **14,904 tok/s** (HTTP, engine process, async scheduling, chunked prefill on piecewise graphs) |
 | vLLM, same trace, same GPU, 8 req/s | | 1,377 tok/s, TPOT p50 2.1 ms |
 | vLLM, all 200 at t=0 | | 16,269 tok/s |
 | Triton decode kernel vs flash-attn, B=128 / ctx 2048 | 4.2x slower (first version) | **1.16x** slower (835 vs 972 GB/s) |
 | KV-cache slot utilization, block 16 vs 256 | | **98% vs 76%** |
 
-Against vLLM on the A100 with Qwen2.5-0.5B: throughput parity to 16 req/s (100%), TPOT
-*below* vLLM's at 1 req/s (1.8 vs 2.0 ms) and at saturation (6.6 vs 8.1 ms), 88% of its
-saturation throughput, up from 23% at the first measurement the same night. At 7B
-(Qwen2.5-7B-Instruct) both engines sit on the weight-read floor and pagedserve reaches 97%
-of vLLM at saturation once chunked prefill is on; DeepSeek-R1-Distill-Llama-8B runs on the
-same code, and Moonlight-16B-A3B (DeepSeek-V3's latent attention + MoE) reaches 84% with a
-batch-1 step of 6.2 ms against vLLM's 7.1 ms TPOT. The [gap analysis](#the-gap-against-vllm)
-has the per-phase profile and the seven fixes it drove, in order; [Models](#models) has the
-per-model table.
+Against vLLM on the A100 with Qwen2.5-0.5B: throughput parity to 16 req/s (100%), lower
+latency than vLLM at every offered rate (TPOT 1.8 vs 2.0 ms and TTFT 9.4 vs 12.9 ms at
+1 req/s; TPOT 6.0 vs 8.1 ms at saturation), 92% of its saturation throughput, up from 23% at
+the first measurement the same night. At 7B (Qwen2.5-7B-Instruct) both engines sit on the
+weight-read floor and pagedserve reaches 97% of vLLM at saturation once chunked prefill is
+on; DeepSeek-R1-Distill-Llama-8B runs on the same code, and Moonlight-16B-A3B (DeepSeek-V3's
+latent attention + MoE) reaches 84% with a batch-1 step of 6.2 ms against vLLM's 7.1 ms
+TPOT. The [gap analysis](#the-gap-against-vllm) has the per-phase profile and the eight
+fixes it drove, in order; [Models](#models) has the per-model table.
 
 ## How it works
 
@@ -82,8 +82,8 @@ blocks, the youngest running request is preempted by recompute (blocks freed,
 `num_computed_tokens` reset, back to the front of the queue). Outputs are identical with or
 without preemption; that is a test.
 
-With `--enable-chunked-prefill` (Sarathi-Serve / vLLM style; the default on CUDA for
-checkpoints of ~2B parameters and up) a step is instead **mixed**: one
+With `--enable-chunked-prefill` (Sarathi-Serve / vLLM style; the default on CUDA) a step
+is instead **mixed**: one
 decode token for every running request whose prefill is done, plus as many prompt tokens as
 fit in the remaining `max_num_batched_tokens` (mid-prefill requests first, then new ones). A
 long prompt is split across steps, so it no longer stalls every decoder's TPOT for one long
@@ -194,9 +194,10 @@ each decoder layer is three pieces, `pre` (input norm + residual add, projection
 `attend` (the kernel, eager on the real rows with the step's real metadata) and `post`
 (output projection, post norm, MLP); `pre` and `post` are row-wise, so they replay from
 per-layer graphs on rows padded up to a token bucket, and padded rows never reach the KV
-cache. A mixed step is then two replays plus the attention launches per layer. CPU-tested
-against the eager forward for both model families; the A100 measurement is pending, so it
-is off by default.
+cache. A mixed step is then two replays plus the attention launches per layer. On the A100
+it turned chunked prefill at 0.5B from an 11% loss into a 4% gain (14,904 tok/s) and halved
+TTFT at low load (9.4 ms vs 19.8 eager, vLLM 12.9), so it is the default whenever CUDA
+graphs are on, and chunked prefill is the default at every model size.
 
 ## Correctness
 
@@ -286,24 +287,24 @@ the kernel. Chunked prefill changes nothing at 0.5B, where a prefill is ~8 ms; a
 ### A100, pagedserve over HTTP vs vLLM (`results/vllm.json`, `results/pagedserve_*.json`)
 
 Same load generator, same trace, same GPU, both servers fp16 with `max_model_len 4096`.
-pagedserve: `paged_flash`, block 256, CUDA graphs, engine in its own process, async
-scheduling, prefill-priority (`results/pagedserve_flash_v7b.json`). vLLM from its own venv,
-defaults.
+pagedserve with its CUDA defaults: `paged_flash`, block 256, CUDA graphs (full-step for
+decode, piecewise for prefill and mixed steps), chunked prefill, engine in its own process,
+async scheduling (`results/pagedserve_flash_v8.json`). vLLM from its own venv, defaults.
 
 | req/s offered | vLLM tok/s | pagedserve tok/s | vLLM TTFT p50 | pagedserve TTFT p50 | vLLM TPOT p50/p99 | pagedserve TPOT p50/p99 |
 |---:|---:|---:|---:|---:|---:|---:|
-| 1 | 177 | 177 | 12.9 ms | 19.8 ms | 2.0 / 2.3 | **1.8** / 2.2 |
-| 2 | 354 | 354 | 11.9 | 18.2 | 2.0 / 2.2 | **1.9** / 2.2 |
-| 4 | 701 | 702 | 11.6 | 17.1 | 2.1 / 2.2 | **2.0** / 2.5 |
-| 8 | 1,377 | 1,380 | 12.0 | 17.1 | 2.1 / 2.3 | 2.2 / 2.8 |
-| 16 | 2,659 | 2,669 | 12.0 | 18.3 | 2.2 / 2.4 | 2.5 / 3.3 |
-| all at t=0 | **16,269** | **14,394** | 421 | 560 | 8.1 / 12.8 | **6.6** / 12.1 |
+| 1 | 177 | 177 | 12.9 ms | **9.4** ms | 2.0 / 2.3 | **1.8** / 2.1 |
+| 2 | 354 | 354 | 11.9 | **10.0** | 2.0 / 2.2 | **1.8** / 2.1 |
+| 4 | 701 | 702 | 11.6 | **11.0** | 2.1 / 2.2 | **1.9** / 2.1 |
+| 8 | 1,377 | 1,381 | 12.0 | **11.5** | 2.1 / 2.3 | **2.0** / 2.2 |
+| 16 | 2,659 | 2,673 | 12.0 | 12.4 | 2.2 / 2.4 | **2.1** / 2.5 |
+| all at t=0 | **16,269** | **14,904** | 421 | 543 | 8.1 / 12.8 | **6.0** / **8.7** |
 
 ![throughput vs offered load](results/plots/throughput_vs_rate.png)
 ![TPOT vs offered load](results/plots/tpot_vs_rate.png)
 
-(`results/pagedserve_flash_final.json` is the v7b run; regenerate the figures with
-`python -m pagedserve.bench.plot results/vllm.json results/pagedserve_flash.json results/pagedserve_flash_final.json --labels "vLLM,pagedserve (first run),pagedserve (after 7 fixes)" --ablation results/ablation_a100.json`.)
+(`results/pagedserve_flash_final.json` is the v8 run; regenerate the figures with
+`python -m pagedserve.bench.plot results/vllm.json results/pagedserve_flash.json results/pagedserve_flash_final.json --labels "vLLM,pagedserve (first run),pagedserve (after 8 fixes)" --ablation results/ablation_a100.json`.)
 
 Rates 1–8 are latency comparisons (throughput equals offered load for both); 16 and the
 saturation row compare capacity. The `paged_triton` server at block 16 matched these to
@@ -337,17 +338,15 @@ The same night, in order, each fix chosen from the profile and re-measured over 
 | `d82393e` | **a 3.9 ms forward at batch 1 inside a CUDA graph**: graphs remove launch overhead, but every kernel still costs 3–4 us of GPU time and the model ran ~42 per layer (unfused RMSNorm is 8 on its own). Fused `qkv_proj` / `gate_up_proj` weights, decoder in (hidden, residual) form, Triton RMSNorm+residual, RoPE and SiLU-mul: ~13 kernels per layer | 8,356 | 4.2 |
 | `3805000` | **per-step host->device traffic and per-request decode calls**: six small `torch.tensor(..., device=cuda)` copies plus a per-row block-table build became two pinned copies; two `tokenizer.decode` calls per request became two Rust `decode_batch` calls per step | 10,584 | 3.9 |
 | `94bdca3` | **the server and the engine shared one GIL**: at 200 streams the in-process step was 6.1 ms but 10.2 ms seen through the server, because SSE delivery and the step loop serialized on the interpreter lock. The engine core now runs in its own process (`--engine-process`, default on CUDA): token ids cross a pipe, the API process keeps the tokenizer, batched detokenization and stop strings, and the two overlap | 13,945 | 3.1 |
-| `02d44f5` | **the GPU idled while Python built the next step**: the remaining per-sequence CPU in the core (0.5 ms of input building and 1.2 ms of postprocessing at batch 200) sat on the critical path. Async scheduling (vLLM v1's trick, `--async-scheduling`, default on CUDA): step N+1 is scheduled, packed and launched before step N's tokens are read back; decode rows gather their token from the previous step's sampled tensor on the device; the read-back goes through a pinned buffer whose copy was enqueued before the next launch; length limits are anticipated so no token is wasted | **14,394** | 2.5 |
+| `02d44f5` | **the GPU idled while Python built the next step**: the remaining per-sequence CPU in the core (0.5 ms of input building and 1.2 ms of postprocessing at batch 200) sat on the critical path. Async scheduling (vLLM v1's trick, `--async-scheduling`, default on CUDA): step N+1 is scheduled, packed and launched before step N's tokens are read back; decode rows gather their token from the previous step's sampled tensor on the device; the read-back goes through a pinned buffer whose copy was enqueued before the next launch; length limits are anticipated so no token is wasted | 14,394 | 2.5 |
+| `1942991` | **prefill and mixed steps ran eagerly**: the full-step graph needs fixed shapes, so chunked prefill (the scheduling that closed the 7B gap) *cost* 11% here (12,786 tok/s), ~20 Python launches per layer on every step that carried a prompt. Piecewise CUDA graphs (`--piecewise-cuda-graphs`, default on): every layer's projections, norms and MLP replay from per-layer graphs on token buckets, attention runs eagerly on the real rows between them, so a chunked step is two replays plus the attention launches per layer. Chunked prefill is now the default at every size, and the prefill step itself got cheaper: TTFT at 1 req/s 20 → 9 ms | **14,904** | 2.1 |
 
-What is left: 88% of vLLM's saturation throughput with a lower TPOT (6.6 vs 8.1 ms) and a
-higher TTFT (560 vs 421 ms), which is a scheduling choice: vLLM's chunked prefill admits
-prompts in smaller pieces so first tokens come out earlier and every decoder pays for it.
-pagedserve has the same mode, and it is the default from ~2B parameters up (+8% at 7B),
-but at 0.5B a mixed step runs eagerly while a pure decode step replays a CUDA graph, and
-that costs 11% at saturation (12,786 vs 14,394 tok/s); piecewise graphs for mixed steps
-are the fix. The batch-1 forward at 1.9 ms sits within ~2x of the weight-read floor (~1 GB
-of fp16 weights plus the 272 MB `lm_head` per step on a 1.5 TB/s part); at 7B the forward
-*is* the floor.
+What is left: 92% of vLLM's saturation throughput, with lower TPOT (6.0 vs 8.1 ms p50,
+8.7 vs 12.8 p99) and a higher TTFT there (543 vs 421 ms): with all 200 prompts arriving at
+once, vLLM's scheduler admits them in more, smaller pieces than the 2048-token cap here and
+starts more streams earlier. Below saturation pagedserve is now ahead on every metric. The
+batch-1 forward at 1.9 ms sits within ~2x of the weight-read floor (~1 GB of fp16 weights
+plus the 272 MB `lm_head` per step on a 1.5 TB/s part); at 7B the forward *is* the floor.
 
 ### Moonlight: MLA + MoE on the A100
 
@@ -429,7 +428,7 @@ prompt ids drawn from each model's own vocabulary.
 
 | model | arch | golden vs HF | batch-1 forward | weight-read floor | saturation tok/s, pagedserve / vLLM | TPOT p50 @ 8 req/s |
 |---|---|---|---:|---:|---:|---:|
-| Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **14,394 / 16,269 (88%)** | 2.2 / 2.1 ms |
+| Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **14,904 / 16,269 (92%)** | **2.0** / 2.1 ms |
 | Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | **3,092 / 3,188 (97%)** | 13.2 / 10.6 ms |
 | DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | 2,519 / 2,823 (89%) ¹ | 19.0 / 12.2 ms ¹ |
 | Moonshot Moonlight-16B-A3B-Instruct | deepseek_v3, 27L, MLA (kv_lora 512 + rope 64), 64 experts top-6 + 2 shared, 3B active | all tokens (bf16; 2–3 tie-breaks inside noise, both paths) | 6.2 ms ² | ~3 ms (3B active + 0.7 GB lm_head) | **2,697 / 3,223 (84%)** ³ | 18.8 / 13.4 ms ³ |
@@ -552,7 +551,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 
 ## Roadmap
 
-* Piecewise CUDA graphs for mixed steps: implemented (`--piecewise-cuda-graphs`), A100 measurement pending; if it removes the 11% chunked-prefill cost at 0.5B, chunked prefill becomes the default everywhere.
+* Close the last 8% at 0.5B saturation: TTFT there is 543 vs 421 ms, a matter of how many prompt pieces are admitted per step at the very start of a burst (a smaller first chunk, or vLLM-style prefill token budgeting).
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.

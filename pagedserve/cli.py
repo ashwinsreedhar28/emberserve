@@ -25,16 +25,19 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--max-model-len", type=int, default=4096)
     p.add_argument("--enable-prefix-caching", action="store_true")
     p.add_argument("--enable-cuda-graphs", action="store_true")
-    p.add_argument("--piecewise-cuda-graphs", action="store_true",
+    p.add_argument("--piecewise-cuda-graphs", dest="piecewise_cuda_graphs", action="store_true",
+                   default=None,
                    help="also replay prefill / mixed (chunked-prefill) steps from per-layer graphs "
-                        "with attention run eagerly between them (needs --enable-cuda-graphs)")
+                        "with attention run eagerly between them. Default: on whenever "
+                        "--enable-cuda-graphs is (A100, 0.5B: chunked prefill went from -11%% to "
+                        "+4%% at saturation, TTFT at 1 req/s 20 -> 9 ms)")
+    p.add_argument("--no-piecewise-cuda-graphs", dest="piecewise_cuda_graphs", action="store_false")
     p.add_argument("--enable-chunked-prefill", dest="enable_chunked_prefill", action="store_true",
                    default=None,
                    help="mix decode tokens and prompt chunks in every step; --max-num-batched-tokens "
-                        "becomes the per-step cap. Default: on for --device cuda when the checkpoint "
-                        "is >= 4 GB (about 2B params; +8%% at 7B), off below that (mixed steps run "
-                        "eagerly, and at 0.5B that cost 11%% at saturation); 2048-token cap unless "
-                        "--max-num-batched-tokens is given")
+                        "becomes the per-step cap. Default: on for --device cuda (with piecewise CUDA "
+                        "graphs it wins at every model size measured: +8%% at 7B, +4%% at 0.5B), off "
+                        "otherwise; 2048-token cap unless --max-num-batched-tokens is given")
     p.add_argument("--no-chunked-prefill", dest="enable_chunked_prefill", action="store_false")
     p.add_argument("--async-scheduling", dest="async_scheduling", action="store_true", default=None,
                    help="launch step N+1 before reading step N's tokens back (vLLM v1 style): the "
@@ -43,9 +46,6 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
                         "token. Default: on for --device cuda (A100: 0.5B saturation 13,945 -> "
                         "14,394 tok/s, TPOT at 1 req/s 2.1 -> 1.8 ms), off otherwise")
     p.add_argument("--no-async-scheduling", dest="async_scheduling", action="store_false")
-
-
-CHUNKED_PREFILL_MIN_BYTES = 4 * 1024 ** 3  # checkpoint size above which chunked prefill is the default
 
 
 def checkpoint_bytes(model_dir: str | None) -> int:
@@ -60,12 +60,16 @@ def checkpoint_bytes(model_dir: str | None) -> int:
 
 def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
     cuda = args.device.startswith("cuda")
+    piecewise = args.piecewise_cuda_graphs
+    if piecewise is None:
+        piecewise = bool(args.enable_cuda_graphs)
     chunked = args.enable_chunked_prefill
     if chunked is None:
-        # Mixed steps run eagerly (no CUDA graphs), so chunked prefill pays only when a
-        # prefill is expensive next to a decode step: measured +8% at 7B (3,092 vs 2,859
-        # tok/s at saturation) and -11% at 0.5B (12,786 vs 14,394) on the A100.
-        chunked = cuda and checkpoint_bytes(args.model) >= CHUNKED_PREFILL_MIN_BYTES
+        # With piecewise graphs a mixed step replays from graphs too, and chunked prefill
+        # wins at every size measured on the A100 (7B: +8%; 0.5B: +4% and half the TTFT).
+        # Without them mixed steps run eagerly, which cost 11% at 0.5B; then it is only
+        # worth it from a few billion parameters up.
+        chunked = cuda and (piecewise or checkpoint_bytes(args.model) >= 4 * 1024 ** 3)
     budget = args.max_num_batched_tokens
     if budget is None:
         budget = 2048 if chunked else 8192
@@ -80,7 +84,7 @@ def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
                         max_model_len=args.max_model_len, attn_backend=args.attn_backend,
                         enable_prefix_caching=args.enable_prefix_caching,
                         enable_cuda_graphs=args.enable_cuda_graphs,
-                        piecewise_cuda_graphs=bool(getattr(args, "piecewise_cuda_graphs", False)),
+                        piecewise_cuda_graphs=bool(piecewise),
                         enable_chunked_prefill=chunked,
                         async_scheduling=bool(async_sched))
 

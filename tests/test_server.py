@@ -309,13 +309,21 @@ def test_cli_defaults_by_device_and_checkpoint_size(tmp_path):
         return engine_config_from_args(build_parser().parse_args(["serve", "--model", str(tmp_path), *extra]))
 
     (tmp_path / "model.safetensors").write_bytes(b"\0" * 1024)  # a tiny checkpoint
+    # CUDA + graphs: piecewise graphs on, hence chunked prefill on at any size
+    c = cfg("--device", "cuda", "--enable-cuda-graphs")
+    assert c.async_scheduling and c.piecewise_cuda_graphs and c.enable_chunked_prefill
+    assert c.max_num_batched_tokens == 2048
+    # CUDA without graphs: mixed steps would run eagerly, so a tiny checkpoint stays prefill-priority
     c = cfg("--device", "cuda")
-    assert c.async_scheduling and not c.enable_chunked_prefill and c.max_num_batched_tokens == 8192
+    assert c.async_scheduling and not c.piecewise_cuda_graphs and not c.enable_chunked_prefill
+    assert c.max_num_batched_tokens == 8192
     c = cfg("--device", "cpu")
-    assert not c.async_scheduling and not c.enable_chunked_prefill
-    c = cfg("--device", "cuda", "--enable-chunked-prefill", "--no-async-scheduling")
-    assert c.enable_chunked_prefill and c.max_num_batched_tokens == 2048 and not c.async_scheduling
-    # a big checkpoint (sparse file: size without the bytes) turns chunked prefill on
+    assert not c.async_scheduling and not c.enable_chunked_prefill and not c.piecewise_cuda_graphs
+    c = cfg("--device", "cuda", "--enable-cuda-graphs", "--no-piecewise-cuda-graphs", "--no-async-scheduling")
+    assert not c.piecewise_cuda_graphs and not c.enable_chunked_prefill and not c.async_scheduling
+    c = cfg("--device", "cuda", "--enable-chunked-prefill")
+    assert c.enable_chunked_prefill and c.max_num_batched_tokens == 2048
+    # a big checkpoint (sparse file: size without the bytes) turns chunked prefill on even eagerly
     big = tmp_path / "model-00002.safetensors"
     with open(big, "wb") as f:
         f.truncate(5 * 1024 ** 3)
