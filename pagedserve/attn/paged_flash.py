@@ -95,6 +95,52 @@ def block_tables_nonneg(meta: AttnMetadata) -> Tensor:
     return meta.block_tables_nonneg
 
 
+class MixedPlan:
+    """Per-step index plan for `_prefill_kvcache`: which packed rows are single-query decode
+    rows (batched into one call) and which are multi-query prefill rows (padded among
+    themselves), with each group's context lengths and block tables already gathered."""
+
+    __slots__ = ("dec_tokens", "dec_ctx", "dec_bt", "pre_rows", "pre_max_q", "pre_ctx", "pre_bt")
+
+    def __init__(self) -> None:
+        self.dec_tokens: Tensor | None = None
+        self.dec_ctx: Tensor | None = None
+        self.dec_bt: Tensor | None = None
+        self.pre_rows: list[tuple[int, int]] = []  # (packed start, query_len) per prefill seq
+        self.pre_max_q = 0
+        self.pre_ctx: Tensor | None = None
+        self.pre_bt: Tensor | None = None
+
+    @classmethod
+    def build(cls, meta: AttnMetadata, device: torch.device) -> "MixedPlan":
+        plan = cls()
+        ctx = context_lens_tensor(meta, device)
+        bt = block_tables_nonneg(meta)
+        dec_tokens: list[int] = []
+        dec_seqs: list[int] = []
+        pre_seqs: list[int] = []
+        start = 0
+        for i, n in enumerate(meta.query_lens):
+            if n == 1:
+                dec_tokens.append(start)
+                dec_seqs.append(i)
+            else:
+                pre_seqs.append(i)
+                plan.pre_rows.append((start, n))
+            start += n
+        if dec_seqs:
+            idx = torch.tensor(dec_seqs, dtype=torch.long, device=device)
+            plan.dec_tokens = torch.tensor(dec_tokens, dtype=torch.long, device=device)
+            plan.dec_ctx = ctx.index_select(0, idx)
+            plan.dec_bt = bt.index_select(0, idx)
+        if pre_seqs:
+            idx = torch.tensor(pre_seqs, dtype=torch.long, device=device)
+            plan.pre_max_q = max(n for _, n in plan.pre_rows)
+            plan.pre_ctx = ctx.index_select(0, idx)
+            plan.pre_bt = bt.index_select(0, idx)
+        return plan
+
+
 class PagedFlashAttentionBackend(AttentionBackend):
     """PagedAttention over a PagedKVCache computed by flash-attn kernels."""
 
@@ -163,29 +209,45 @@ class PagedFlashAttentionBackend(AttentionBackend):
             softmax_scale=self.scale, causal=True,
         )
 
-    # ---- prefill with cached prefix: pad queries, attend through the paged cache ------
+    # ---- prefill with cached context: decode rows batched, prefill rows padded ---------
     def _prefill_kvcache(self, layer_idx: int, q: Tensor, meta: AttnMetadata) -> Tensor:
-        """Queries are LEFT-padded to [B, max_q, H, D].
+        """A step where some sequences attend through the cache with query_len > 1 (a
+        chunked-prefill chunk or a cached-prefix prompt), usually alongside many decode rows.
 
-        flash's bottom-right causal alignment maps padded row r to key
-        `context_lens[b] - max_q + r`; with real queries occupying the last
-        `query_lens[b]` rows this is exactly `context_lens[b] - query_lens[b] + j` for
-        real query j. The leading padding rows attend to (or are masked from) earlier keys
-        and are discarded.
+        Rows with query_len == 1 go through one batched decode call. The few rows with
+        query_len > 1 are LEFT-padded among themselves to [P, max_q, H, D] and attend with
+        flash's bottom-right causal alignment: padded row r maps to key
+        `context_lens[b] - max_q + r`, so real query j lands on `context_lens[b] -
+        query_lens[b] + j`; the leading padding rows are discarded. Padding *every*
+        sequence to max_q (the first version) allocated [B, max_q, H, D] per layer and
+        computed attention for B x max_q queries: at 200 decodes plus one 512-token chunk
+        that was 100k padded queries per layer, and the chunked-prefill ablation ran 2x
+        slower than prefill-priority because of it.
         """
-        batch, max_q = meta.num_seqs, max(meta.query_lens)
-        qpad = q.new_zeros((batch, max_q, self.num_heads, self.head_dim))
-        cu = meta.cu_seqlens_q.tolist()
-        for b, n in enumerate(meta.query_lens):
-            qpad[b, max_q - n:] = q[cu[b]:cu[b + 1]]
-        out = self._kvcache_fn(
-            qpad, self.cache.k_cache[layer_idx], self.cache.v_cache[layer_idx],
-            k=None, v=None,
-            cache_seqlens=context_lens_tensor(meta, self.cache.device),
-            block_table=block_tables_nonneg(meta),
-            softmax_scale=self.scale, causal=True,
-        )
-        return torch.cat([out[b, max_q - n:] for b, n in enumerate(meta.query_lens)], dim=0)
+        plan = meta.mixed_plan
+        if plan is None:
+            plan = meta.mixed_plan = MixedPlan.build(meta, self.cache.device)
+        out = q.new_empty(q.shape)
+        if plan.dec_tokens is not None:
+            nd = plan.dec_tokens.numel()
+            o = self._kvcache_fn(
+                q.index_select(0, plan.dec_tokens).view(nd, 1, self.num_heads, self.head_dim),
+                self.cache.k_cache[layer_idx], self.cache.v_cache[layer_idx], k=None, v=None,
+                cache_seqlens=plan.dec_ctx, block_table=plan.dec_bt,
+                softmax_scale=self.scale, causal=True)
+            out.index_copy_(0, plan.dec_tokens, o.view(nd, self.num_heads, self.head_dim))
+        if plan.pre_rows:
+            np_, max_q = len(plan.pre_rows), plan.pre_max_q
+            qpad = q.new_zeros((np_, max_q, self.num_heads, self.head_dim))
+            for i, (start, n) in enumerate(plan.pre_rows):
+                qpad[i, max_q - n:] = q[start:start + n]
+            o = self._kvcache_fn(
+                qpad, self.cache.k_cache[layer_idx], self.cache.v_cache[layer_idx], k=None, v=None,
+                cache_seqlens=plan.pre_ctx, block_table=plan.pre_bt,
+                softmax_scale=self.scale, causal=True)
+            for i, (start, n) in enumerate(plan.pre_rows):
+                out[start:start + n] = o[i, max_q - n:]
+        return out
 
     # ---- lifecycle ---------------------------------------------------------------------
     def free_sequence(self, seq_id: int) -> None:

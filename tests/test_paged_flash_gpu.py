@@ -179,3 +179,21 @@ def test_paged_torch_and_flash_agree_batch32_decode():
             a = hf.backend.forward(layer, q, k, v, mf)
             b = ht.backend.forward(layer, q, k, v, mt)
             torch.testing.assert_close(a.float(), b.float(), atol=ATOL, rtol=RTOL)
+
+
+def test_mixed_step_decode_rows_plus_chunk():
+    """A chunked-prefill style step: many sequences with query_len 1 and a couple mid-prefill
+    with query_len > 1, all attending through the cache. Exercises MixedPlan: the decode
+    rows go through one batched call, the chunk rows through a small padded call."""
+    h = Harness(num_blocks=64, seed=4)
+    seqs = list(range(6))
+    h.step(seqs, [300, 40, 20, 260, 70, 10], is_prefill=True)   # everyone gets a context
+    # decode rows for 0,1,2,5 (1 token each) + chunks of 33 and 257 for 3 and 4, mixed
+    meta = h.step(seqs, [1, 1, 1, 33, 257, 1], is_prefill=True)
+    assert meta.mixed_plan is not None
+    assert meta.mixed_plan.dec_tokens.tolist() == [0, 1, 2, 293]
+    assert meta.mixed_plan.pre_rows == [(3, 33), (36, 257)] and meta.mixed_plan.pre_max_q == 257
+    h.step(seqs, [1] * 6, is_prefill=False)                       # plain decode after it
+    # all-prefill chunks (no decode rows) and a single decode row alone also take the path
+    h.step([0, 3], [5, 7], is_prefill=True)
+    h.step([1], [1], is_prefill=True)

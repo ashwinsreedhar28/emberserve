@@ -50,6 +50,9 @@ class AttnMetadata:
     # [batch, max_blocks] int32. flash-attn may dereference padding entries of the last
     # KV tile (their values are masked out), so they must point at real memory.
     block_tables_nonneg: torch.Tensor | None = None
+    # Backend scratch for a mixed step (decode rows + prefill rows): built once per step by
+    # the first layer, reused by the rest. See paged_flash.MixedPlan.
+    mixed_plan: object | None = None
 
     @property
     def num_seqs(self) -> int:
