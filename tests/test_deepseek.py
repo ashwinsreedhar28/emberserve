@@ -69,10 +69,13 @@ def reference_attention(attn: MLAAttention, x: torch.Tensor, positions: torch.Te
     """HF semantics for one sequence `x: [T, hidden]`: materialize k_nope/v per head, apply
     DeepSeek's interleaved RoPE, dense causal softmax attention."""
     t = x.shape[0]
-    q = attn.q_proj(x) if hasattr(attn, "q_proj") else attn.q_b_proj(attn.q_a_layernorm(attn.q_a_proj(x)))
+    w = attn.qkv_a_proj.weight  # HF's q_proj (or q_a_proj) and kv_a_proj_with_mqa, stacked
+    q = x @ w[:attn.q_size].T
+    if attn.q_lora_rank is not None:
+        q = attn.q_b_proj(attn.q_a_layernorm(q))
     q = q.view(t, H, NOPE + ROPE)
     q_nope, q_pe = q[..., :NOPE], q[..., NOPE:]
-    ckv = attn.kv_a_proj_with_mqa(x)
+    ckv = x @ w[attn.q_size:].T
     c, k_pe = ckv[:, :KVR], ckv[:, KVR:]
     c = attn.kv_a_layernorm(c)
     kv = attn.kv_b_proj(c).view(t, H, NOPE + VH)
@@ -183,8 +186,10 @@ def test_config_from_hf_dir(tmp_path: Path):
 def test_checkpoint_round_trip(tmp_path: Path):
     ref = tiny_model(seed=7)
     sd = hf_state_dict(ref)
-    assert "model.layers.0.self_attn.q_proj.weight" in sd  # not fused for deepseek
+    assert "model.layers.0.self_attn.q_proj.weight" in sd  # HF names out of the fused qkv_a_proj
     assert "model.layers.0.self_attn.kv_a_proj_with_mqa.weight" in sd
+    assert sd["model.layers.0.self_attn.q_proj.weight"].shape == (H * (NOPE + ROPE), HID)
+    assert sd["model.layers.0.self_attn.kv_a_proj_with_mqa.weight"].shape == (KVR + ROPE, HID)
     assert "model.layers.1.mlp.experts.3.down_proj.weight" in sd
     assert "model.layers.1.mlp.shared_experts.gate_proj.weight" in sd
     assert "model.layers.0.mlp.gate_proj.weight" in sd  # dense first layer
@@ -204,8 +209,8 @@ def test_checkpoint_round_trip(tmp_path: Path):
     sd2 = hf_state_dict(loaded)  # ... and the HF view is unchanged by it
     for name, t in sd.items():
         assert torch.equal(t, sd2[name]), name
-    assert not torch.equal(ref.model.layers[0].self_attn.q_proj.weight,
-                           loaded.model.layers[0].self_attn.q_proj.weight)
+    assert not torch.equal(ref.model.layers[0].self_attn.qkv_a_proj.weight,
+                           loaded.model.layers[0].self_attn.qkv_a_proj.weight)
     ids = list(range(2, 12))
     a = LLM.from_engine(make_engine(ref)).generate([ids], SamplingParams.greedy(6, ignore_eos=True))[0]
     b = LLM.from_engine(make_engine(loaded)).generate([ids], SamplingParams.greedy(6, ignore_eos=True))[0]
@@ -215,6 +220,35 @@ def test_checkpoint_round_trip(tmp_path: Path):
 def test_scale_is_qk_head_dim():
     attn = tiny_model(seed=8, layers=1, moe=False).model.layers[0].self_attn
     assert math.isclose(attn.softmax_scale, (NOPE + ROPE) ** -0.5)
+
+
+@pytest.mark.parametrize("q_lora_rank", [None, 24])
+def test_qkv_a_round_trip_and_fold_with_q_lora(q_lora_rank, tmp_path: Path):
+    """The fused first projection loads from HF's q_proj / q_a_proj + kv_a_proj_with_mqa
+    names and exports them back; the rope fold lands in q_b_proj when q is low-rank."""
+    ref = tiny_model(seed=9, q_lora_rank=q_lora_rank, layers=1, moe=False)
+    sd = hf_state_dict(ref)
+    q_name = "q_a_proj" if q_lora_rank else "q_proj"
+    assert f"model.layers.0.self_attn.{q_name}.weight" in sd
+    assert "model.layers.0.self_attn.qkv_a_proj.weight" not in sd
+    hf = {"model_type": "deepseek_v3", "vocab_size": 256, "hidden_size": HID, "intermediate_size": 96,
+          "num_hidden_layers": 1, "num_attention_heads": H, "num_key_value_heads": H,
+          "max_position_embeddings": 256, "rms_norm_eps": 1e-6, "rope_theta": 10000.0,
+          "tie_word_embeddings": True, "eos_token_id": 1, "attention_bias": False,
+          "q_lora_rank": q_lora_rank, "kv_lora_rank": KVR, "qk_nope_head_dim": NOPE,
+          "qk_rope_head_dim": ROPE, "v_head_dim": VH, "first_k_dense_replace": 0}
+    (tmp_path / "config.json").write_text(json.dumps(hf))
+    save_file({k: v.detach().clone().contiguous() for k, v in sd.items() if k != "lm_head.weight"},
+              str(tmp_path / "model.safetensors"))
+    loaded = load_model(tmp_path)
+    assert loaded.rope_folded
+    for name, t in hf_state_dict(loaded).items():
+        assert torch.equal(t, sd[name]), name
+    ids = list(range(2, 20))
+    sp = SamplingParams.greedy(5, ignore_eos=True)
+    a = LLM.from_engine(make_engine(ref)).generate([ids], sp)[0].output_token_ids
+    b = LLM.from_engine(make_engine(loaded)).generate([ids], sp)[0].output_token_ids
+    assert a == b
 
 
 def test_rope_fold_is_exact():
@@ -235,11 +269,11 @@ def test_rope_fold_is_exact():
 
     before_logits = prompt_logits()
     before = LLM.from_engine(make_engine(m)).generate([ids], sp)[0].output_token_ids
-    w0 = m.model.layers[0].self_attn.q_proj.weight.clone()
+    w0 = m.model.layers[0].self_attn.qkv_a_proj.weight.clone()
     m.fold_rope_permutation()
     assert m.rope_folded
-    assert not torch.equal(w0, m.model.layers[0].self_attn.q_proj.weight)
+    assert not torch.equal(w0, m.model.layers[0].self_attn.qkv_a_proj.weight)
     torch.testing.assert_close(prompt_logits(), before_logits, atol=1e-5, rtol=1e-5)
     assert LLM.from_engine(make_engine(m)).generate([ids], sp)[0].output_token_ids == before
     m.fold_rope_permutation(False)
-    assert not m.rope_folded and torch.equal(w0, m.model.layers[0].self_attn.q_proj.weight)
+    assert not m.rope_folded and torch.equal(w0, m.model.layers[0].self_attn.qkv_a_proj.weight)

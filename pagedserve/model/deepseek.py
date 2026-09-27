@@ -6,6 +6,8 @@ Attention (HF `DeepseekV3Attention`):
     q      = q_proj(x)                              or  q_b_proj(q_a_layernorm(q_a_proj(x)))
     q_nope, q_pe = split(q.view(H, qk_nope + qk_rope))
     ckv    = kv_a_proj_with_mqa(x)  ->  c (kv_lora_rank), k_pe (qk_rope, one per token, all heads)
+    (q_proj / q_a_proj and kv_a_proj_with_mqa both read x, so they are one fused GEMM here:
+     `qkv_a_proj` with rows [q | c | k_pe]; the loader splits the HF tensors into it)
     c      = kv_a_layernorm(c)
     k_pe, q_pe rotated with RoPE in DeepSeek's interleaved-pair convention
     cache row = [c | k_pe]; k_nope and v are W_UK c / W_UV c from kv_b_proj, never stored
@@ -57,13 +59,14 @@ class MLAAttention(nn.Module):
         self.kv_lora_rank = m.kv_lora_rank
         self.q_head_dim = m.qk_head_dim
         hidden = config.hidden_size
-        if m.q_lora_rank is None:
-            self.q_proj = nn.Linear(hidden, self.num_heads * self.q_head_dim, bias=False)
-        else:
-            self.q_a_proj = nn.Linear(hidden, m.q_lora_rank, bias=False)
+        self.q_lora_rank = m.q_lora_rank
+        # rows of the fused first projection: [q (or q_a) | c | k_pe]
+        self.q_size = self.num_heads * self.q_head_dim if m.q_lora_rank is None else m.q_lora_rank
+        self.qkv_a_proj = nn.Linear(hidden, self.q_size + m.kv_lora_rank + m.qk_rope_head_dim,
+                                    bias=False)
+        if m.q_lora_rank is not None:
             self.q_a_layernorm = RMSNorm(m.q_lora_rank, config.rms_norm_eps)
             self.q_b_proj = nn.Linear(m.q_lora_rank, self.num_heads * self.q_head_dim, bias=False)
-        self.kv_a_proj_with_mqa = nn.Linear(hidden, m.kv_lora_rank + m.qk_rope_head_dim, bias=False)
         self.kv_a_layernorm = RMSNorm(m.kv_lora_rank, config.rms_norm_eps)
         self.kv_b_proj = nn.Linear(m.kv_lora_rank, self.num_heads * (m.qk_nope_head_dim + m.v_head_dim),
                                    bias=False)
@@ -75,12 +78,13 @@ class MLAAttention(nn.Module):
 
     # ---- rope layout folded into the projections -------------------------------------
     def _rope_rows(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """(q rope rows over all heads, k rope rows, the halves permutation of one head)."""
+        """(q rope rows over all heads in the weight that emits q, k rope rows in the fused
+        first projection, the halves permutation of one head)."""
         dr = self.qk_rope
         per_head = torch.arange(self.qk_nope, self.q_head_dim)
         q_rows = (torch.arange(self.num_heads)[:, None] * self.q_head_dim + per_head[None, :]).reshape(-1)
-        k_rows = torch.arange(self.kv_lora_rank, self.kv_lora_rank + dr)
-        return q_rows, k_rows, halves_permutation(dr)
+        k0 = self.q_size + self.kv_lora_rank
+        return q_rows, torch.arange(k0, k0 + dr), halves_permutation(dr)
 
     def fold_rope_permutation(self, fold: bool = True) -> None:
         """Move `interleave_to_halves` into the weights: permuting the rope rows of the q
@@ -94,10 +98,12 @@ class MLAAttention(nn.Module):
         q_rows, k_rows, perm = self._rope_rows()
         if not fold:
             perm = torch.argsort(perm)
-        q_weight = self.q_proj.weight if hasattr(self, "q_proj") else self.q_b_proj.weight
+        # q comes straight out of the fused projection (rows [0, q_size)) without q_lora,
+        # out of q_b_proj with it; k_pe always out of the fused projection.
+        q_weight = self.qkv_a_proj.weight if self.q_lora_rank is None else self.q_b_proj.weight
         per_head_perm = (torch.arange(self.num_heads)[:, None] * self.qk_rope + perm[None, :]).reshape(-1)
         _permute_rows(q_weight, q_rows, per_head_perm)
-        _permute_rows(self.kv_a_proj_with_mqa.weight, k_rows, perm)
+        _permute_rows(self.qkv_a_proj.weight, k_rows, perm)
         self.rope_folded = fold
 
     def up_projections(self) -> tuple[torch.Tensor, torch.Tensor]:
@@ -108,13 +114,12 @@ class MLAAttention(nn.Module):
 
     def forward(self, hidden: torch.Tensor, backend, meta: AttnMetadata) -> torch.Tensor:
         n = hidden.shape[0]
-        if hasattr(self, "q_proj"):
-            q = self.q_proj(hidden)
-        else:
-            q = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(hidden)))
+        qkv = self.qkv_a_proj(hidden)
+        q, ckv = qkv.split([self.q_size, self.kv_lora_rank + self.qk_rope], dim=-1)
+        if self.q_lora_rank is not None:
+            q = self.q_b_proj(self.q_a_layernorm(q))
         q = q.view(n, self.num_heads, self.q_head_dim)
         q_nope, q_pe = q.split([self.qk_nope, self.qk_rope], dim=-1)
-        ckv = self.kv_a_proj_with_mqa(hidden)
         c, k_pe = ckv.split([self.kv_lora_rank, self.qk_rope], dim=-1)
         c = self.kv_a_layernorm(c)
         if self.rope_folded:  # the projections already emit halves order: rope on the views

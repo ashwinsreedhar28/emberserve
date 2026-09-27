@@ -31,6 +31,14 @@ _FUSED = {
     "shared_experts.gate_proj": ("shared_experts.gate_up_proj", "gate"),
     "shared_experts.up_proj": ("shared_experts.gate_up_proj", "up"),
 }
+# DeepSeek latent attention: q_proj (or q_a_proj) and kv_a_proj_with_mqa both read the hidden
+# state, so they are one fused `qkv_a_proj` with rows [q | c | k_pe]; `_shard_view` splits it
+# by the config's latent geometry.
+_FUSED_MLA = {
+    "self_attn.q_proj": ("self_attn.qkv_a_proj", "mla_q"),
+    "self_attn.q_a_proj": ("self_attn.qkv_a_proj", "mla_q"),
+    "self_attn.kv_a_proj_with_mqa": ("self_attn.qkv_a_proj", "mla_kv"),
+}
 # MoE routed experts: `...mlp.experts.<e>.{gate,up,down}_proj.weight` land in the stacked
 # `...mlp.experts_gate_up [E, 2I, H]` / `...mlp.experts_down [E, H, I]` (model/moe.py).
 _EXPERT_RE = re.compile(r"^(?P<prefix>.*\.mlp)\.experts\.(?P<e>\d+)\.(?P<part>gate|up|down)_proj\.weight$")
@@ -52,9 +60,13 @@ def hf_to_local(name: str, model_type: str = "qwen2") -> tuple[str, Shard] | Non
         stacked = "experts_down" if part == "down" else "experts_gate_up"
         return f"{m['prefix']}.{stacked}", ("expert", e, part)
     head, _, leaf = name.rpartition(".")  # leaf: weight | bias
-    fuse_attention = not model_type.startswith("deepseek")
+    deepseek = model_type.startswith("deepseek")
+    if deepseek:
+        for hf_suffix, (local_suffix, shard) in _FUSED_MLA.items():
+            if head.endswith(hf_suffix):
+                return f"{head[:-len(hf_suffix)]}{local_suffix}.{leaf}", shard
     for hf_suffix, (local_suffix, shard) in _FUSED.items():
-        if not fuse_attention and hf_suffix.startswith("self_attn."):
+        if deepseek and hf_suffix.startswith("self_attn."):
             continue
         if head.endswith(hf_suffix):
             return f"{head[:-len(hf_suffix)]}{local_suffix}.{leaf}", shard
@@ -81,6 +93,11 @@ def _shard_view(config: ModelConfig, param: torch.Tensor, shard: Shard) -> torch
     if shard in ("gate", "up"):  # fused gate_up: rows split in half, whatever the width
         half = param.shape[0] // 2
         return param[:half] if shard == "gate" else param[half:]
+    if shard in ("mla_q", "mla_kv"):
+        assert config.mla is not None
+        kv_rows = config.mla.kv_lora_rank + config.mla.qk_rope_head_dim
+        q_rows = param.shape[0] - kv_rows
+        return param[:q_rows] if shard == "mla_q" else param[q_rows:]
     q = config.num_attention_heads * config.head_dim
     kv = config.num_key_value_heads * config.head_dim
     rows = {"q": slice(0, q), "k": slice(q, q + kv), "v": slice(q + kv, q + 2 * kv)}[shard]
@@ -96,13 +113,16 @@ def _expected_shards(local: str, param: torch.Tensor) -> list[Shard]:
         return [("expert", e, "down") for e in range(param.shape[0])]
     if head.endswith("qkv_proj"):
         return ["q", "k", "v"]
+    if head.endswith("qkv_a_proj"):
+        return ["mla_q", "mla_kv"]
     if head.endswith("gate_up_proj"):
         return ["gate", "up"]
     return [None]
 
 
-def _hf_name(local: str, shard: Shard) -> str:
-    """Inverse of `hf_to_local` for error messages and `hf_state_dict`."""
+def _hf_name(local: str, shard: Shard, config: ModelConfig | None = None) -> str:
+    """Inverse of `hf_to_local` for error messages and `hf_state_dict`. `config` decides
+    whether an MLA q shard was `q_proj` or `q_a_proj` (low-rank q)."""
     if shard is None:
         return local
     if isinstance(shard, tuple):
@@ -110,6 +130,12 @@ def _hf_name(local: str, shard: Shard) -> str:
         prefix = local[:local.rindex(".mlp.") + len(".mlp")]
         return f"{prefix}.experts.{e}.{part}_proj.weight"
     head, _, leaf = local.rpartition(".")
+    if shard in ("mla_q", "mla_kv"):
+        base = head[:-len("self_attn.qkv_a_proj")]
+        if shard == "mla_kv":
+            return f"{base}self_attn.kv_a_proj_with_mqa.{leaf}"
+        low_rank = config is not None and config.mla is not None and config.mla.q_lora_rank is not None
+        return f"{base}self_attn.{'q_a_proj' if low_rank else 'q_proj'}.{leaf}"
     for hf_suffix, (local_suffix, sh) in _FUSED.items():
         if sh == shard and head.endswith(local_suffix):
             return f"{head[:-len(local_suffix)]}{hf_suffix}.{leaf}"
@@ -128,7 +154,7 @@ def hf_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
         for local, tensor in model.state_dict().items():
             for shard in _expected_shards(local, tensor):
                 t = _shard_view(config, tensor, shard)
-                out[_hf_name(local, shard)] = t.clone() if folded else t
+                out[_hf_name(local, shard, config)] = t.clone() if folded else t
     finally:
         if folded:
             model.fold_rope_permutation(True)
@@ -176,7 +202,7 @@ def load_hf_weights(model: nn.Module, model_dir: str | os.PathLike,
                     loaded.add((local, shard))
 
     tied = getattr(config, "tie_word_embeddings", False)
-    missing = [_hf_name(k, sh) for k, t in state.items() for sh in _expected_shards(k, t)
+    missing = [_hf_name(k, sh, config) for k, t in state.items() for sh in _expected_shards(k, t)
                if not (tied and k == "lm_head.weight") and (k, sh) not in loaded]
     if missing:
         raise KeyError(f"parameters never loaded from {model_dir}: {missing}")

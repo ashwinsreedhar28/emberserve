@@ -67,10 +67,11 @@ python scripts/dump_golden.py --model models/Moonlight-16B-A3B-Instruct --out go
 python scripts/check_golden.py --model models/Moonlight-16B-A3B-Instruct --golden golden/moonlight --device cuda --dtype bfloat16 --backends mla_torch,mla_triton --block-size 16
 ```
 
-Serving it: `--attn-backend mla_triton --block-size 16 --enable-cuda-graphs` (the Triton
-MLA decode kernel and the fused MoE grouped GEMM are both captured; `PAGEDSERVE_FUSED_MOE=0`
-falls back to the per-expert loop, which was 63.6 ms per batch-1 step against 9.2 ms
-fused). Where a step's time goes, per kernel:
+Serving it: `--attn-backend mla_triton --block-size 16 --enable-cuda-graphs
+--enable-chunked-prefill --async-scheduling` (the Triton MLA decode kernel and the fused MoE
+grouped GEMM are both captured; `PAGEDSERVE_FUSED_MOE=0` falls back to the per-expert loop,
+which was 63.6 ms per batch-1 step against 7.2 ms fused). Where a step's time goes, per
+kernel (this is what found the split-K bug under graphs, README "Moonlight"):
 
 ```bash
 python scripts/profile_step.py --model models/Moonlight-16B-A3B-Instruct --device cuda --dtype bfloat16 \

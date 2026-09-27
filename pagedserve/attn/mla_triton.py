@@ -29,7 +29,7 @@ from torch import Tensor
 from pagedserve.attn.base import AttnMetadata
 from pagedserve.attn.mla_torch import mla_attention_absorbed
 from pagedserve.attn.paged_flash import block_tables_nonneg, context_lens_tensor
-from pagedserve.attn.paged_triton import _SCRATCH, _next_pow2, default_num_splits
+from pagedserve.attn.paged_triton import _SCRATCH, MAX_SPLITS, _next_pow2, num_sms, reduce_num_warps
 from pagedserve.attn.paged_triton import _kernels as _paged_kernels
 from pagedserve.config import ModelConfig
 from pagedserve.kv.cache import PagedLatentCache
@@ -54,7 +54,6 @@ def _kernel():
         stride_lb, stride_ls,
         stride_ob, stride_oh,
         stride_bt,
-        tiles_per_split,
         H: tl.constexpr, H_PAD: tl.constexpr,
         BLOCK_SIZE: tl.constexpr, TILE: tl.constexpr,
         DL: tl.constexpr, DR: tl.constexpr,
@@ -80,7 +79,8 @@ def _kernel():
         l_i = tl.zeros([H_PAD], tl.float32)
         acc = tl.zeros([H_PAD, DL], tl.float32)
 
-        num_tiles = tl.cdiv(ctx, TILE)
+        num_tiles = tl.cdiv(ctx, TILE)  # the real context: partition it, not the table width
+        tiles_per_split = tl.cdiv(num_tiles, tl.num_programs(1))
         tile_start = split * tiles_per_split
         tile_end = tl.minimum(tile_start + tiles_per_split, num_tiles)
 
@@ -152,9 +152,8 @@ def mla_decode(q_abs: Tensor | tuple[Tensor, Tensor], latent_cache: Tensor, bloc
     max_context = max_blocks * block_size
     num_tiles_max = max(1, -(-max_context // tile))
     if num_splits is None:
-        num_splits = default_num_splits(B, 1, max_context, q_c.device)
+        num_splits = mla_num_splits(B, q_c.device)
     num_splits = max(1, min(int(num_splits), num_tiles_max))
-    tiles_per_split = -(-num_tiles_max // num_splits)
     if out is None:
         out = torch.empty((B, H, DL), dtype=q_c.dtype, device=q_c.device)
     assert out.shape == (B, H, DL) and out.stride(2) == 1
@@ -170,7 +169,6 @@ def mla_decode(q_abs: Tensor | tuple[Tensor, Tensor], latent_cache: Tensor, bloc
         latent_cache.stride(0), latent_cache.stride(1),
         out.stride(0), out.stride(1),
         block_tables.stride(0),
-        tiles_per_split,
         H=H, H_PAD=h_pad, BLOCK_SIZE=block_size, TILE=tile, DL=DL, DR=DR,
         SPLIT_K=num_splits > 1, num_warps=num_warps,
     )
@@ -180,9 +178,28 @@ def mla_decode(q_abs: Tensor | tuple[Tensor, Tensor], latent_cache: Tensor, bloc
             out.stride(0), out.stride(1),
             num_splits,
             NUM_SPLITS_PAD=_next_pow2(num_splits), D=DL,
-            num_warps=1,
+            num_warps=reduce_num_warps(_next_pow2(num_splits), DL),
         )
     return out
+
+
+SPLIT_TARGET_PER_SM = 4  # programs per SM the split-K factor aims for
+
+
+def mla_num_splits(batch: int, device: torch.device) -> int:
+    """Split-K factor for the MLA kernel, from the batch size only.
+
+    One program per sequence is far too little parallelism for this kernel: each tile is
+    a real tensor-core matmul (16 heads x 576) and the tiles of one sequence run serially,
+    so a lone program on one SM is latency-bound (43 us for 20 tiles). Aim for
+    `SPLIT_TARGET_PER_SM` programs per SM, capped at `MAX_SPLITS`; the kernel partitions
+    each sequence's real tile count across the splits. `PAGEDSERVE_TRITON_SPLITS`
+    overrides for A/B runs."""
+    forced = os.environ.get("PAGEDSERVE_TRITON_SPLITS")
+    if forced:
+        return max(1, int(forced))
+    want = -(-(SPLIT_TARGET_PER_SM * num_sms(device)) // max(1, batch))
+    return max(1, min(MAX_SPLITS, want))
 
 
 class MLATritonBackend:

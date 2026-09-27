@@ -29,7 +29,11 @@ Kernel (`_paged_decode_kernel`, flash-decoding style, one pass, fp32 accumulatio
   range of tiles and writes its unnormalised `(m, l, acc)` to scratch; `_reduce_kernel`
   (grid `(B, H)`) merges the partials. This is what makes B=1 with a long context use
   more than `Hkv` SMs. `num_splits` is chosen from SHAPES only (batch, table width), never
-  from tensor values, so a captured CUDA graph replays the same launch every time.
+  from tensor values, so a captured CUDA graph replays the same launch every time; the
+  tile range of each split is computed INSIDE the kernel from the sequence's real context
+  length (under graphs the table is padded to max_model_len, and partitioning that
+  maximum on the host left every real tile to split 0: 43 us per layer at batch 1 for a
+  320-token context on Moonlight).
 * `GROUPS_PAD` is `groups` rounded up to a power of two (Qwen2.5-0.5B has 7 groups);
   padded query rows load zeros and are never stored.
 
@@ -102,7 +106,6 @@ def _kernels() -> dict:
         stride_kb, stride_ks, stride_kh,
         stride_ob, stride_oh,
         stride_bt,
-        tiles_per_split,
         GROUPS: tl.constexpr, GROUPS_PAD: tl.constexpr,
         BLOCK_SIZE: tl.constexpr, TILE: tl.constexpr, D: tl.constexpr,
         SPLIT_K: tl.constexpr, USE_DOT: tl.constexpr,
@@ -131,7 +134,11 @@ def _kernels() -> dict:
         l_i = tl.zeros([GROUPS_PAD], tl.float32)
         acc = tl.zeros([GROUPS_PAD, D], tl.float32)
 
+        # Partition the REAL context (a device value) across the splits: under CUDA graphs
+        # the block table is padded to max_model_len, so a host-side partition of the
+        # shape-derived maximum would hand every real tile to split 0.
         num_tiles = tl.cdiv(ctx, TILE)
+        tiles_per_split = tl.cdiv(num_tiles, tl.num_programs(2))
         tile_start = split * tiles_per_split
         tile_end = tl.minimum(tile_start + tiles_per_split, num_tiles)
 
@@ -344,7 +351,6 @@ def paged_attention_decode(q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ta
     if num_splits is None:
         num_splits = default_num_splits(B, Hkv, max_context, q.device)
     num_splits = max(1, min(int(num_splits), num_tiles_max))
-    tiles_per_split = -(-num_tiles_max // num_splits)
 
     if out is None:
         out = torch.empty_like(q)
@@ -362,7 +368,6 @@ def paged_attention_decode(q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ta
         k_cache.stride(0), k_cache.stride(1), k_cache.stride(2),
         out.stride(0), out.stride(1),
         block_tables.stride(0),
-        tiles_per_split,
         GROUPS=groups, GROUPS_PAD=groups_pad,
         BLOCK_SIZE=block_size, TILE=tile, D=D,
         SPLIT_K=num_splits > 1, USE_DOT=use_dot,
@@ -374,9 +379,15 @@ def paged_attention_decode(q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ta
             out.stride(0), out.stride(1),
             num_splits,
             NUM_SPLITS_PAD=_next_pow2(num_splits), D=D,
-            num_warps=1,
+            num_warps=reduce_num_warps(_next_pow2(num_splits), D),
         )
     return out
+
+
+def reduce_num_warps(num_splits_pad: int, d: int) -> int:
+    """Warps for `_reduce_kernel`: its `[NUM_SPLITS_PAD, D]` fp32 tile lives in registers,
+    so grow the warp count with the tile (1 warp up to 2k elements, 8 warps at 16k+)."""
+    return max(1, min(8, (num_splits_pad * d) // 2048))
 
 
 # =====================================================================================

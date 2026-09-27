@@ -335,6 +335,36 @@ work with step N on the GPU (async scheduling), which pagedserve does not yet. T
 forward at 1.9 ms sits within ~2x of the weight-read floor (~1 GB of fp16 weights plus the
 272 MB `lm_head` per step on a 1.5 TB/s part); at 7B the forward *is* the floor.
 
+### Moonlight: MLA + MoE on the A100
+
+Moonlight is the DeepSeek-V3 architecture (Kimi's lab's 16B / 3B-active model) and runs
+through the from-scratch latent-attention + MoE path; it matches HF's greedy tokens through
+both the torch and the Triton backends. Its decode step is a different animal from the
+dense models': 27 layers of small routed GEMMs plus a 576-wide attention row, so the
+per-step *launch count* and *parallelism* decide it, not the weight read. Per-kernel GPU
+time from `scripts/profile_step.py --kernels` (`results/profile_moonlight_v2.json`):
+
+| stage | commits | batch-1 step | what changed |
+|---|---|---:|---|
+| per-expert loop MoE | 5267e71 | 63.6 ms | one host sync (`bincount` sizing its output) + ~6 launches per active expert per layer |
+| fused MoE: grouped GEMM over a block-aligned layout | 49a2b39, 6775437 | 9.4 ms | no host syncs, captures into CUDA graphs with the Triton MLA kernel |
+| router + alignment as one Triton kernel each, rope permutation folded into weights, addmm epilogue, dual-pointer q | 480b029 … 467b53a | 7.2 ms | ~30 launches per MoE layer → 740 per step |
+
+At 7.2 ms the step is 6.7 ms of kernels: grouped GEMM 1.9 ms (52 calls at 71% of HBM
+bandwidth for the 6 touched experts, fine), the MLA decode kernel 1.15 ms (**43 µs per layer
+for a 320-token context, which should be ~5**), cuBLAS gemv for q/kv_a/o_proj 0.8 ms, the
+rest under 3% each. The MLA kernel's problem was the split-K partition: under CUDA graphs the
+block table is padded to `max_model_len`, so a host-side split of the shape-derived context
+gave split 0 every real tile and one program walked 20 tiles serially. The kernel now
+partitions the real context length on the device (same fix applied to the dense Triton
+kernel), and q_proj + kv_a_proj_with_mqa are one fused GEMM; the re-measure is pending.
+
+The first HTTP sweep (prefill-priority, synchronous scheduling) lands at 76% of vLLM at
+saturation (2,457 vs 3,223 tok/s) and 10.6 vs 7.1 ms TPOT at 1 req/s, with the gap
+widening at 8 req/s (26 vs 13 ms) for the same reason as at 7B: every arrival's prefill
+stalls every decoder. Chunked prefill on the MLA path and async scheduling both landed after
+that run.
+
 ### What the numbers taught us
 
 * **Launch overhead dominates a 0.5B model, then kernel count does.** The 4090 decode step
@@ -375,17 +405,16 @@ prompt ids drawn from each model's own vocabulary.
 | Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **13,945 / 16,269 (86%)** | 2.6 / 2.1 ms |
 | Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | **3,092 / 3,188 (97%)** | 13.2 / 10.6 ms |
 | DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | 2,519 / 2,823 (89%) ¹ | 19.0 / 12.2 ms ¹ |
-| Moonshot Moonlight-16B-A3B-Instruct | deepseek_v3, 27L, MLA (kv_lora 512 + rope 64), 64 experts top-6 + 2 shared, 3B active | all tokens (bf16; 2–3 tie-breaks inside noise, both paths) | 9.2 ms (`mla_triton` + fused MoE + graphs; 63.6 with the loop MoE) | ~3 ms (3B active + 0.7 GB lm_head) | pending / 3,223 | pending / 13.4 ms |
+| Moonshot Moonlight-16B-A3B-Instruct | deepseek_v3, 27L, MLA (kv_lora 512 + rope 64), 64 experts top-6 + 2 shared, 3B active | all tokens (bf16; 2–3 tie-breaks inside noise, both paths) | 7.2 ms ² | ~3 ms (3B active + 0.7 GB lm_head) | 2,457 / 3,223 (76%) ³ | 26.3 / 13.4 ms ³ |
 
 ¹ measured with prefill-priority scheduling and the in-process engine; the 0.5B and 7B rows use the current CUDA defaults (engine process, chunked prefill with a 2048-token cap).
+² whole decode step at batch 1 (`mla_triton` + fused MoE + CUDA graphs): 63.6 ms with the per-expert loop, 9.4 with the grouped GEMM, 7.2 after the routing/alignment kernels; vLLM's TPOT at 1 req/s is 7.1 ms. See [Moonlight](#moonlight-mla--moe-on-the-a100).
+³ first sweep: prefill-priority, synchronous scheduling; the chunked-prefill + async-scheduling run is pending.
 
 At 7–8B the decode step is the weight read: 15–16 GB of fp16 at ~1.5 TB/s is 10–11 ms, and
 both engines land there at batch 1. The CPU-side costs that decide the 0.5B result are
 ~10% of the step at this size, and moving the engine to its own process changed nothing
-measurable at 7B (2,832 → 2,859 tok/s). Moonlight is the DeepSeek-V3 architecture (Kimi's
-lab's 16B/3B-active model): it runs through the from-scratch MLA + MoE path and matches
-HF's greedy tokens; its serving numbers wait on the Triton latent-attention kernel, since
-flash-attn cannot take the 576-wide absorbed key. What did matter at 7B was *scheduling*: a 7B
+measurable at 7B (2,832 → 2,859 tok/s). What did matter at 7B was *scheduling*: a 7B
 prefill of a 270-token prompt is ~30 ms of compute-bound work, and prefill-priority runs
 one for every arrival while every decoder waits, so TPOT at 16 req/s was 24.8 ms against
 vLLM's 11.5. Chunked prefill (decode rows and a prompt chunk in one step) brings that to
