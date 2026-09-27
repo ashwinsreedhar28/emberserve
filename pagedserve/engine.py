@@ -33,7 +33,7 @@ from pagedserve.model.weights import load_model
 from pagedserve.sampling import Sampler, check_stop
 from pagedserve.sched.request import FinishReason, Request, RequestOutput, SamplingParams
 from pagedserve.sched.scheduler import Scheduler, SchedulerOutput
-from pagedserve.tokenizer import IncrementalDetokenizer, Tokenizer
+from pagedserve.tokenizer import IncrementalDetokenizer, Tokenizer, has_tokenizer
 
 
 @dataclass
@@ -219,7 +219,7 @@ class LLMEngine:
         model = load_model(model_dir, device=engine_config.device, dtype=engine_config.dtype)
         model_config = ModelConfig.from_hf_dir(model_dir)
         tokenizer = None
-        if load_tokenizer and (Path(model_dir) / "tokenizer.json").exists():
+        if load_tokenizer and has_tokenizer(model_dir):
             try:
                 tokenizer = Tokenizer(model_dir)
             except ImportError:

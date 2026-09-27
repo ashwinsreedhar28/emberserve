@@ -212,9 +212,9 @@ def build_app_from_args(model_dir: str, engine_config: EngineConfig,
 
         from pagedserve.server.async_engine import AsyncEngineCoreClient
         from pagedserve.server.engine_core import EngineSpec
-        from pagedserve.tokenizer import Tokenizer
+        from pagedserve.tokenizer import Tokenizer, has_tokenizer
 
-        tokenizer = Tokenizer(model_dir) if (Path(model_dir) / "tokenizer.json").exists() else None
+        tokenizer = Tokenizer(model_dir) if has_tokenizer(model_dir) else None
         client = AsyncEngineCoreClient(EngineSpec(engine_config, model_dir=model_dir), tokenizer)
         return create_app(client, served_model_name or model_dir)
     engine = LLMEngine.from_pretrained(model_dir, engine_config)

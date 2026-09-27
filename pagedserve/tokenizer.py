@@ -9,15 +9,31 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def has_tokenizer(model_dir: str | Path) -> bool:
+    """Whether a snapshot carries a tokenizer: a fast `tokenizer.json`, or a
+    `tokenizer_config.json` (sentencepiece / tiktoken tokenizers, possibly with their own
+    code alongside)."""
+    d = Path(model_dir)
+    return (d / "tokenizer.json").exists() or (d / "tokenizer_config.json").exists()
+
+
 class Tokenizer:
-    """Thin wrapper over an HF fast tokenizer loaded from the model directory."""
+    """Thin wrapper over an HF tokenizer loaded from the model directory."""
 
     def __init__(self, model_dir: str | Path) -> None:
         try:
             from transformers import AutoTokenizer  # type: ignore
         except ImportError as e:  # pragma: no cover
             raise ImportError("pip install 'pagedserve[hf]' to load a tokenizer") from e
-        self._tok = AutoTokenizer.from_pretrained(str(model_dir))
+        try:
+            self._tok = AutoTokenizer.from_pretrained(str(model_dir))
+        except Exception as exc:  # noqa: BLE001
+            # A snapshot that ships its own tokenizer code (Moonlight's tiktoken-based
+            # `tokenization_moonshot.py`): the code is already on disk, downloaded with the
+            # weights, so run it rather than refuse text prompts.
+            if not any(Path(model_dir).glob("tokenization_*.py")):
+                raise
+            self._tok = AutoTokenizer.from_pretrained(str(model_dir), trust_remote_code=True)
         self.eos_token_id: int = self._tok.eos_token_id
         self._backend = getattr(self._tok, "backend_tokenizer", None)
         self._fast_batch = (self._backend is not None
