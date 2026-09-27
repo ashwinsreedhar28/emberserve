@@ -194,8 +194,11 @@ class Qwen2ForCausalLM(nn.Module):
         """Project to the vocabulary. With `meta`, only the last token of each sequence
         is projected -> `[num_seqs, vocab]`; without it every token -> `[N, vocab]`."""
         if meta is not None:
-            last = (meta.cu_seqlens_q[1:] - 1).to(torch.long)
-            hidden = hidden.index_select(0, last)
+            if meta.logit_indices is not None:
+                rows = meta.logit_indices
+            else:
+                rows = (meta.cu_seqlens_q[1:] - 1).to(torch.long)
+            hidden = hidden.index_select(0, rows)
         return self.lm_head(hidden)
 
     def forward_logits_all(self, input_ids: torch.Tensor, backend: AttentionBackend,

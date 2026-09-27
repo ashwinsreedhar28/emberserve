@@ -151,3 +151,26 @@ async def test_async_scheduling_through_the_core_process() -> None:
         expect = r.output_token_ids[: r.output_token_ids.index(stop) + 1]
         assert [ch.new_token_ids[0] for ch in chunks] == expect
         assert chunks[-1].finish_reason is FinishReason.STOP
+
+
+async def test_speculative_decoding_through_the_core_process() -> None:
+    """Multi-token step rows (accepted drafts + the bonus token) stream through the core
+    pipe and the client as one delta each, token-identical to plain greedy."""
+    ps = prompts(5, seed=12) + [prompts(1, seed=9)[0] * 3]
+    sp = SamplingParams.greedy(16, ignore_eos=True)
+    ref = LLM.from_engine(install(make_engine())).generate(ps, sp)
+    c = AsyncEngineCoreClient(spec(speculative_ngram=3, num_speculative_tokens=4), StubTokenizer())
+    c.start()
+    try:
+        outs = await asyncio.gather(*(collect(c, f"r{i}", p, sp) for i, p in enumerate(ps)))
+    finally:
+        c.stop()
+    multi = 0
+    for r, chunks in zip(ref, outs, strict=True):
+        got = [t for ch in chunks for t in ch.new_token_ids]
+        assert got == r.output_token_ids
+        assert chunks[-1].output_token_ids == r.output_token_ids and chunks[-1].finished
+        assert "".join(ch.text_delta for ch in chunks) == r.text
+        multi += sum(len(ch.new_token_ids) > 1 for ch in chunks)
+    assert multi > 0, "no step delivered more than one token"
+    assert c.metrics()["generated_tokens_total"] == 16 * len(ps)

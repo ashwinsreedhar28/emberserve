@@ -73,6 +73,9 @@ class Request:
     # tensor while that token has not been read back to the host yet (None otherwise).
     # While set, `all_token_ids` is one token short of what the cache has computed.
     pending_row: int | None = None
+    # Speculative decoding: the guessed next tokens the coming decode step verifies
+    # (empty when not drafting). Their K/V slots are reserved with the step's real slot.
+    draft_tokens: list[int] = field(default_factory=list)
     # Timestamps for TTFT/TPOT metrics.
     first_scheduled_time: float | None = None
     first_token_time: float | None = None
@@ -117,6 +120,7 @@ class Request:
     def reset_for_recompute(self) -> None:
         """Preemption by recompute: keep generated tokens, drop cache position."""
         self.num_computed_tokens = 0
+        self.draft_tokens = []
         self.state = RequestState.PREEMPTED
 
 

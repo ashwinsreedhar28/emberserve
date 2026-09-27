@@ -49,6 +49,12 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
                         "token. Default: on for --device cuda (A100: 0.5B saturation 13,945 -> "
                         "14,394 tok/s, TPOT at 1 req/s 2.1 -> 1.8 ms), off otherwise")
     p.add_argument("--no-async-scheduling", dest="async_scheduling", action="store_false")
+    p.add_argument("--speculative-ngram", type=int, default=0,
+                   help="speculative decoding by n-gram lookup: guess the next tokens of greedy "
+                        "requests from earlier occurrences of the last N tokens, verify them in one "
+                        "step (exact). 0 = off. Turns async scheduling off")
+    p.add_argument("--num-speculative-tokens", type=int, default=5,
+                   help="draft tokens per step with --speculative-ngram")
 
 
 def checkpoint_bytes(model_dir: str | None) -> int:
@@ -94,7 +100,9 @@ def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
                         enable_cuda_graphs=args.enable_cuda_graphs,
                         piecewise_cuda_graphs=bool(piecewise),
                         enable_chunked_prefill=chunked,
-                        async_scheduling=bool(async_sched))
+                        async_scheduling=bool(async_sched),
+                        speculative_ngram=int(getattr(args, "speculative_ngram", 0) or 0),
+                        num_speculative_tokens=int(getattr(args, "num_speculative_tokens", 0) or 0))
 
 
 def build_parser() -> argparse.ArgumentParser:

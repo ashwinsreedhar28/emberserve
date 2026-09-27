@@ -207,14 +207,16 @@ class Scheduler:
         bm = self.block_manager
         preempted: list[Request] = []
         scheduled: list[Request] = []
+        query_lens: list[int] = []
         i = 0
         while i < len(self.running):
             req = self.running[i]
             if self._finishes_on_resolve(req):
                 i += 1
                 continue
+            n_slots = 1 + len(req.draft_tokens)  # speculative drafts ride in the same step
             try:
-                bm.append_slots(req.seq_id, 1)
+                bm.append_slots(req.seq_id, n_slots)
             except OutOfBlocksError:
                 victim = self._preempt_youngest()
                 preempted.append(victim)
@@ -222,10 +224,13 @@ class Scheduler:
                     break  # nothing younger left to evict; `req` waits for re-prefill
                 continue  # retry the same request with the freed blocks
             scheduled.append(req)
+            query_lens.append(n_slots)
             i += 1
-        # Every scheduled request has its slot; victims were removed from `running`.
-        return SchedulerOutput(scheduled, False, [1] * len(scheduled), preempted,
-                               num_decode_tokens=len(scheduled))
+        # Every scheduled request has its slot(s); victims were removed from `running`.
+        # A draft row has query_len > 1 and attends through the cache like a chunk, so the
+        # step routes through the prefill attention path when any request drafted.
+        return SchedulerOutput(scheduled, any(q > 1 for q in query_lens), query_lens, preempted,
+                               num_decode_tokens=sum(query_lens))
 
     # ---- chunked prefill -------------------------------------------------------------
     def _prefill_remaining(self, req: Request) -> int:
@@ -263,7 +268,7 @@ class Scheduler:
                 i += 1
                 continue
             try:
-                bm.append_slots(req.seq_id, 1)
+                bm.append_slots(req.seq_id, 1 + len(req.draft_tokens))
             except OutOfBlocksError:
                 # The victim is the youngest running request, which sits at or after `i`
                 # (possibly a mid-prefill one), so `decode_rows` never loses a member.
@@ -275,9 +280,9 @@ class Scheduler:
             decode_rows.append(req)
             i += 1
         scheduled = list(decode_rows)
-        query_lens = [1] * len(decode_rows)
+        query_lens = [1 + len(r.draft_tokens) for r in decode_rows]
         complete = [True] * len(decode_rows)
-        budget_left = budget - len(decode_rows)
+        budget_left = budget - sum(query_lens)
         # 2a. Running requests still mid-prefill, oldest first. (A decode row's slot was
         # just reserved, so its `_prefill_remaining` reads 1 now; skip those by identity.)
         decoding = {id(r) for r in decode_rows}
@@ -331,7 +336,7 @@ class Scheduler:
         is_prefill = any(q > 1 for q in query_lens) or not all(complete)
         return SchedulerOutput(scheduled, is_prefill=is_prefill, query_lens=query_lens,
                                preempted=preempted, prefill_complete=complete,
-                               num_decode_tokens=len(decode_rows))
+                               num_decode_tokens=sum(query_lens[:len(decode_rows)]))
 
     def _register_computed_blocks(self, req: Request) -> None:
         """Publish hashes for the full blocks whose K/V `req` has already written."""

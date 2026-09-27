@@ -103,6 +103,24 @@ anticipated (`Scheduler._finishes_on_resolve`) so they waste nothing. Outputs of
 returned by the next `step()` call; tokens are identical to the synchronous engine's,
 including under preemption, chunked prefill, prefix caching, seeded sampling and aborts.
 
+### Speculative decoding
+
+`--speculative-ngram 3 --num-speculative-tokens 5` turns on prompt-lookup speculation
+(`spec.py`): for every greedy request the engine looks up the last three tokens earlier in
+the sequence and guesses that what followed them then follows now (code, quoted text,
+names, lists). The guesses ride in the request's next decode step as extra query rows
+over the cached context, exactly like a chunked-prefill chunk; the model's own greedy
+choice at every position is compared with the guess at that position, the longest
+agreeing prefix is kept together with the model's token after it, and the rejected
+positions' K/V slots are given back (`BlockManager.truncate`). The output is bit-identical
+to plain greedy decoding: every accepted token was checked against the same logits it
+would have been sampled from. A step that carries drafts routes through the mixed
+attention path (piecewise graphs where they are on), a step without any keeps the full
+decode graph. Sampled requests are never drafted, and the mode turns async scheduling off
+(the proposer needs the last token on the host). `/metrics` reports `spec_drafted_total`
+and `spec_accepted_total`; on the synthetic random-id trace the acceptance rate is ~0, which
+is why the real-text traces exist.
+
 ### Paged KV cache
 
 Each layer's cache is one tensor `[num_blocks, block_size, Hkv, D]` for K and one for V.
@@ -547,6 +565,7 @@ pagedserve/
                        mla_torch.py | mla_triton.py (latent attention) | cuda_graphs.py
   kv/                  block_manager.py, cache.py (paged K/V and latent tensors), prefix_cache.py
   sched/               request.py, scheduler.py (prefill-priority, preemption, chunked prefill, async lookahead)
+  spec.py              speculative decoding: n-gram proposer + draft verification
   sampling.py          per-request temperature / top-k / top-p / repetition penalty / seeds / stop
   engine.py            LLMEngine.step(): schedule -> build inputs -> forward -> sample -> postprocess
                        (async scheduling: launch N+1, then resolve N)
@@ -568,7 +587,9 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
-* Speculative decoding. (Runpod Serverless: worker + Dockerfile in `deploy/runpod/`, endpoint not yet deployed.)
+* Speculative decoding: n-gram lookup implemented (`--speculative-ngram`); acceptance rate and speedup on ShareGPT text pending; a draft-model proposer after that.
+* Tensor parallelism (2 GPUs); weight-only int8 with a Triton dequant GEMM.
+* Runpod Serverless: worker + Dockerfile in `deploy/runpod/`, endpoint not yet deployed.
 
 ## License
 

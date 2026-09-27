@@ -136,6 +136,21 @@ benchmark uses): the first human turn is the prompt, sent as text, and the first
 token length is the output length, so `ignore_eos` still makes every system generate the
 same amount. Results record `trace.source = "sharegpt"`.
 
+### Speculative decoding on text
+
+Only meaningful on real text (random ids never repeat an n-gram). Same trace, with and
+without drafts; the JSON's `spec_accepted_total / spec_drafted_total` from `/metrics` is
+the acceptance rate, TPOT at low rates the speedup (at saturation the extra query rows
+compete with real work, so expect little there):
+
+```bash
+T="--tokenizer models/Qwen2.5-7B-Instruct --sharegpt data/ShareGPT_V3_unfiltered_cleaned_split.json --max-model-len 4096 --rates 1,2,4,8,inf --trace-n 200"
+python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-7B-Instruct --dtype float16 $T \
+  --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs" --name pagedserve_7b_text
+python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-7B-Instruct --dtype float16 $T \
+  --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --speculative-ngram 3 --num-speculative-tokens 5" --name pagedserve_7b_text_spec
+```
+
 ## Block size 256 with `paged_flash`
 
 Upstream flash-attn (2.6.3 through 2.8.3.post1 and `main`) hard-checks

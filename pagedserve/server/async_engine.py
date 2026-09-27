@@ -157,6 +157,8 @@ class AsyncLLMEngine:
             "kv_blocks_used": snap.kv.num_used,
             "kv_cache_usage": snap.kv.num_used / snap.kv.num_blocks,
             "kv_block_utilization": snap.kv.utilization,
+            "spec_drafted_total": self.engine.spec_drafted,
+            "spec_accepted_total": self.engine.spec_accepted,
         }
 
     # ---- loop-thread helpers ---------------------------------------------------------------
@@ -405,6 +407,8 @@ class AsyncEngineCoreClient:
             "kv_blocks_used": snap["kv_blocks_used"],
             "kv_cache_usage": snap["kv_blocks_used"] / total,
             "kv_block_utilization": snap["kv_block_utilization"],
+            "spec_drafted_total": int(snap.get("spec_drafted", 0)),
+            "spec_accepted_total": int(snap.get("spec_accepted", 0)),
         }
 
     # ---- loop-thread helpers ------------------------------------------------------------------
@@ -463,20 +467,20 @@ class AsyncEngineCoreClient:
         c = self._counters
         c.steps += 1
         now = time.perf_counter()
-        live: list[tuple[_ClientRequest, int, bool, str | None]] = []
+        live: list[tuple[_ClientRequest, list[int], bool, str | None]] = []
         with self._reqs_lock:
-            for rid, tok, finished, reason in rows:
+            for rid, toks, finished, reason in rows:
                 cr = self._reqs.get(rid)
                 if cr is None or cr.finished:
                     continue  # aborted or already stopped by a stop string; core lag
-                cr.output_ids.append(tok)
+                cr.output_ids.extend(toks)  # several per step under speculative decoding
                 if cr.first_token is None:
                     cr.first_token = now
-                live.append((cr, tok, finished, reason))
+                live.append((cr, toks, finished, reason))
         if not live:
             return
-        c.generated_tokens += len(live)
-        if any(cr.first_token == now and len(cr.output_ids) == 1 for cr, _, _, _ in live):
+        c.generated_tokens += sum(len(t) for _, t, _, _ in live)
+        if any(cr.first_token == now and len(cr.output_ids) == len(t) for cr, t, _, _ in live):
             c.prefill_steps += 1
         else:
             c.decode_steps += 1
@@ -484,7 +488,7 @@ class AsyncEngineCoreClient:
             [cr.request_id for cr, _, _, _ in live], [cr.output_ids for cr, _, _, _ in live],
             [cr.params.stop for cr, _, _, _ in live], finals=[fin for _, _, fin, _ in live])
         outputs: list[RequestOutput] = []
-        for (cr, tok, finished, reason), (delta, matched) in zip(live, deltas, strict=True):
+        for (cr, toks, finished, reason), (delta, matched) in zip(live, deltas, strict=True):
             if matched is not None and not finished:
                 finished, reason = True, FinishReason.STOP.value
                 self.core.send(("abort", cr.request_id))  # the core does not see stop strings
@@ -499,6 +503,6 @@ class AsyncEngineCoreClient:
                 with self._reqs_lock:
                     self._reqs.pop(cr.request_id, None)
             outputs.append(RequestOutput(
-                request_id=cr.request_id, new_token_ids=[tok], output_token_ids=list(cr.output_ids),
+                request_id=cr.request_id, new_token_ids=list(toks), output_token_ids=list(cr.output_ids),
                 finished=finished, finish_reason=fr, text_delta=delta, metrics=metrics))
         self._post(self._deliver, outputs)

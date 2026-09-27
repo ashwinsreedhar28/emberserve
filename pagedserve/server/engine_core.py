@@ -52,7 +52,7 @@ class CoreRequest:
 
 # Per-step output row: (request_id, token_id, finished, finish_reason value or None).
 # Plain tuples keep the pickle small; the client tracks token counts itself.
-StepRow = tuple[str, int, bool, str | None]
+StepRow = tuple[str, list[int], bool, str | None]  # request id, new token ids, finished, reason
 
 
 def build_engine(spec: EngineSpec):
@@ -92,7 +92,8 @@ def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connectio
             st = engine.block_manager.stats()
             return {"num_running": sched.num_running, "num_waiting": sched.num_waiting,
                     "kv_blocks_total": st.num_blocks, "kv_blocks_free": st.num_free,
-                    "kv_blocks_used": st.num_used, "kv_block_utilization": st.utilization}
+                    "kv_blocks_used": st.num_used, "kv_block_utilization": st.utilization,
+                    "spec_drafted": engine.spec_drafted, "spec_accepted": engine.spec_accepted}
 
         def handle(cmd: tuple) -> bool:
             """Apply one command; True means stop."""
@@ -144,7 +145,7 @@ def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connectio
                                    "prompt is too long for the KV cache; it can never be scheduled"))
                 continue
             rows: list[StepRow] = [
-                (o.request_id, o.new_token_ids[0], o.finished,
+                (o.request_id, list(o.new_token_ids), o.finished,
                  o.finish_reason.value if o.finish_reason else None)
                 for o in outputs]
             out_conn.send(("step", rows, snapshot()))

@@ -178,6 +178,23 @@ class BlockManager:
         self._num_tokens[seq_id] = cur + num_new_tokens
         return new
 
+    def truncate(self, seq_id: int, num_tokens: int) -> list[int]:
+        """Give back the slots past `num_tokens` (speculative decoding: the rejected draft
+        positions). Whole blocks that fall out of use are released; a trailing block that
+        had already been shared or hashed is never touched (those are full blocks of real
+        tokens, below any draft). Returns the released block ids."""
+        table = self._tables[seq_id]
+        cur = self._num_tokens[seq_id]
+        assert 0 <= num_tokens <= cur, (num_tokens, cur)
+        keep = self.blocks_needed(num_tokens) if num_tokens else 0
+        keep = max(keep, self._registered[seq_id][0]) if seq_id in self._registered else keep
+        released = table[keep:]
+        del table[keep:]
+        for b in released:
+            self._release(b)
+        self._num_tokens[seq_id] = num_tokens
+        return released
+
     def free(self, seq_id: int) -> None:
         """Release every block of a sequence (finished, aborted, or preempted)."""
         table = self._tables.pop(seq_id, None)

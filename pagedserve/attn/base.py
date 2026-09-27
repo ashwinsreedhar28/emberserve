@@ -53,6 +53,9 @@ class AttnMetadata:
     # Backend scratch for a mixed step (decode rows + prefill rows): built once per step by
     # the first layer, reused by the rest. See paged_flash.MixedPlan.
     mixed_plan: object | None = None
+    # Packed rows whose logits the step needs (int64, device). Default: the last row of
+    # every sequence. Speculative decoding asks for every row of a draft sequence.
+    logit_indices: torch.Tensor | None = None
 
     @property
     def num_seqs(self) -> int:

@@ -269,6 +269,12 @@ class EngineConfig:
     # are anticipated so they waste nothing. Outputs of a step come back from the NEXT
     # `step()` call.
     async_scheduling: bool = False
+    # Speculative decoding by n-gram lookup (spec.py): greedy requests get up to
+    # `num_speculative_tokens` guessed tokens per step, verified in one forward. 0 = off.
+    # Mutually exclusive with async_scheduling (the proposer needs the last token on the
+    # host); the engine turns async off when this is on.
+    speculative_ngram: int = 0
+    num_speculative_tokens: int = 0
     seed: int = 0
     extra: dict = field(default_factory=dict)
 

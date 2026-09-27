@@ -235,8 +235,11 @@ class DeepseekForCausalLM(nn.Module):
 
     def compute_logits(self, hidden: torch.Tensor, meta: AttnMetadata | None = None) -> torch.Tensor:
         if meta is not None:
-            last = (meta.cu_seqlens_q[1:] - 1).to(torch.long)
-            hidden = hidden.index_select(0, last)
+            if meta.logit_indices is not None:
+                rows = meta.logit_indices
+            else:
+                rows = (meta.cu_seqlens_q[1:] - 1).to(torch.long)
+            hidden = hidden.index_select(0, rows)
         return self.lm_head(hidden)
 
     def forward_logits_all(self, input_ids: torch.Tensor, backend, meta: AttnMetadata) -> torch.Tensor:

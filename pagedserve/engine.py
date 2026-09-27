@@ -171,6 +171,18 @@ class LLMEngine:
         # Whether the last `step()` call scheduled any work (distinguishes "nothing to do"
         # from "launched, outputs come next call" for the callers' stuck-queue check).
         self.last_step_scheduled = False
+        # Speculative decoding (spec.py): n-gram size and draft count; needs the last
+        # token on the host before the next schedule, so it turns the async lookahead off.
+        self.spec_ngram = int(engine_config.speculative_ngram)
+        self.spec_k = int(engine_config.num_speculative_tokens) if self.spec_ngram > 0 else 0
+        if self.spec_k > 0 and self.async_scheduling:
+            warnings.warn("speculative decoding needs the sampled token on the host before the "
+                          "next step is scheduled: async_scheduling turned off", stacklevel=2)
+            self.async_scheduling = False
+            self._host_bufs = []
+        # Speculation counters (drafts proposed / accepted), for /metrics and the tests.
+        self.spec_drafted = 0
+        self.spec_accepted = 0
 
     # ---- construction -----------------------------------------------------------
     def _make_backend(self, num_blocks: int) -> AttentionBackend:
@@ -278,7 +290,10 @@ class LLMEngine:
         # Only rows whose prefill completes this step get a token; a partial prefill
         # chunk's last-token logits are meaningless (its next chunk continues the prompt).
         complete = sched_out.prefill_complete
-        if all(complete):
+        if meta.logit_indices is not None:
+            # speculative step: one logits row per query position of a draft sequence
+            sampled = self._sample_draft_rows(logits, sched_out)
+        elif all(complete):
             sampled = self.sampler.sample(logits, sched_out.scheduled)
         else:
             idx = [i for i, c in enumerate(complete) if c]
@@ -291,6 +306,8 @@ class LLMEngine:
 
         self._advance(sched_out)
         outputs = self._postprocess(sched_out, sampled)
+        if self.spec_k:
+            self._propose_drafts(sched_out)
         if self.keep_stats:
             st = self.block_manager.stats()
             self.stats.append(StepStats(
@@ -302,6 +319,50 @@ class LLMEngine:
                 num_prefill_tokens=sched_out.num_prefill_tokens,
                 num_decode_tokens=sched_out.num_decode_tokens))
         return outputs
+
+    # ---- speculative decoding ------------------------------------------------------------
+    def _sample_draft_rows(self, logits: torch.Tensor, so: SchedulerOutput) -> list:
+        """`logits` holds, per scheduled request, either its last row or (draft rows) one
+        row per query position. Returns per request: an int, a list of ints (draft rows,
+        `query_len` of them), or None (partial chunk)."""
+        reqs: list[Request] = []
+        keep: list[int] = []  # logits rows that belong to completed rows
+        pos = 0
+        for req, qlen, done in zip(so.scheduled, so.query_lens, so.prefill_complete, strict=True):
+            count = qlen if req.draft_tokens else 1
+            if done:
+                reqs.extend([req] * count)
+                keep.extend(range(pos, pos + count))
+            pos += count
+        assert pos == logits.shape[0], (pos, logits.shape)
+        flat = self.sampler.sample(logits[keep] if len(keep) < pos else logits, reqs) if reqs else []
+        out: list = []
+        pos = 0
+        for req, qlen, done in zip(so.scheduled, so.query_lens, so.prefill_complete, strict=True):
+            if not done:
+                out.append(None)
+            elif req.draft_tokens:
+                out.append(flat[pos:pos + qlen])
+                pos += qlen
+            else:
+                out.append(flat[pos])
+                pos += 1
+        return out
+
+    def _propose_drafts(self, so: SchedulerOutput) -> None:
+        """Guess the next tokens of every greedy request that will decode next step."""
+        from pagedserve.spec import propose_ngram
+
+        for req in so.scheduled:
+            req.draft_tokens = []
+            if req.is_finished or not req.sampling_params.is_greedy or req.is_prefill:
+                continue
+            room = min(req.sampling_params.max_tokens - req.num_output_tokens,
+                       self.config.max_model_len - req.num_tokens) - 1
+            k = min(self.spec_k, room)
+            if k <= 0:
+                continue
+            req.draft_tokens = propose_ngram(req.all_token_ids, self.spec_ngram, k)
 
     def _forward(self, input_ids: torch.Tensor, meta: AttnMetadata,
                  so: SchedulerOutput) -> torch.Tensor:
@@ -410,9 +471,17 @@ class LLMEngine:
         tables: list[list[int]] = []
         fill_rows: list[int] = []  # packed rows whose token is still on the device
         fill_src: list[int] = []  # ... and its row in the pending step's sampled tensor
+        logit_rows: list[int] = []  # speculative: every row of a draft sequence
+        any_drafts = False
         for r, start, qlen in zip(reqs, starts, so.query_lens, strict=True):
             end = start + qlen
             known = r.all_token_ids
+            if r.draft_tokens:  # the real last token followed by the guesses
+                known = known + r.draft_tokens
+                any_drafts = True
+                logit_rows.extend(range(len(tokens), len(tokens) + qlen))
+            else:
+                logit_rows.append(len(tokens) + qlen - 1)
             if start == len(known):  # async: the token at `start` was sampled last step
                 assert qlen == 1 and r.pending_row is not None, (qlen, r.pending_row, r.request_id)
                 fill_rows.append(len(tokens))
@@ -438,17 +507,21 @@ class LLMEngine:
         n, b = len(tokens), len(reqs)
         dev = self.device
         pin = dev.type == "cuda"
-        # int64 block: [tokens | positions | slots | fill rows | fill sources]
-        i64 = torch.tensor(tokens + positions + slots + fill_rows + fill_src, dtype=torch.int64,
-                           pin_memory=pin)
+        # int64 block: [tokens | positions | slots | fill rows | fill sources | logit rows]
+        if not any_drafts:
+            logit_rows = []  # the default (last row per sequence) is computed on the device
+        i64 = torch.tensor(tokens + positions + slots + fill_rows + fill_src + logit_rows,
+                           dtype=torch.int64, pin_memory=pin)
         i64 = i64.to(dev, non_blocking=pin)
         input_ids, pos = i64[:n], i64[n:2 * n]
+        o = 2 * n + len(slots)
         if fill_rows:
             assert self._pending is not None
             m = len(fill_rows)
-            o = 2 * n + len(slots)
             input_ids.index_copy_(0, i64[o:o + m],
                                   self._pending.sampled_dev.index_select(0, i64[o + m:o + 2 * m]))
+            o += 2 * m
+        logit_indices = i64[o:o + len(logit_rows)] if logit_rows else None
         # int32 block: [context_lens | cu_seqlens | block tables (padded with -1)]
         max_blocks = max((len(t) for t in tables), default=0) if paged else 0
         flat32 = context_lens + cu
@@ -464,6 +537,7 @@ class LLMEngine:
             cu_seqlens_q=i32[b:2 * b + 1],
         )
         meta.context_lens_t = i32[:b]
+        meta.logit_indices = logit_indices
         if paged:
             meta.slot_mapping = i64[2 * n:3 * n]
             meta.block_tables = i32[2 * b + 1:2 * b + 1 + b * max_blocks].view(b, max_blocks)
@@ -475,19 +549,30 @@ class LLMEngine:
         `sampled[i]` is None exactly where `so.prefill_complete[i]` is False. Detokenization
         for all sampled rows happens in one batched call."""
         now = time.perf_counter()
-        emitted: list[tuple[Request, int, FinishReason | None]] = []
-        for req, tok, done in zip(so.scheduled, sampled, so.prefill_complete, strict=True):
+        emitted: list[tuple[Request, list[int], FinishReason | None]] = []
+        for req, tok, qlen, done in zip(so.scheduled, sampled, so.query_lens, so.prefill_complete,
+                                        strict=True):
             if not done:
                 assert tok is None
                 continue  # partial prefill chunk: K/V written, nothing to emit yet
             assert tok is not None
             if req.is_finished:
                 continue  # async: aborted, or ended by its previous token, after this launch
-            req.append_output(tok)
+            if isinstance(tok, list):  # speculative: verify the drafts against the model's rows
+                new_tokens = self._verify_drafts(req, tok, qlen)
+            else:
+                new_tokens = [tok]
+            reason = None
+            kept: list[int] = []
+            for t in new_tokens:
+                req.append_output(t)
+                kept.append(t)
+                reason = check_stop(req, t, self.eos_token_ids, self.config.max_model_len)
+                if reason is not None:
+                    break
             if req.first_token_time is None:
                 req.first_token_time = now
-            reason = check_stop(req, tok, self.eos_token_ids, self.config.max_model_len)
-            emitted.append((req, tok, reason))
+            emitted.append((req, kept, reason))
         if not emitted:
             return []
         deltas = self.detok.update_batch(
@@ -495,7 +580,7 @@ class LLMEngine:
             [r.sampling_params.stop for r, _, _ in emitted],
             finals=[reason is not None for _, _, reason in emitted])
         outputs: list[RequestOutput] = []
-        for (req, tok, reason), (text_delta, matched_stop) in zip(emitted, deltas, strict=True):
+        for (req, toks, reason), (text_delta, matched_stop) in zip(emitted, deltas, strict=True):
             if matched_stop is not None and reason is None:
                 reason = FinishReason.STOP
             if reason is not None:
@@ -504,11 +589,29 @@ class LLMEngine:
                 self._final_text[req.request_id] = self.detok.text(req.request_id)
                 self.detok.reset(req.request_id)
             outputs.append(RequestOutput(
-                request_id=req.request_id, new_token_ids=[tok],
+                request_id=req.request_id, new_token_ids=toks,
                 output_token_ids=list(req.output_token_ids), finished=reason is not None,
                 finish_reason=reason, text_delta=text_delta,
                 metrics=self._metrics(req) if reason is not None else {}))
         return outputs
+
+    def _verify_drafts(self, req: Request, rows: list[int], qlen: int) -> list[int]:
+        """`rows[j]` is the model's greedy token at query position j (input: the real last
+        token for j = 0, draft j-1 after). Keep the drafts the model agreed with plus its
+        own token after them; give the rejected positions' K/V slots back."""
+        from pagedserve.spec import accepted_prefix
+
+        drafts = req.draft_tokens
+        assert qlen == 1 + len(drafts) == len(rows), (qlen, len(drafts), len(rows))
+        a = accepted_prefix(drafts, rows)
+        self.spec_drafted += len(drafts)
+        self.spec_accepted += a
+        # `_advance` counted all qlen positions as computed; only the first a + 1 hold
+        # tokens the sequence actually has (last real token + accepted drafts).
+        req.num_computed_tokens -= len(drafts) - a
+        self.block_manager.truncate(req.seq_id, req.num_computed_tokens)
+        req.draft_tokens = []
+        return drafts[:a] + [rows[a]]
 
     @staticmethod
     def _metrics(req: Request) -> dict:
