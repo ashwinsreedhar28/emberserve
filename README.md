@@ -45,9 +45,9 @@ latency than vLLM at every offered rate (TPOT 1.8 vs 2.0 ms and TTFT 9.4 vs 12.9
 1 req/s; TPOT 6.0 vs 8.1 ms at saturation), 92% of its saturation throughput, up from 23% at
 the first measurement the same night. At 7B (Qwen2.5-7B-Instruct) both engines sit on the
 weight-read floor and pagedserve reaches 99% of vLLM at saturation with chunked prefill and
-async scheduling; DeepSeek-R1-Distill-Llama-8B runs on the same code, and Moonlight-16B-A3B (DeepSeek-V3's
-latent attention + MoE) reaches 84% with a batch-1 step of 6.2 ms against vLLM's 7.1 ms
-TPOT. The [gap analysis](#the-gap-against-vllm) has the per-phase profile and the eight
+async scheduling; DeepSeek-R1-Distill-Llama-8B (llama path) is also at 99%, and Moonlight-16B-A3B (DeepSeek-V3's
+latent attention + MoE) reaches 84% on the synthetic trace and 89% on real text with a
+batch-1 step of 6.2 ms against vLLM's 7.1 ms TPOT. The [gap analysis](#the-gap-against-vllm) has the per-phase profile and the eight
 fixes it drove, in order; [Models](#models) has the per-model table.
 
 ## How it works
@@ -119,7 +119,11 @@ attention path (piecewise graphs where they are on), a step without any keeps th
 decode graph. Sampled requests are never drafted, and the mode turns async scheduling off
 (the proposer needs the last token on the host). `/metrics` reports `spec_drafted_total`
 and `spec_accepted_total`; on the synthetic random-id trace the acceptance rate is ~0, which
-is why the real-text traces exist.
+is why the real-text traces exist. Measured on ShareGPT text at 0.5B it is a net loss at
+every rate (see [Real text](#real-text-sharegpt-conversations-results_textjson)): the
+verification step runs through the mixed-step path and async is off, and at that size those
+cost more than the accepted drafts return. It is built for the 7B-at-small-batch regime,
+where the step is the weight read and extra rows are free; that measurement is queued.
 
 ### Paged KV cache
 
@@ -459,11 +463,72 @@ Over HTTP (`results/pagedserve_moonlight_v3.json`, chunked prefill + async sched
 | all at t=0 | **3,223** | **2,697 (84%)** | 28.5 | 31.6 | 1,327 | 2,371 |
 
 The first run, prefill-priority and synchronous, was 2,457 (76%) with 26.3 ms TPOT at
-8 req/s: every arrival's prefill stalled every decoder, as at 7B. The remaining gap grows
+8 req/s: every arrival's prefill stalled every decoder, as at 7B. On ShareGPT text the same
+configuration reaches 89% (below). The remaining gap grows
 with concurrency (18.8 vs 13.4 ms at 8 req/s) and is the per-sequence slope of the step,
 0.11 ms per sequence, most of it the grouped GEMM streaming more experts as the batch grows.
 
 ![Moonlight TPOT vs offered load](results/plots/moonlight/tpot_vs_rate.png)
+
+### Real text: ShareGPT conversations (`results/*_text.json`)
+
+The sweeps above draw random token ids, which is fine for the engine (a token is a token)
+but useless for anything that depends on the text: prefix caching, and speculation. So the
+same 200-request sweep was repeated on ShareGPT conversations (`--sharegpt`, vLLM's own
+filters: prompt 4–1,024 tokens, output ≤ 512, no prompt+output over 2,048). The trace comes
+out shorter in prompt and longer in output than the synthetic one (mean 102 / 259 tokens vs
+267 / 173), so it is more decode-heavy and both engines' saturation numbers rise.
+
+**Qwen2.5-0.5B**, A100, fp16, `paged_flash` + the CUDA defaults (`results/vllm_text.json`,
+`results/pagedserve_flash_text.json`, `results/pagedserve_flash_text_spec.json`):
+
+| req/s offered | vLLM tok/s | pagedserve tok/s | + n-gram spec | vLLM TPOT p50 | pagedserve TPOT p50 | + spec TPOT p50 | vLLM TTFT p50 | pagedserve TTFT p50 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 269 | 269 | 269 | 2.03 ms | **1.84 ms** | 2.14 ms | 13.2 ms | **11.1 ms** |
+| 4 | 1,064 | 1,066 | 1,051 | 2.11 | **1.96** | 3.41 | 12.0 | **11.4** |
+| 16 | 3,990 | 4,023 | 3,164 | 2.27 | **2.23** | 10.12 | 15.1 | **13.0** |
+| all at t=0 | **22,908** | **18,763 (82%)** | 3,913 | 6.08 | **5.60** | 28.9 | 433 | 630 |
+
+The shape is the synthetic result again: parity to 16 req/s with lower TPOT and TTFT at
+every rate, a lower TPOT at saturation, and a saturation throughput gap (82% here, 92% on
+the synthetic trace) that sits in the same place, the first burst's prefill admission
+(TTFT 630 vs 433 ms at t=0). Longer outputs make the gap slightly wider because more of
+the run is the decode steady state where vLLM's per-step overhead is lowest.
+
+**n-gram speculation at 0.5B loses at every rate** (third column): TPOT 2.14 vs 1.84 ms at
+1 req/s and 10.1 vs 2.2 at 16, throughput a fifth of the baseline at saturation. Three
+reasons, all structural at this model size. The mode turns async scheduling off (the
+proposer needs the last token on the host before the next step is planned), which alone
+costs the 0.3 ms async had bought. A draft step is a multi-token step for that sequence and
+runs through the mixed-step path (piecewise graphs plus eager attention over up to six rows
+per sequence) instead of the single decode graph, and at 0.5B the step is launches, so the
+verification step costs more than the decode steps it replaces unless most drafts are
+accepted. And the acceptance rate on chat text with a 0.5B instruct model is low (measured
+in `spec_acceptance` per rate in the JSON). The engine part is exact and cheap to carry;
+where it can pay is a 7B model at batch 1–8, where a six-row step costs the same weight
+read as a one-row step and any accepted draft is a free token — that run is queued. The
+TTFT column of the spec run is lower (8.6 vs 11.1 ms at 1 req/s) for an unrelated reason:
+with async off, a step's outputs are returned by that step instead of the next one.
+
+![0.5B on ShareGPT text: TPOT vs offered load](results/plots/text/tpot_vs_rate.png)
+
+**Moonlight-16B-A3B** on the same text (`results/vllm_moonlight_text.json`,
+`results/pagedserve_moonlight_text.json`; bf16, `mla_triton` block 16, CUDA defaults):
+
+| req/s offered | vLLM tok/s | pagedserve tok/s | vLLM TPOT p50 | pagedserve TPOT p50 | vLLM TTFT p50 | pagedserve TTFT p50 |
+|---|---:|---:|---:|---:|---:|---:|
+| 1 | 265 | 265 | 9.4 ms | 10.4 ms | 38 ms | 60 ms |
+| 4 | 961 | 950 | 17.7 | 20.8 | 56 | 77 |
+| 16 | 2,415 | 2,327 | 23.9 | 29.4 | 71 | 117 |
+| all at t=0 | **3,943** | **3,505 (89%)** | 26.2 | 29.6 | 721 | 1,231 |
+
+89% at saturation against 84% on the synthetic trace, for the same reason the 0.5B gap
+moved the other way: shorter prompts mean less prefill, and Moonlight's prefill is where
+pagedserve is furthest behind (TTFT 60 vs 38 ms at 1 req/s: the non-absorbed MLA prefill
+plus the grouped GEMM at prompt-sized M). The decode-side gap is the per-sequence slope
+already described (29.4 vs 23.9 ms at 16 req/s).
+
+![Moonlight on ShareGPT text: TPOT vs offered load](results/plots/moonlight_text/tpot_vs_rate.png)
 
 ### What the numbers taught us
 
@@ -504,10 +569,10 @@ prompt ids drawn from each model's own vocabulary.
 |---|---|---|---:|---:|---:|---:|
 | Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **14,904 / 16,269 (92%)** | **2.0** / 2.1 ms |
 | Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | **3,166 / 3,188 (99%)** | 12.6 / 10.6 ms |
-| DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | 2,519 / 2,823 (89%) ¹ | 19.0 / 12.2 ms ¹ |
+| DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | **2,797 / 2,823 (99%)** ¹ | 14.9 / 12.2 ms |
 | Moonshot Moonlight-16B-A3B-Instruct | deepseek_v3, 27L, MLA (kv_lora 512 + rope 64), 64 experts top-6 + 2 shared, 3B active | all tokens (bf16; 2–3 tie-breaks inside noise, both paths) | 6.2 ms ² | ~3 ms (3B active + 0.7 GB lm_head) | **2,697 / 3,223 (84%)** ³ | 18.8 / 13.4 ms ³ |
 
-¹ measured with prefill-priority scheduling and the in-process engine; the 0.5B and 7B rows use the current CUDA defaults (engine process, chunked prefill with a 2048-token cap).
+¹ `results/pagedserve_r1_8b_flash_v7.json` (CUDA defaults: engine process, chunked prefill, async scheduling); the first measurement, prefill-priority and in-process, was 2,519 (89%) with 19.0 ms TPOT at 8 req/s. TPOT at 1 req/s 11.1 vs 10.8 ms, 20.6 vs 14.0 at 16 req/s: the same chunked-prefill tail as at 7B.
 ² whole decode step at batch 1 (`mla_triton` + fused MoE + CUDA graphs): 63.6 ms with the per-expert loop, 9.4 with the grouped GEMM, 7.2 after the routing/alignment kernels, 6.2 after the split-K fix; vLLM's TPOT at 1 req/s is 7.1 ms, ours over HTTP 7.6. See [Moonlight](#moonlight-mla--moe-on-the-a100).
 ³ chunked prefill (2048-token cap) + async scheduling (`results/pagedserve_moonlight_v3.json`); the first run, prefill-priority and synchronous, was 2,457 (76%) and 26.3 ms.
 
@@ -643,7 +708,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
-* Speculative decoding: n-gram lookup implemented (`--speculative-ngram`); acceptance rate and speedup on ShareGPT text pending; a draft-model proposer after that.
+* Speculative decoding: n-gram lookup implemented (`--speculative-ngram`), a loss at 0.5B on ShareGPT text; the 7B text run (where it should pay) is next, then a draft-model proposer and keeping async scheduling on under speculation (verify on the device).
 * Weight-only int8 implemented (`--quantization int8`, Triton dequant GEMM); 7B golden diff, batch-1 step and sweep pending.
 * Tensor parallelism implemented (`--tensor-parallel-size 2`, dense models); 7B numbers on a 2-GPU pod pending; MLA/MoE sharding after that.
 * Runpod Serverless: worker + Dockerfile in `deploy/runpod/`, endpoint not yet deployed.

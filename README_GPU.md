@@ -163,7 +163,13 @@ python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/
   --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs" --name pagedserve_7b_text
 python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-7B-Instruct --dtype float16 $T \
   --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --speculative-ngram 3 --num-speculative-tokens 5" --name pagedserve_7b_text_spec
+source /opt/vllm/bin/activate && python -m pagedserve.bench.run_vllm_baseline --server vllm --model models/Qwen2.5-7B-Instruct --dtype float16 $T --name vllm_7b_text; deactivate
 ```
+
+At 0.5B the same pair (`pagedserve_flash_text` / `_spec`) was a loss at every rate: the
+verification step is a mixed step (eager attention, no full-step graph) and async is off,
+and at 0.5B those cost more than the accepted drafts return. The 7B pair is the run that
+decides whether the mode earns its keep.
 
 ### Weight-only int8
 
