@@ -54,6 +54,31 @@ class _Counters:
     prefill_steps: int = 0
     decode_steps: int = 0
     step_errors: int = 0
+    # Server-side latency sums over finished requests (seconds), measured from the
+    # request's arrival at the API process: the client-side numbers a load generator
+    # reports include its own queueing, which at a 200-request burst is most of the TTFT.
+    ttft_s_sum: float = 0.0
+    ttft_count: int = 0
+    tpot_s_sum: float = 0.0
+    tpot_count: int = 0
+    e2e_s_sum: float = 0.0
+    e2e_count: int = 0
+
+    def observe(self, ttft_s: float | None, tpot_s: float | None, e2e_s: float | None) -> None:
+        if ttft_s is not None:
+            self.ttft_s_sum += ttft_s
+            self.ttft_count += 1
+        if tpot_s is not None:
+            self.tpot_s_sum += tpot_s
+            self.tpot_count += 1
+        if e2e_s is not None:
+            self.e2e_s_sum += e2e_s
+            self.e2e_count += 1
+
+    def latency_metrics(self) -> dict[str, float | int]:
+        return {"ttft_s_sum": self.ttft_s_sum, "ttft_count": self.ttft_count,
+                "tpot_s_sum": self.tpot_s_sum, "tpot_count": self.tpot_count,
+                "e2e_s_sum": self.e2e_s_sum, "e2e_count": self.e2e_count}
 
 
 @dataclass(frozen=True)
@@ -159,6 +184,7 @@ class AsyncLLMEngine:
             "kv_block_utilization": snap.kv.utilization,
             "spec_drafted_total": self.engine.spec_drafted,
             "spec_accepted_total": self.engine.spec_accepted,
+            **c.latency_metrics(),
         }
 
     # ---- loop-thread helpers ---------------------------------------------------------------
@@ -262,6 +288,8 @@ class AsyncLLMEngine:
             c.generated_tokens += len(out.new_token_ids)
             if out.finished:
                 c.requests_finished += 1
+                m = out.metrics or {}
+                c.observe(m.get("ttft_s"), m.get("tpot_s"), m.get("e2e_s"))
                 self.engine.detok.reset(out.request_id)  # the engine keeps it forever otherwise
         self._snapshot = self._take_snapshot()
         self._post(self._deliver, outputs)
@@ -409,6 +437,7 @@ class AsyncEngineCoreClient:
             "kv_block_utilization": snap["kv_block_utilization"],
             "spec_drafted_total": int(snap.get("spec_drafted", 0)),
             "spec_accepted_total": int(snap.get("spec_accepted", 0)),
+            **c.latency_metrics(),
         }
 
     # ---- loop-thread helpers ------------------------------------------------------------------
@@ -497,8 +526,13 @@ class AsyncEngineCoreClient:
             if finished:
                 cr.finished = True
                 c.requests_finished += 1
-                metrics = {"num_prompt_tokens": cr.prompt_len, "num_output_tokens": len(cr.output_ids),
-                           "ttft_s": (cr.first_token or now) - cr.arrival}
+                n_out = len(cr.output_ids)
+                first = cr.first_token or now
+                metrics = {"num_prompt_tokens": cr.prompt_len, "num_output_tokens": n_out,
+                           "ttft_s": first - cr.arrival, "e2e_s": now - cr.arrival}
+                if n_out > 1:
+                    metrics["tpot_s"] = (now - first) / (n_out - 1)
+                c.observe(metrics["ttft_s"], metrics.get("tpot_s"), metrics["e2e_s"])
                 self.detok.reset(cr.request_id)
                 with self._reqs_lock:
                     self._reqs.pop(cr.request_id, None)

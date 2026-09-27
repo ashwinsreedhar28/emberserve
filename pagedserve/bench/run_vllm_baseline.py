@@ -217,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
                                        max_output_len=args.max_output_len, vocab_size=vocab_size)
             label = "inf" if rate is None else f"{rate:g}"
             print(f"[baseline] {name} @ rate={label} req/s, n={len(trace)}", file=sys.stderr)
-            before = asyncio.run(fetch_metrics(base_url)) if args.server == "pagedserve" else None
+            before = asyncio.run(fetch_metrics(base_url)) if not args.hosted else None
             t0 = time.perf_counter()
             records = asyncio.run(run_http_benchmark(
                 base_url, model_name, trace, max_concurrency=args.max_concurrency,
@@ -232,14 +232,24 @@ def main(argv: list[str] | None = None) -> int:
                              "source": "sharegpt" if args.sharegpt else "synthetic"}}
             after = asyncio.run(fetch_metrics(base_url)) if before is not None else None
             if after is not None:
-                # this run's share of the server's counters (speculation drafted/accepted...)
-                run["server_counters"] = {k: after[k] - before.get(k, 0) for k in after
-                                          if k.endswith("_total") and isinstance(after[k], (int, float))}
-                d, a = run["server_counters"].get("spec_drafted_total", 0), \
-                    run["server_counters"].get("spec_accepted_total", 0)
+                # this run's share of the server's counters (speculation drafted/accepted,
+                # server-side latency sums...)
+                sc = {k: after[k] - before.get(k, 0) for k in after
+                      if k.endswith(("_total", "_sum", "_count")) and isinstance(after[k], (int, float))}
+                run["server_counters"] = sc
+                d, a = sc.get("spec_drafted_total", 0), sc.get("spec_accepted_total", 0)
                 if d:
                     run["spec_acceptance"] = a / d
                     print(f"[baseline] speculation: {a}/{d} drafts accepted ({a / d:.1%})",
+                          file=sys.stderr)
+                lat = {}
+                for name in ("ttft", "tpot", "e2e"):
+                    if sc.get(f"{name}_count", 0) > 0:
+                        lat[f"{name}_ms_mean"] = 1e3 * sc[f"{name}_s_sum"] / sc[f"{name}_count"]
+                if lat:
+                    # measured inside the server from the request's arrival: no client queueing
+                    run["server_latency"] = lat
+                    print("[baseline] server-side means: " + ", ".join(f"{k} {v:.1f}" for k, v in lat.items()),
                           file=sys.stderr)
             if args.save_records:
                 run["records"] = records_to_json(records)

@@ -13,7 +13,7 @@ import pytest
 import torch
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.routing import Route
 
 from pagedserve.bench import ablation, plot
@@ -266,6 +266,34 @@ def test_fetch_metrics_json_or_none() -> None:
     m = asyncio.run(fetch_metrics("http://test", transport=transport))
     assert m["spec_drafted_total"] == 40 and m["spec_accepted_total"] == 25
     assert asyncio.run(fetch_metrics("http://test", path="/nope", transport=transport)) is None
+
+
+def test_prometheus_metrics_are_reduced_to_the_json_keys() -> None:
+    from pagedserve.bench.load import fetch_metrics, parse_prometheus
+
+    text = """# HELP vllm:time_to_first_token_seconds Histogram of time to first token in seconds.
+# TYPE vllm:time_to_first_token_seconds histogram
+vllm:time_to_first_token_seconds_bucket{le="0.001",model_name="m"} 0.0
+vllm:time_to_first_token_seconds_sum{model_name="m"} 12.5
+vllm:time_to_first_token_seconds_count{model_name="m"} 200.0
+vllm:inter_token_latency_seconds_sum{model_name="m"} 3.0
+vllm:inter_token_latency_seconds_count{model_name="m"} 1000.0
+vllm:e2e_request_latency_seconds_sum{model_name="m"} 400.0
+vllm:e2e_request_latency_seconds_count{model_name="m"} 200.0
+vllm:request_success_total{finished_reason="length",model_name="m"} 150.0
+vllm:request_success_total{finished_reason="stop",model_name="m"} 50.0
+vllm:num_requests_running{model_name="m"} 0.0
+"""
+    got = parse_prometheus(text)
+    assert got == {"ttft_s_sum": 12.5, "ttft_count": 200.0, "tpot_s_sum": 3.0, "tpot_count": 1000.0,
+                   "e2e_s_sum": 400.0, "e2e_count": 200.0, "requests_finished_total": 200.0}
+
+    async def metrics(_: Request):
+        return PlainTextResponse(text)
+
+    app = Starlette(routes=[Route("/metrics", metrics)])
+    m = asyncio.run(fetch_metrics("http://test", transport=httpx.ASGITransport(app=app)))
+    assert m["ttft_count"] == 200.0 and m["requests_finished_total"] == 200.0
 
 
 def test_http_load_generator_records_errors() -> None:

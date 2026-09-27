@@ -62,6 +62,9 @@ async def test_matches_in_process_engine(client: AsyncEngineCoreClient) -> None:
         assert chunks[-1].metrics["num_prompt_tokens"] == len(ps[i])
     m = client.metrics()
     assert m["requests_finished_total"] == 8 and m["kv_blocks_used"] == 0
+    # server-side latency sums (from the request's arrival at the API process)
+    assert m["ttft_count"] == 8 and m["tpot_count"] == 8 and m["e2e_count"] == 8
+    assert 0 < m["ttft_s_sum"] < m["e2e_s_sum"] and m["tpot_s_sum"] > 0
 
 
 async def test_stop_string_is_applied_on_the_client(client: AsyncEngineCoreClient) -> None:

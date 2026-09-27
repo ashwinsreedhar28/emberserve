@@ -166,6 +166,16 @@ python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/
 source /opt/vllm/bin/activate && python -m pagedserve.bench.run_vllm_baseline --server vllm --model models/Qwen2.5-7B-Instruct --dtype float16 $T --name vllm_7b_text; deactivate
 ```
 
+Every sweep now also records **server-side** latency means per rate
+(`server_latency` in the JSON: `ttft_ms_mean`, `tpot_ms_mean`, `e2e_ms_mean`), from
+pagedserve's `/metrics` sums (measured from the request's arrival at the API process) and
+from vLLM's Prometheus histograms (`vllm:time_to_first_token_seconds_sum/_count`, ...).
+The client-side numbers include the load generator's own queueing, which at a
+200-request burst is most of the TTFT: against a fake SSE server with no model at all,
+200 simultaneous requests measure ~300 ms TTFT p50 on a 2-core box, and at
+pagedserve's saturation token rate (200 streams at 6 ms) the single-process client
+inflates TPOT by ~7%. Compare saturation TTFT server-side, not client-side.
+
 At 0.5B the same pair (`pagedserve_flash_text` / `_spec`) was a loss at every rate: the
 verification step is a mixed step (eager attention, no full-step graph) and async is off,
 and at 0.5B those cost more than the accepted drafts return. The 7B pair is the run that

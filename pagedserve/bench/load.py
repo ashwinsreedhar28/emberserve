@@ -164,18 +164,62 @@ async def run_http_benchmark(base_url: str, model: str, trace: list[TraceRequest
     return [r for r in records if r is not None]
 
 
+# vLLM's Prometheus names -> the keys pagedserve's JSON /metrics uses, so a sweep can
+# record server-side latency sums for either engine.
+_PROM_KEYS = {
+    "vllm:time_to_first_token_seconds_sum": "ttft_s_sum",
+    "vllm:time_to_first_token_seconds_count": "ttft_count",
+    "vllm:time_per_output_token_seconds_sum": "tpot_s_sum",
+    "vllm:time_per_output_token_seconds_count": "tpot_count",
+    "vllm:inter_token_latency_seconds_sum": "tpot_s_sum",
+    "vllm:inter_token_latency_seconds_count": "tpot_count",
+    "vllm:e2e_request_latency_seconds_sum": "e2e_s_sum",
+    "vllm:e2e_request_latency_seconds_count": "e2e_count",
+    "vllm:request_success_total": "requests_finished_total",
+    "vllm:generation_tokens_total": "generated_tokens_total",
+    "vllm:prompt_tokens_total": "prompt_tokens_total",
+}
+
+
+def parse_prometheus(text: str) -> dict[str, float]:
+    """The metrics of `_PROM_KEYS` out of a Prometheus text exposition (labels summed)."""
+    out: dict[str, float] = {}
+    for line in text.splitlines():
+        if not line or line.startswith("#"):
+            continue
+        name, _, rest = line.partition("{") if "{" in line.split(" ")[0] else (line.split(" ")[0], "", "")
+        if rest:
+            value = rest.rpartition("}")[2].strip().split(" ")[0]
+        else:
+            parts = line.split()
+            name, value = parts[0], parts[1] if len(parts) > 1 else "0"
+        key = _PROM_KEYS.get(name)
+        if key is None:
+            continue
+        try:
+            out[key] = out.get(key, 0.0) + float(value)
+        except ValueError:
+            continue
+    return out
+
+
 async def fetch_metrics(base_url: str, path: str = "/metrics",
                         transport: httpx.AsyncBaseTransport | None = None) -> dict | None:
-    """The server's `/metrics` JSON (pagedserve), or None when the server has no such
-    route or it is not JSON (vLLM's is Prometheus text; hosted APIs have none)."""
+    """The server's metrics as a flat dict: pagedserve's `/metrics` JSON as is, vLLM's
+    Prometheus text reduced to the keys of `_PROM_KEYS`; None when there is no such route
+    (hosted APIs) or nothing recognizable in it."""
     try:
         async with httpx.AsyncClient(base_url=base_url, timeout=5.0, transport=transport) as c:
             r = await c.get(path)
             if r.status_code != 200:
                 return None
-            data = r.json()
-            return data if isinstance(data, dict) else None
-    except (httpx.HTTPError, ValueError):
+            try:
+                data = r.json()
+                return data if isinstance(data, dict) else None
+            except ValueError:
+                parsed = parse_prometheus(r.text)
+                return parsed or None
+    except httpx.HTTPError:
         return None
 
 

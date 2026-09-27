@@ -42,6 +42,7 @@ async def test_concurrent_generate_matches_offline() -> None:
     m = aeng.metrics()
     assert m["requests_finished_total"] == 8 and m["generated_tokens_total"] == 8 * 12
     assert m["prefill_steps_total"] >= 1 and m["decode_steps_total"] >= 11
+    assert m["ttft_count"] == 8 and m["tpot_count"] == 8 and 0 < m["ttft_s_sum"] < m["e2e_s_sum"]
 
 
 async def test_cancel_aborts_and_frees_blocks() -> None:
