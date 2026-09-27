@@ -26,7 +26,8 @@ BLOCK = 256
 
 def make_engine(graphs: bool, num_blocks: int = 64, max_num_seqs: int = 64,
                 max_model_len: int = 512, async_scheduling: bool = False,
-                chunked: bool = False, max_batched: int = 4096, piecewise: bool = False) -> LLMEngine:
+                chunked: bool = False, max_batched: int = 4096, piecewise: bool = False,
+                spec_k: int = 0) -> LLMEngine:
     model = Qwen2ForCausalLM(CFG)
     reset_parameters_deterministic(model, 0)
     model = model.to("cuda", torch.float16)
@@ -35,7 +36,8 @@ def make_engine(graphs: bool, num_blocks: int = 64, max_num_seqs: int = 64,
                         max_num_batched_tokens=max_batched, max_model_len=max_model_len,
                         attn_backend="paged_flash", enable_cuda_graphs=graphs,
                         async_scheduling=async_scheduling, enable_chunked_prefill=chunked,
-                        piecewise_cuda_graphs=piecewise)
+                        piecewise_cuda_graphs=piecewise,
+                        speculative_ngram=3 if spec_k else 0, num_speculative_tokens=spec_k)
     return LLMEngine(model, CFG, ecfg, tokenizer=None)
 
 
@@ -109,4 +111,17 @@ def test_piecewise_graphs_match_eager(chunked):
                       async_scheduling=True)
     assert eng.piecewise_runner is not None and eng.piecewise_runner.buckets[-1] == max(64, 40 if chunked else 4096)
     assert gen(eng, ps) == ref
+    assert eng.block_manager.num_free_blocks == eng.block_manager.num_blocks
+
+
+@pytest.mark.parametrize("piecewise", [False, True])
+def test_speculative_decoding_matches_greedy_on_cuda(piecewise):
+    """Draft rows go through flash's mixed-step path (decode rows batched, draft rows padded)
+    and, with piecewise graphs, through per-layer replays; tokens equal plain greedy."""
+    ps = prompts(9, seed=8) + [prompts(1, seed=9)[0] * 3]
+    ref = gen(make_engine(False), ps, max_tokens=20)
+    eng = make_engine(True, piecewise=piecewise, chunked=piecewise, max_batched=64 if piecewise else 4096,
+                      spec_k=4)
+    assert gen(eng, ps, max_tokens=20) == ref
+    assert eng.spec_drafted > 0
     assert eng.block_manager.num_free_blocks == eng.block_manager.num_blocks
