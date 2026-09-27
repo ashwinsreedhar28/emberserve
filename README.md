@@ -119,11 +119,12 @@ attention path (piecewise graphs where they are on), a step without any keeps th
 decode graph. Sampled requests are never drafted, and the mode turns async scheduling off
 (the proposer needs the last token on the host). `/metrics` reports `spec_drafted_total`
 and `spec_accepted_total`; on the synthetic random-id trace the acceptance rate is ~0, which
-is why the real-text traces exist. Measured on ShareGPT text at 0.5B it is a net loss at
-every rate (see [Real text](#real-text-sharegpt-conversations-results_textjson)): the
-verification step runs through the mixed-step path and async is off, and at that size those
-cost more than the accepted drafts return. It is built for the 7B-at-small-batch regime,
-where the step is the weight read and extra rows are free; that measurement is queued.
+is why the real-text traces exist. Measured on ShareGPT text it is a net loss at every
+rate, at 0.5B and at 7B (see [Real text](#real-text-sharegpt-conversations-results_textjson)):
+3-gram lookup accepts 16% of its drafts on chat text, the verification step runs through
+the mixed-step path (eager at 7B) and async is off, and those cost more than 0.19 extra
+tokens per step return. The exact verification is the reusable part; what it needs is a
+fixed-`k` draft step captured as a graph bucket, async kept on, and a better proposer.
 
 ### Paged KV cache
 
@@ -504,21 +505,40 @@ the synthetic trace) that sits in the same place, the first burst's prefill admi
 the run is the decode steady state where vLLM's per-step overhead is lowest.
 
 **n-gram speculation at 0.5B loses at every rate** (third column): TPOT 2.14 vs 1.84 ms at
-1 req/s and 10.1 vs 2.2 at 16, throughput a fifth of the baseline at saturation. Three
-reasons, all structural at this model size. The mode turns async scheduling off (the
-proposer needs the last token on the host before the next step is planned), which alone
-costs the 0.3 ms async had bought. A draft step is a multi-token step for that sequence and
-runs through the mixed-step path (piecewise graphs plus eager attention over up to six rows
-per sequence) instead of the single decode graph, and at 0.5B the step is launches, so the
-verification step costs more than the decode steps it replaces unless most drafts are
-accepted. And the acceptance rate on chat text with a 0.5B instruct model is low (measured
-in `spec_acceptance` per rate in the JSON). The engine part is exact and cheap to carry;
-where it can pay is a 7B model at batch 1–8, where a six-row step costs the same weight
-read as a one-row step and any accepted draft is a free token — that run is queued. The
-TTFT column of the spec run is lower (8.6 vs 11.1 ms at 1 req/s) for an unrelated reason:
-with async off, a step's outputs are returned by that step instead of the next one.
+1 req/s and 10.1 vs 2.2 at 16, throughput a fifth of the baseline at saturation. The mode
+turns async scheduling off (the proposer needs the last token on the host before the next
+step is planned), which alone costs the 0.3 ms async had bought, and a draft step is a
+multi-token step for that sequence that runs through the mixed-step path (piecewise graphs
+plus eager attention over up to six rows per sequence) instead of the single decode graph;
+at 0.5B the step is launches, so the verification step costs more than the decode steps it
+replaces unless most drafts are accepted. The TTFT column of the spec run is lower (8.6 vs
+11.1 ms at 1 req/s) for an unrelated reason: with async off, a step's outputs are returned
+by that step instead of the next one.
 
 ![0.5B on ShareGPT text: TPOT vs offered load](results/plots/text/tpot_vs_rate.png)
+
+**Qwen2.5-7B** on the same text (`results/vllm_7b_text.json`, `results/pagedserve_7b_text.json`,
+`results/pagedserve_7b_text_spec.json`), the regime speculation is meant for:
+
+| req/s offered | vLLM tok/s | pagedserve tok/s | + n-gram spec | vLLM TPOT p50 | pagedserve TPOT p50 | + spec TPOT p50 | vLLM TTFT p50 | pagedserve TTFT p50 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 265 | 265 | 263 | 10.1 ms | 10.2 ms | 14.8 ms | 31 ms | 37 ms |
+| 4 | 980 | 979 | 927 | 10.4 | 10.9 | 20.6 | 32 | 40 |
+| 8 | 1,781 | 1,773 | 1,440 | 10.8 | 11.8 | 31.3 | 34 | 46 |
+| all at t=0 | **5,927** | **5,298 (89%)** | 1,983 | 19.8 | 21.1 | 341 | 1,067 |
+
+Parity to 8 req/s with TPOT within 1 ms of vLLM's and 89% at saturation (99% on the
+synthetic trace: the text trace is decode-heavier, and the saturation gap is the burst's
+prefill admission again, TTFT 1,067 vs 341 ms at t=0; see the budget A/B below). The
+speculation run answers the question it was built for: the acceptance rate of 3-gram
+prompt lookup on ShareGPT chat text is **16.2%** at every rate (`spec_acceptance`), and at
+that rate the mode loses at 7B too, 14.8 vs 10.2 ms TPOT at 1 req/s. Two costs eat the
+0.19 extra tokens a step yields: a draft step is a six-row mixed step, which at 7B runs
+eagerly (piecewise graphs are off there: ~13 kernels × 28 layers of launch overhead on
+top of the ~10 ms weight read), and async scheduling is off. The exact-verification
+machinery is fine; the fix is a fixed-`k` draft step captured as a CUDA-graph bucket with
+async kept on (verify on the device), and a proposer better than n-gram lookup for chat
+text (a draft model reaches 60–80% acceptance where lookup gets 16%). Neither is done.
 
 **Moonlight-16B-A3B** on the same text (`results/vllm_moonlight_text.json`,
 `results/pagedserve_moonlight_text.json`; bf16, `mla_triton` block 16, CUDA defaults):
@@ -716,7 +736,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
-* Speculative decoding: n-gram lookup implemented (`--speculative-ngram`), a loss at 0.5B on ShareGPT text; the 7B text run (where it should pay) is next, then a draft-model proposer and keeping async scheduling on under speculation (verify on the device).
+* Speculative decoding: n-gram lookup implemented (`--speculative-ngram`); 16% acceptance on ShareGPT text and a loss at 0.5B and 7B as built. Next: a fixed-k draft step captured as a CUDA-graph bucket, async scheduling kept on (verify on the device), then a draft-model proposer.
 * Weight-only int8 implemented (`--quantization int8`, Triton dequant GEMM); 7B golden diff, batch-1 step and sweep pending.
 * Tensor parallelism implemented (`--tensor-parallel-size 2`, dense models); 7B numbers on a 2-GPU pod pending; MLA/MoE sharding after that.
 * Runpod Serverless: worker + Dockerfile in `deploy/runpod/`, endpoint not yet deployed.
