@@ -23,6 +23,7 @@ from __future__ import annotations
 import atexit
 import gc
 import os
+import signal
 import time
 from typing import Any
 
@@ -43,6 +44,10 @@ def gc_mode() -> str:
 def record_step(t_start: float, duration_s: float, num_seqs: int, num_tokens: int) -> None:
     """Called by the engine core after every step when the step log is on."""
     _STEP_LOG.append((t_start, duration_s, num_seqs, num_tokens))
+    if len(_STEP_LOG) % 5000 == 0:  # a hard kill still leaves most of the data
+        path = step_log_path()
+        if path:
+            _flush(path, "core")
 
 
 def _gc_callback(phase: str, info: dict[str, Any]) -> None:
@@ -63,6 +68,14 @@ def install(role: str) -> None:
     if path:
         gc.callbacks.append(_gc_callback)
         atexit.register(_flush, path, role)
+        if role == "core":
+            # The benchmark runner stops the server with a process-group SIGTERM, which
+            # would end the core before its exit hooks: flush, then leave.
+            def _on_term(signum, frame):  # noqa: ARG001
+                _flush(path, role)
+                os._exit(0)
+
+            signal.signal(signal.SIGTERM, _on_term)
     if gc_mode() == "tune":
         tune_gc()
 
