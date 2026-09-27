@@ -76,6 +76,17 @@ python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/
   --rates 1,2,4,8,16,inf --trace-n 200 --name pagedserve_flash_v8      # add --no-piecewise-cuda-graphs for the other arm
 ```
 
+The README's by-version figures (`results/plots/progression/`) come from:
+
+```bash
+python scripts/merge_sweeps.py --low results/pagedserve_flash_v6_low.json --high results/pagedserve_flash_v6.json --split 8 --out results/pagedserve_flash_v6_full.json
+python -m pagedserve.bench.plot --progression results/vllm.json \
+  results/pagedserve_flash.json results/pagedserve_flash_v2.json results/pagedserve_flash_v3.json results/pagedserve_flash_v4.json \
+  results/pagedserve_flash_v5.json results/pagedserve_flash_v6_full.json results/pagedserve_flash_v7b.json results/pagedserve_flash_v8.json \
+  --labels "v1 first sweep,v2 batched sampler,v3 detokenizer + SSE,v4 kernel fusion,v5 pinned inputs,v6 engine process,v7 async scheduling,v8 piecewise graphs" \
+  --out-dir results/plots/progression
+```
+
 At 7B piecewise graphs lost 1% (`pagedserve_7b_flash_v8.json` vs `_v7.json`) because a
 mixed step is padded up to a power-of-two token bucket and the padding is real compute
 there. `--piecewise-bucket-step 256` captures a bucket every 256 tokens instead (16, 32,

@@ -387,8 +387,15 @@ async scheduling (`results/pagedserve_flash_v8.json`). vLLM from its own venv, d
 | 16 | 2,659 | 2,673 | 12.0 | 12.4 | 2.2 / 2.4 | **2.1** / 2.5 |
 | all at t=0 | **16,269** | **14,904** | 421 | 543 | 8.1 / 12.8 | **6.0** / **8.7** |
 
-![throughput vs offered load](results/plots/throughput_vs_rate.png)
-![TPOT vs offered load](results/plots/tpot_vs_rate.png)
+Every version of the engine on the same sweep, one line per fix (the fix table is in the
+[gap analysis](#the-gap-against-vllm)); v3, v5 and v6's low rates were not re-run on
+their commits, so those lines start at 8 req/s. Figures:
+`python -m pagedserve.bench.plot --progression results/vllm.json results/pagedserve_flash*.json ...`
+(`results/plots/progression/`).
+
+![throughput vs offered load, by version](results/plots/progression/progression_throughput.png)
+![TPOT p50 vs offered load, by version](results/plots/progression/progression_tpot_p50.png)
+![TPOT p99 vs offered load, by version](results/plots/progression/progression_tpot_p99.png)
 
 (`results/pagedserve_flash_final.json` is the v8 run; regenerate the figures with
 `python -m pagedserve.bench.plot results/vllm.json results/pagedserve_flash.json results/pagedserve_flash_final.json --labels "vLLM,pagedserve (first run),pagedserve (after 8 fixes)" --ablation results/ablation_a100.json`.)

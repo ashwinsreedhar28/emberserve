@@ -142,6 +142,79 @@ def plot_ablation(ablation: dict, out: Path) -> Path:
     return out
 
 
+# ---- the fix-by-fix progression: every version of one system against the baseline -------
+def _progression_colors(n: int) -> list[str]:
+    """A sequential ramp for the versions (oldest lightest), so the eye reads the order."""
+    cmap = matplotlib.colormaps["Blues"]
+    if n == 1:
+        return [matplotlib.colors.to_hex(cmap(0.95))]
+    return [matplotlib.colors.to_hex(cmap(0.35 + 0.6 * i / (n - 1))) for i in range(n)]
+
+
+def _progression_axes(ax: plt.Axes, baseline: dict | None, versions: dict[str, dict],
+                      value, ylabel: str, title: str, log: bool, end_labels: bool = False) -> None:
+    colors = _progression_colors(len(versions))
+    ref = baseline if baseline is not None else next(iter(versions.values()))
+    ends: list[tuple[float, float, str, str]] = []
+    for (name, data), color in zip(versions.items(), colors, strict=True):
+        runs = data["runs"]
+        xs, _ = _rates_x(runs)
+        ys = [value(r) for r in runs]
+        ax.plot(xs, ys, marker="o", ms=3.5, lw=1.8, color=color, label=name)
+        ends.append((xs[-1], ys[-1], name.split(" ")[0], color))
+    if baseline is not None:
+        runs = baseline["runs"]
+        xs, _ = _rates_x(runs)
+        ys = [value(r) for r in runs]
+        ax.plot(xs, ys, marker="s", ms=4, lw=2.4, ls="--", color=SERIES[1], label="vLLM")
+        ends.append((xs[-1], ys[-1], "vLLM", SERIES[1]))
+    if end_labels:  # the saturation values, nudged apart so neighbours stay legible
+        ends.sort(key=lambda e: e[1])
+        span = (ax.get_ylim()[1] - ax.get_ylim()[0]) or 1.0
+        last_y = None
+        for x, y, tag, color in ends:
+            ty = y if last_y is None else max(y, last_y + 0.035 * span)
+            ax.annotate(f"{tag} {y:,.0f}", (x, y), xytext=(6, (ty - y) / span * 300),
+                        textcoords="offset points", va="center", fontsize=7, color=color)
+            last_y = ty
+    _sweep_axes(ax, ref["runs"], ylabel)
+    if log:
+        ax.set_yscale("log")
+    else:
+        ax.set_ylim(bottom=0)
+    ax.set_title(title)
+    ax.legend(loc="upper left", ncol=2)
+
+
+def plot_progression(baseline: dict | None, versions: dict[str, dict], out_dir: Path,
+                     system: str = "pagedserve") -> list[Path]:
+    """Three figures with one line per version: throughput, TPOT p50, TPOT p99 (and TTFT
+    p50), the baseline dashed. Versions that were only swept at the high rates start there."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    specs = [
+        ("progression_throughput.png", lambda r: r["summary"]["throughput_tok_s"],
+         "output throughput (tok/s)", f"{system}: throughput vs offered load, by version", False),
+        ("progression_tpot_p50.png", lambda r: r["summary"]["tpot_ms"]["p50"],
+         "TPOT p50 (ms, log)", f"{system}: time per output token (p50), by version", True),
+        ("progression_tpot_p99.png", lambda r: r["summary"]["tpot_ms"]["p99"],
+         "TPOT p99 (ms, log)", f"{system}: time per output token (p99), by version", True),
+        ("progression_ttft_p50.png", lambda r: r["summary"]["ttft_ms"]["p50"],
+         "TTFT p50 (ms, log)", f"{system}: time to first token (p50), by version", True),
+    ]
+    written = []
+    for fname, value, ylabel, title, log in specs:
+        fig, ax = plt.subplots(figsize=(6.8, 4.0))
+        _progression_axes(ax, baseline, versions, value, ylabel, title, log, end_labels=not log)
+        if not log:
+            ax.set_xlim(right=ax.get_xlim()[1] * 1.6)  # room for the end labels
+        fig.tight_layout()
+        out = out_dir / fname
+        fig.savefig(out, dpi=DPI)
+        plt.close(fig)
+        written.append(out)
+    return written
+
+
 def plot_all(sweeps: dict[str, dict], ablation: dict | None, out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
@@ -161,6 +234,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out-dir", default="results/plots")
     p.add_argument("--labels", default=None,
                    help="comma-separated legend labels, one per sweep file (default: the file's system name)")
+    p.add_argument("--progression", default=None, metavar="BASELINE_JSON",
+                   help="fix-by-fix figures: the positional sweeps are the versions, in order, "
+                        "of one system; this file is the baseline drawn dashed")
     args = p.parse_args(argv)
     labels = args.labels.split(",") if args.labels else [None] * len(args.sweeps)
     if len(labels) != len(args.sweeps):
@@ -169,6 +245,11 @@ def main(argv: list[str] | None = None) -> int:
     for f, label in zip(args.sweeps, labels):
         data = json.loads(Path(f).read_text())
         sweeps[label or data.get("system") or Path(f).stem] = data
+    if args.progression:
+        baseline = json.loads(Path(args.progression).read_text())
+        for path in plot_progression(baseline, sweeps, Path(args.out_dir)):
+            print(f"wrote {path}", file=sys.stderr)
+        return 0
     ablation = json.loads(Path(args.ablation).read_text()) if args.ablation else None
     for path in plot_all(sweeps, ablation, Path(args.out_dir)):
         print(f"wrote {path}", file=sys.stderr)
