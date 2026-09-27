@@ -79,3 +79,30 @@ def test_stop_string_truncates_and_holds_prefix(tok: Tokenizer) -> None:
     assert out == "Count: one, "
     delta, m = detok.update("r", ids, ["END OF LIST"], final=True)
     assert m is None and out + delta == "Count: one, END"
+
+
+def test_decode_batch_equals_decode(tok: Tokenizer) -> None:
+    """The Rust batch path must be exactly what per-call `decode` returns (it is used only
+    when the HF tokenizer applies no post-processing)."""
+    rng = random.Random(1)
+    vocab = tok.raw.vocab_size
+    batch = [[rng.randrange(vocab) for _ in range(rng.randrange(1, 12))] for _ in range(50)]
+    batch += [tok.encode(t)[:7] for t in TEXTS]
+    for skip in (True, False):
+        assert tok.decode_batch(batch, skip_special_tokens=skip) == \
+            [tok.decode(ids, skip_special_tokens=skip) for ids in batch]
+
+
+def test_update_batch_equals_update(tok: Tokenizer) -> None:
+    ids_a, ids_b = tok.encode(TEXTS[0]), tok.encode(TEXTS[1])
+    single = IncrementalDetokenizer(tok)
+    batched = IncrementalDetokenizer(tok)
+    out_s, out_b = ["", ""], ["", ""]
+    for n in range(1, max(len(ids_a), len(ids_b)) + 1):
+        a, b = ids_a[:n], ids_b[:n]
+        out_s[0] += single.update("a", a, [])[0]
+        out_s[1] += single.update("b", b, ["never"])[0]
+        da, db = batched.update_batch(["a", "b"], [a, b], [[], ["never"]])
+        out_b[0] += da[0]
+        out_b[1] += db[0]
+    assert out_b == out_s

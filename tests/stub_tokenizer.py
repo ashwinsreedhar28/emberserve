@@ -22,6 +22,9 @@ class StubTokenizer:
             ids = [i for i in ids if i != EOS]
         return bytes(ids).decode(errors="replace")
 
+    def decode_batch(self, batch: list[list[int]], skip_special_tokens: bool = False) -> list[str]:
+        return [self.decode(ids, skip_special_tokens) for ids in batch]
+
     def apply_chat_template(self, messages: list[dict],
                             add_generation_prompt: bool = True) -> list[int]:
         text = "".join(f"<{m['role']}>{m['content']}\n" for m in messages)

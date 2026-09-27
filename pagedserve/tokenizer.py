@@ -19,12 +19,23 @@ class Tokenizer:
             raise ImportError("pip install 'pagedserve[hf]' to load a tokenizer") from e
         self._tok = AutoTokenizer.from_pretrained(str(model_dir))
         self.eos_token_id: int = self._tok.eos_token_id
+        self._backend = getattr(self._tok, "backend_tokenizer", None)
+        self._fast_batch = (self._backend is not None
+                            and not getattr(self._tok, "clean_up_tokenization_spaces", False))
 
     def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
         return self._tok.encode(text, add_special_tokens=add_special_tokens)
 
     def decode(self, ids: list[int], skip_special_tokens: bool = False) -> str:
         return self._tok.decode(ids, skip_special_tokens=skip_special_tokens)
+
+    def decode_batch(self, batch: list[list[int]], skip_special_tokens: bool = False) -> list[str]:
+        """Many decodes in one call. Goes straight to the Rust `tokenizers` backend (one
+        GIL release, no per-call Python) when that is exactly what `decode` would do, i.e.
+        no post-processing such as `clean_up_tokenization_spaces`; otherwise a plain loop."""
+        if self._fast_batch:
+            return self._backend.decode_batch(batch, skip_special_tokens=skip_special_tokens)
+        return [self.decode(ids, skip_special_tokens=skip_special_tokens) for ids in batch]
 
     def apply_chat_template(self, messages: list[dict], add_generation_prompt: bool = True) -> list[int]:
         # tokenize=False then encode: transformers 5.x returns an Encoding from tokenize=True.
@@ -82,23 +93,43 @@ class IncrementalDetokenizer:
     def update(self, request_id: str, output_ids: list[int], stop: list[str],
                skip_special_tokens: bool = True, final: bool = False) -> tuple[str, str | None]:
         """Returns (text_delta, matched_stop_string_or_None). `final=True` flushes held text."""
+        return self.update_batch([request_id], [output_ids], [stop], skip_special_tokens,
+                                 [final])[0]
+
+    def update_batch(self, request_ids: list[str], output_ids: list[list[int]],
+                     stops: list[list[str]], skip_special_tokens: bool = True,
+                     finals: list[bool] | None = None) -> list[tuple[str, str | None]]:
+        """`update` for many requests with two `decode_batch` calls in total (the prefix
+        windows, then the new windows) instead of two `decode` calls per request."""
         if self.tokenizer is None:
-            return "", None
-        st = self._states.setdefault(request_id, DetokenizerState())
-        decode = self.tokenizer.decode
-        if st.read_offset < len(output_ids):
-            prefix_text = (decode(output_ids[st.prefix_offset:st.read_offset],
-                                  skip_special_tokens=skip_special_tokens)
-                           if st.read_offset > st.prefix_offset else "")
-            new_text = decode(output_ids[st.prefix_offset:], skip_special_tokens=skip_special_tokens)
+            return [("", None)] * len(request_ids)
+        finals = finals or [False] * len(request_ids)
+        states = [self._states.setdefault(rid, DetokenizerState()) for rid in request_ids]
+        # Windows that need decoding this step (a request whose ids did not grow needs none).
+        todo = [i for i, (st, ids) in enumerate(zip(states, output_ids)) if st.read_offset < len(ids)]
+        prefix_idx = [i for i in todo if states[i].read_offset > states[i].prefix_offset]
+        prefix_txt = dict(zip(prefix_idx, self.tokenizer.decode_batch(
+            [output_ids[i][states[i].prefix_offset:states[i].read_offset] for i in prefix_idx],
+            skip_special_tokens=skip_special_tokens))) if prefix_idx else {}
+        new_txt = self.tokenizer.decode_batch(
+            [output_ids[i][states[i].prefix_offset:] for i in todo],
+            skip_special_tokens=skip_special_tokens) if todo else []
+        for i, new_text in zip(todo, new_txt):
+            st = states[i]
+            prefix_text = prefix_txt.get(i, "")
             incomplete = new_text.endswith("\ufffd")
-            if incomplete and final:
+            if incomplete and finals[i]:
                 new_text = new_text[:-1]
                 incomplete = False
             if len(new_text) > len(prefix_text) and not incomplete:
                 st.raw += new_text[len(prefix_text):]
                 st.prefix_offset = st.read_offset
-                st.read_offset = len(output_ids)
+                st.read_offset = len(output_ids[i])
+        return [self._emit(st, stop, final) for st, stop, final in zip(states, stops, finals)]
+
+    @staticmethod
+    def _emit(st: DetokenizerState, stop: list[str], final: bool) -> tuple[str, str | None]:
+        """Stop-string check and holdback on the accumulated text; returns the delta."""
         full = st.raw
         matched = None
         if stop:
