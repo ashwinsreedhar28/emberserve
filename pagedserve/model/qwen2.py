@@ -9,16 +9,18 @@ one-to-one (see `model/weights.py`). Every activation uses the packed layout
 from __future__ import annotations
 
 import torch
-import torch.nn.functional as F
 from torch import nn
 
 from pagedserve.attn.base import AttentionBackend, AttnMetadata
 from pagedserve.config import ModelConfig
+from pagedserve.model import ops
 from pagedserve.model.rope import RotaryEmbedding
 
 
 class RMSNorm(nn.Module):
-    """HF `Qwen2RMSNorm`: normalize in float32, cast back, then scale by `weight`."""
+    """HF `Qwen2RMSNorm`: normalize in float32, cast back, then scale by `weight`.
+    `forward_with_residual` is the fused pre-norm step: add the block's output to the
+    residual stream, return the normed value and the new stream (one kernel on CUDA)."""
 
     def __init__(self, hidden_size: int, eps: float) -> None:
         super().__init__()
@@ -26,25 +28,27 @@ class RMSNorm(nn.Module):
         self.variance_epsilon = eps
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        input_dtype = x.dtype
-        xf = x.float()
-        variance = xf.pow(2).mean(-1, keepdim=True)
-        xf = xf * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weight * xf.to(input_dtype)
+        return ops.rmsnorm(x, self.weight, self.variance_epsilon)
+
+    def forward_with_residual(self, x: torch.Tensor,
+                              residual: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return ops.fused_add_rmsnorm(x, residual, self.weight, self.variance_epsilon)
 
 
 class Qwen2MLP(nn.Module):
-    """SwiGLU feed-forward: `down(silu(gate(x)) * up(x))`, no biases."""
+    """SwiGLU feed-forward: `down(silu(gate(x)) * up(x))`, no biases. `gate_proj` and
+    `up_proj` are one fused `gate_up_proj` matmul (rows [0, I) are gate, [I, 2I) are up);
+    the checkpoint's two tensors are copied into it by `model/weights.py`."""
 
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         hidden, inter = config.hidden_size, config.intermediate_size
-        self.gate_proj = nn.Linear(hidden, inter, bias=False)
-        self.up_proj = nn.Linear(hidden, inter, bias=False)
+        self.intermediate_size = inter
+        self.gate_up_proj = nn.Linear(hidden, 2 * inter, bias=False)
         self.down_proj = nn.Linear(inter, hidden, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+        return self.down_proj(ops.silu_and_mul(self.gate_up_proj(x)))
 
 
 class Qwen2Attention(nn.Module):
@@ -57,26 +61,35 @@ class Qwen2Attention(nn.Module):
         self.num_kv_heads = config.num_key_value_heads
         self.head_dim = config.head_dim
         hidden = config.hidden_size
-        self.q_proj = nn.Linear(hidden, self.num_heads * self.head_dim, bias=config.attention_bias)
-        self.k_proj = nn.Linear(hidden, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
-        self.v_proj = nn.Linear(hidden, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
-        self.o_proj = nn.Linear(self.num_heads * self.head_dim, hidden, bias=False)
+        self.q_size = self.num_heads * self.head_dim
+        self.kv_size = self.num_kv_heads * self.head_dim
+        # q_proj / k_proj / v_proj fused into one matmul: output columns are [q | k | v].
+        self.qkv_proj = nn.Linear(hidden, self.q_size + 2 * self.kv_size,
+                                  bias=config.attention_bias)
+        self.o_proj = nn.Linear(self.q_size, hidden, bias=False)
         # Shared with every other layer; it holds no parameters, only cached cos/sin tables.
         self.rotary_emb = rotary_emb
 
     def forward(self, hidden: torch.Tensor, backend: AttentionBackend,
                 meta: AttnMetadata) -> torch.Tensor:
         n = hidden.shape[0]
-        q = self.q_proj(hidden).view(n, self.num_heads, self.head_dim)
-        k = self.k_proj(hidden).view(n, self.num_kv_heads, self.head_dim)
-        v = self.v_proj(hidden).view(n, self.num_kv_heads, self.head_dim)
+        qkv = self.qkv_proj(hidden)
+        q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        q = q.view(n, self.num_heads, self.head_dim)
+        k = k.view(n, self.num_kv_heads, self.head_dim)
+        v = v.view(n, self.num_kv_heads, self.head_dim)
         q, k = self.rotary_emb(q, k, meta.positions)
         out = backend.forward(self.layer_idx, q, k, v, meta)  # [n, H, D]
-        return self.o_proj(out.reshape(n, self.num_heads * self.head_dim))
+        return self.o_proj(out.reshape(n, self.q_size))
 
 
 class Qwen2DecoderLayer(nn.Module):
-    """Pre-norm transformer block: `x + attn(norm(x))`, then `x + mlp(norm(x))`."""
+    """Pre-norm transformer block: `x + attn(norm(x))`, then `x + mlp(norm(x))`.
+
+    Written in the (hidden, residual) form so each norm can fuse the residual add that
+    precedes it: the layer receives the previous block's output `hidden` and the residual
+    stream, and returns its own output and the updated stream (the final add happens in
+    the next layer's input norm, or in the model's final norm)."""
 
     def __init__(self, config: ModelConfig, layer_idx: int, rotary_emb: RotaryEmbedding) -> None:
         super().__init__()
@@ -85,10 +98,16 @@ class Qwen2DecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
 
-    def forward(self, hidden: torch.Tensor, backend: AttentionBackend,
-                meta: AttnMetadata) -> torch.Tensor:
-        hidden = hidden + self.self_attn(self.input_layernorm(hidden), backend, meta)
-        return hidden + self.mlp(self.post_attention_layernorm(hidden))
+    def forward(self, hidden: torch.Tensor, residual: torch.Tensor | None,
+                backend: AttentionBackend, meta: AttnMetadata) -> tuple[torch.Tensor, torch.Tensor]:
+        if residual is None:  # first layer: the embedding is the residual stream
+            residual = hidden
+            hidden = self.input_layernorm(hidden)
+        else:
+            hidden, residual = self.input_layernorm.forward_with_residual(hidden, residual)
+        hidden = self.self_attn(hidden, backend, meta)
+        hidden, residual = self.post_attention_layernorm.forward_with_residual(hidden, residual)
+        return self.mlp(hidden), residual
 
 
 class Qwen2Model(nn.Module):
@@ -106,9 +125,11 @@ class Qwen2Model(nn.Module):
     def forward(self, input_ids: torch.Tensor, backend: AttentionBackend,
                 meta: AttnMetadata) -> torch.Tensor:
         hidden = self.embed_tokens(input_ids)
+        residual = None
         for layer in self.layers:
-            hidden = layer(hidden, backend, meta)
-        return self.norm(hidden)
+            hidden, residual = layer(hidden, residual, backend, meta)
+        normed, _ = self.norm.forward_with_residual(hidden, residual)
+        return normed
 
 
 class Qwen2ForCausalLM(nn.Module):

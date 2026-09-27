@@ -13,7 +13,7 @@ from safetensors.torch import save_file
 from pagedserve.attn.naive import NaiveAttentionBackend
 from pagedserve.config import ModelConfig
 from pagedserve.model.qwen2 import Qwen2ForCausalLM
-from pagedserve.model.weights import hf_to_local_name, load_hf_weights, load_model
+from pagedserve.model.weights import hf_state_dict, hf_to_local, hf_to_local_name, load_hf_weights, load_model
 from tests.test_model import make_prefill_meta, tiny_model
 
 torch.set_num_threads(2)
@@ -42,7 +42,7 @@ def _dump_snapshot(model: Qwen2ForCausalLM, out_dir: Path, drop: Collection[str]
     tied; we add a bogus `model.rotary_emb.inv_freq` that the loader must skip."""
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "config.json").write_text(json.dumps(_hf_config_json(model.config)))
-    tensors = {k: v.detach().clone().contiguous() for k, v in model.state_dict().items()
+    tensors = {k: v.detach().clone().contiguous() for k, v in hf_state_dict(model).items()
                if k not in drop}
     if model.config.tie_word_embeddings:
         tensors.pop("lm_head.weight", None)
@@ -73,9 +73,26 @@ def _assert_same_model(loaded: Qwen2ForCausalLM, ref: Qwen2ForCausalLM) -> None:
 
 
 def test_hf_to_local_name() -> None:
-    assert hf_to_local_name("model.layers.3.self_attn.q_proj.bias") == "model.layers.3.self_attn.q_proj.bias"
+    assert hf_to_local("model.layers.3.self_attn.q_proj.bias") == ("model.layers.3.self_attn.qkv_proj.bias", "q")
+    assert hf_to_local("model.layers.3.self_attn.v_proj.weight") == ("model.layers.3.self_attn.qkv_proj.weight", "v")
+    assert hf_to_local("model.layers.0.mlp.up_proj.weight") == ("model.layers.0.mlp.gate_up_proj.weight", "up")
+    assert hf_to_local_name("model.layers.0.mlp.gate_proj.weight") == "model.layers.0.mlp.gate_up_proj.weight"
     assert hf_to_local_name("lm_head.weight") == "lm_head.weight"
     assert hf_to_local_name("model.rotary_emb.inv_freq") is None
+
+
+def test_hf_state_dict_splits_fused_projections() -> None:
+    model = tiny_model(seed=3)
+    sd = hf_state_dict(model)
+    attn = model.model.layers[0].self_attn
+    q, k, v = attn.qkv_proj.weight.split([attn.q_size, attn.kv_size, attn.kv_size], dim=0)
+    assert torch.equal(sd["model.layers.0.self_attn.q_proj.weight"], q)
+    assert torch.equal(sd["model.layers.0.self_attn.k_proj.weight"], k)
+    assert torch.equal(sd["model.layers.0.self_attn.v_proj.weight"], v)
+    mlp = model.model.layers[0].mlp
+    assert torch.equal(sd["model.layers.0.mlp.up_proj.weight"],
+                       mlp.gate_up_proj.weight[mlp.intermediate_size:])
+    assert not any("qkv_proj" in k or "gate_up_proj" in k for k in sd)
 
 
 @pytest.mark.parametrize("split", [False, True])

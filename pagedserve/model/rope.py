@@ -10,6 +10,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from pagedserve.model import ops
+
 
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
     """(x1, x2) -> (-x2, x1) over the two halves of the last dim."""
@@ -63,5 +65,7 @@ class RotaryEmbedding(nn.Module):
     def forward(self, q: torch.Tensor, k: torch.Tensor,
                 positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """Rotate `q: [N, H, D]` and `k: [N, Hkv, D]` at `positions: [N]`."""
-        cos, sin = self.tables(positions)
-        return apply_rotary(q, cos, sin), apply_rotary(k, cos, sin)
+        if self._cos is None or self._cos.device != positions.device:
+            self._build_tables(positions.device)
+        assert self._cos is not None and self._sin is not None
+        return ops.rope(q, k, self._cos, self._sin, positions)
