@@ -243,9 +243,9 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"[baseline] speculation: {a}/{d} drafts accepted ({a / d:.1%})",
                           file=sys.stderr)
                 lat = {}
-                for name in ("ttft", "tpot", "e2e"):
-                    if sc.get(f"{name}_count", 0) > 0:
-                        lat[f"{name}_ms_mean"] = 1e3 * sc[f"{name}_s_sum"] / sc[f"{name}_count"]
+                for metric in ("ttft", "tpot", "e2e"):  # (not `name`: that is the sweep's)
+                    if sc.get(f"{metric}_count", 0) > 0:
+                        lat[f"{metric}_ms_mean"] = 1e3 * sc[f"{metric}_s_sum"] / sc[f"{metric}_count"]
                 if lat:
                     # measured inside the server from the request's arrival: no client queueing
                     run["server_latency"] = lat
