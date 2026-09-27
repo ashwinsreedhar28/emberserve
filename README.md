@@ -243,16 +243,40 @@ and the MoE expert stacks (3-D weights, their own grouped GEMM) stay in fp16/bf1
 point at 7B is the batch-1 decode step, which is the weight read (15 GB at ~1.5 TB/s,
 ~10 ms); halving the read halves that floor, and at larger batches, where the step turns
 compute-bound, the gain shrinks to nothing. Measured on the 7B (A100, `paged_flash` +
-graphs): the batch-1 step went from 10.09 to 7.78 ms (−23%; the int8 read runs at
-~0.96 TB/s against the fp16 GEMM's ~1.5, so the kernel, not the bytes, is the floor now)
-and TPOT at 1 req/s from 10.2 to 8.4 ms; the golden check reports 2 of 7 prompts exact
-for 64 tokens and the other 5 diverging at a near-tie (top-2 margins 0.05–0.39 logits).
-The first kernel was 2x *behind* cuBLAS at batch ≥ 32 (19.4 vs 10.8 ms at 32, 29.2 vs
-15.1 at 128: one fixed tile shape and a register transpose of the weight tile), which sank
-the sweep above 4 req/s (`results/pagedserve_7b_flash_int8.json`, 1,986 tok/s at
-saturation vs 3,166 fp16); v2 reads the weight tile in the layout `tl.dot` wants and
-autotunes the tile shape per (M bucket, N, K) at load time — its profile is pending.
-`PAGEDSERVE_INT8_KERNEL=0` routes through the torch reference for A/B and the CPU tests.
+graphs; `results/profile_7b_fp16.json`, `profile_7b_int8_v2.json`,
+`pagedserve_7b_flash_int8_v2.json`):
+
+| decode step (ms) | batch 1 | batch 8 | batch 32 | batch 128 |
+|---|---:|---:|---:|---:|
+| fp16 (cuBLAS) | 10.09 | 10.31 | 10.81 | 15.13 |
+| int8, first kernel | 7.78 | 8.59 | 19.43 | 29.18 |
+| int8, v2 (autotuned tiles + split-K) | **6.37** | **6.88** | **9.57** | 19.81 |
+
+| req/s offered | vLLM TPOT p50 | pagedserve fp16 | pagedserve int8 |
+|---|---:|---:|---:|
+| 1 | 10.2 ms | 10.2 ms | **6.6 ms** |
+| 4 | 10.2 | 11.1 | **7.9** |
+| 8 | 10.6 | 12.6 | 12.2 |
+| 16 | 11.5 | 16.5 | 26.3 |
+| all at t=0, tok/s | 3,188 | 3,166 | 2,548 |
+
+The first kernel halved the bytes and cut the batch-1 step 23%, not 50%: it launched
+56–72 programs for the A100's 108 SMs (`N / BN` tiles of a one-row output) and read at
+0.96 TB/s, and above batch 32 its one fixed tile shape plus a register transpose of the
+weight tile left it 2x behind cuBLAS. v2 reads the weight tile in the layout `tl.dot`
+wants, autotunes the tile shape per (M bucket, N, K) at load time, and cuts the K range
+into pieces when the output has too few tiles (split-K: fp32 partials and a reduce kernel
+carrying the scale and bias): 6.37 ms at batch 1 (−37%), ahead of fp16 to batch 32, and
+still 31% behind cuBLAS at batch 128, which is the compute-bound end where a hand-written
+Triton GEMM has to beat a tuned library. Over HTTP that is TPOT below vLLM's by a third
+up to 4 req/s and a loss from 8 req/s up, where chunked-prefill steps run the same kernel
+at M = 2048. Quality: the golden check reports 2 of 7 prompts exact for 64 tokens and the
+other 5 diverging at a near-tie (top-2 margins 0.05–0.39 logits), the expected cost of
+per-channel rounding. So `--quantization int8` is the right flag for a latency-bound
+deployment at small batch, and the wrong one at saturation until the large-M path is
+either a better kernel or a dequantize-then-cuBLAS step. `PAGEDSERVE_INT8_KERNEL=0`
+routes through the torch reference, `PAGEDSERVE_INT8_AUTOTUNE=0` and
+`PAGEDSERVE_INT8_SPLITK=0` pin the kernel for A/B.
 
 ### Tensor parallelism
 
@@ -744,7 +768,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 * Chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
 * Speculative decoding: n-gram lookup implemented (`--speculative-ngram`); 16% acceptance on ShareGPT text and a loss at 0.5B and 7B as built. Next: a fixed-k draft step captured as a CUDA-graph bucket, async scheduling kept on (verify on the device), then a draft-model proposer.
-* Weight-only int8 implemented (`--quantization int8`, Triton dequant GEMM); 7B golden diff, batch-1 step and sweep pending.
+* Weight-only int8: batch-1 step −37% on the 7B, TPOT 6.6 vs vLLM 10.2 ms at 1 req/s; the large-M GEMM still trails cuBLAS by 31% at batch 128, so saturation loses — next is a better large-M kernel (or dequantize-then-cuBLAS for prefill), then W8A8 with `torch._int_mm` for the compute-bound end.
 * Tensor parallelism implemented (`--tensor-parallel-size 2`, dense models); 7B numbers on a 2-GPU pod pending; MLA/MoE sharding after that.
 * Runpod Serverless: worker + Dockerfile in `deploy/runpod/`, endpoint not yet deployed.
 
