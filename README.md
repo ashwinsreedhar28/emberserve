@@ -31,14 +31,16 @@ output median 131), seed 0, same trace for every row. Raw files in `results/`.
 | | RTX 4090 | A100 SXM 80 GB |
 |---|---:|---:|
 | naive per-sequence cache, 8 req/s | 343 tok/s | |
-| paged_flash + CUDA graphs, 8 req/s | 1,441 tok/s, TPOT p50 3.8 ms | |
-| paged_flash + CUDA graphs, all 200 at t=0 | 5,459 tok/s | |
+| paged_flash + CUDA graphs, 8 req/s | 1,441 tok/s, TPOT p50 3.8 ms | 1,320 tok/s, TPOT p50 6.2 ms (HTTP) |
+| paged_flash + CUDA graphs, all 200 at t=0 | 5,459 tok/s (in-process) | **6,417 tok/s** (HTTP) |
+| vLLM, same trace, same GPU, 8 req/s | | 1,377 tok/s, TPOT p50 2.1 ms |
+| vLLM, all 200 at t=0 | | 16,269 tok/s |
 | Triton decode kernel vs flash-attn, B=128 / ctx 2048 | 4.2x slower (first version) | **1.16x** slower (835 vs 972 GB/s) |
 | KV-cache slot utilization, block 16 vs 256 | | **98% vs 76%** |
-| vLLM, same trace, all 200 at t=0 | | 16,269 tok/s, 94 req/s |
 
-The A100 end-to-end tables (pagedserve through its own HTTP server against that vLLM run,
-rate by rate) are the run in progress; they land in [Results](#results) with the gap analysis.
+Against vLLM on the A100: throughput parity to 8 req/s, 91% at 16 req/s, 39% at saturation,
+up from 23% two commits earlier. The [gap analysis](#the-gap-against-vllm) has the per-phase
+profile and the fixes it drove.
 
 ## How it works
 
@@ -191,29 +193,73 @@ heads padded 7 -> 16) closed the gap at large batch; what remains is a flat ~0.0
 that does not scale with work, so short contexts and small batches stay ~2x behind.
 `paged_torch` on the same shape: 7.41 ms, 18 GB/s.
 
-### A100, vLLM baseline (`results/vllm.json`, vLLM via `/opt/vllm`, fp16, same trace)
+### A100, pagedserve over HTTP vs vLLM (`results/vllm.json`, `results/pagedserve_*.json`)
 
-| req/s offered | tok/s | req/s achieved | TTFT p50/p99 ms | TPOT p50/p99 ms |
-|---:|---:|---:|---:|---:|
-| 1 | 177 | 1.03 | 12.9 / 20.6 | 2.0 / 2.3 |
-| 2 | 354 | 2.05 | 11.9 / 16.2 | 2.0 / 2.2 |
-| 4 | 701 | 4.06 | 11.6 / 16.9 | 2.1 / 2.2 |
-| 8 | 1,377 | 7.97 | 12.0 / 17.7 | 2.1 / 2.3 |
-| 16 | 2,659 | 15.38 | 12.0 / 18.6 | 2.2 / 2.4 |
-| all at t=0 | **16,269** | 94.1 | 421 / 608 | 8.1 / 12.8 |
+Same load generator, same trace, same GPU, both servers fp16 with `max_model_len 4096`.
+pagedserve: `paged_flash`, block 256, CUDA graphs. vLLM from its own venv, defaults.
 
-Below saturation throughput equals offered load and TTFT is flat at ~12 ms, so the open-loop
-rows compare latency, and only the last row compares capacity. The same sweep through
-pagedserve's HTTP server (Triton at block 16 and flash at block 256) is the run in progress.
+| req/s offered | vLLM tok/s | pagedserve tok/s | vLLM TTFT p50 | pagedserve TTFT p50 | vLLM TPOT p50/p99 | pagedserve TPOT p50/p99 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 177 | 177 | 12.9 ms | 23.8 ms | 2.0 / 2.3 | 4.4 / 5.3 |
+| 2 | 354 | 350 | 11.9 | 23.7 | 2.0 / 2.2 | 4.8 / 5.8 |
+| 4 | 701 | 685 | 11.6 | 24.4 | 2.1 / 2.2 | 5.5 / 6.7 |
+| 8 | 1,377 | 1,320 | 12.0 | 25.6 | 2.1 / 2.3 | 6.2 / 8.1 |
+| 16 | 2,659 | 2,409 | 12.0 | 27.5 | 2.2 / 2.4 | 9.6 / 13.0 |
+| all at t=0 | **16,269** | **6,417** | 421 | 588 | 8.1 / 12.8 | 16.0 / 29.8 |
+
+Rates 1–8 are latency comparisons (throughput equals offered load for both); 16 and the
+saturation row compare capacity. The `paged_triton` server at block 16 matches these to
+8 req/s but pays +8 ms TTFT (its fresh-prompt prefill still goes through the gather path)
+and 1.7 s TTFT at saturation; `results/pagedserve_triton.json`.
+
+### The gap against vLLM
+
+`scripts/profile_step.py` times one decode step per phase at fixed batch sizes, with a
+device sync inside `forward` so GPU time lands there (A100, `paged_flash` + graphs, ms):
+
+| batch | schedule | build_inputs | forward | sample | postprocess | total |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 0.01 | 0.15 | **3.93** | 0.08 | 0.03 | 4.22 |
+| 32 | 0.03 | 0.44 | 4.47 | 1.73 | 0.47 | 7.18 |
+| 200 (before) | 0.17 | 2.00 | 6.17 | **10.79** | 2.85 | 22.02 |
+| 200 (after `0987fda`) | 0.17 | 2.01 | 6.18 | 0.31 | 2.86 | 11.58 |
+
+Three findings, two of them fixed the same night:
+
+1. **One CUDA sync per sequence per step.** The sampler looped over rows and called
+   `.item()` on each, so a 200-sequence step paid 200 device round-trips: 10.8 of 22 ms.
+   Batched argmax (and batched temperature / top-k / top-p with per-row parameters, keeping
+   per-request generators) makes it one `.tolist()` per step. Saturation throughput
+   3,717 -> 4,739 tok/s.
+2. **Per-token CPU work that scaled with output length.** The detokenizer re-decoded a
+   request's entire output every step (O(length), invisible in the short-output profile),
+   and the SSE loop polled `request.is_disconnected()` per token per stream. A sliding-window
+   incremental detokenizer (the two-offset scheme vLLM and TGI use) and dropping the poll
+   (sse-starlette already cancels the generator on disconnect): 4,739 -> 6,417 tok/s, TPOT
+   at 16 req/s 12.9 -> 9.6 ms.
+3. **A 3.9 ms forward at batch 1, inside a CUDA graph.** Graphs removed launch *overhead*,
+   but every kernel still costs 3–4 us of GPU time, and this model runs ~42 kernels per
+   layer (unfused RMSNorm, rotate-half RoPE, separate q/k/v and gate/up projections):
+   ~1,000 kernels per step. vLLM runs ~10 per layer. This is the floor under our 4.4 ms
+   TPOT at 1 req/s against vLLM's 2.0, and it is the next fix: fused QKV and gate-up
+   weights, then Triton kernels for RMSNorm+residual, RoPE, and SiLU-mul.
+
+What is left after that is architectural. vLLM runs its scheduler in a separate process
+from the API server and overlaps step N+1's CPU work with step N on the GPU; pagedserve
+runs scheduling, sampling, detokenization and SSE delivery on one interpreter, so at 200
+streams the server's per-token work and the engine's per-step work serialize on the GIL.
+That is the remaining factor between 6.4k and 16k tok/s.
 
 ### What the numbers taught us
 
-* **Launch overhead dominates a 0.5B model.** The 4090 decode step is ~3.6 ms wall
-  (25.6 s / 7,006 steps) with graphs and ~9 ms without; the attention kernel itself is
-  ~0.1 ms. Kernel choice moved throughput 2x (paged_torch -> paged_flash); removing launches
-  moved TPOT 2.4x. The remaining per-step cost is GPU execution plus the Python bookkeeping
-  (scheduling, H2D copies, sampling sync, detokenization), and splitting that is the next
-  profile.
+* **Launch overhead dominates a 0.5B model, then kernel count does.** The 4090 decode step
+  is ~3.6 ms wall with graphs and ~9 ms without; the attention kernel itself is ~0.1 ms.
+  Kernel choice moved throughput 2x (paged_torch -> paged_flash); removing launches moved
+  TPOT 2.4x; and the A100 profile shows the graph still replays ~1,000 tiny kernels per
+  step. Nothing about this model is compute-bound at these batch sizes.
+* **Measure the step, not the kernel.** The two largest end-to-end wins so far (sampler
+  syncs, O(n) detokenization) were Python, found only by timing phases with a device sync
+  in the right place. The kernel micro-benchmark could not have shown either.
 * **Block size is a memory-vs-kernel trade.** Block 16 gives 98% slot utilization and makes
   short shared prefixes cacheable; flash-attn demands 256 and gives 76%. On an 80 GB card with
   a 0.5B model the waste never bites (nothing was ever preempted), which is exactly why the
@@ -307,7 +353,8 @@ results/               every JSON the tables above were built from
 
 ## Roadmap
 
-* pagedserve-vs-vLLM HTTP sweep on the A100 and the per-step profile behind the gap.
+* Kernel fusion for the batch-1 forward floor (fused QKV / gate-up; Triton RMSNorm+residual, RoPE, SiLU-mul).
+* Engine core in its own process with async scheduling (the vLLM v1 layout), for the saturation gap.
 * Route fresh-prompt prefill for `paged_triton` at block 16 through flash varlen (today it
   falls back to `paged_torch`, costing ~8 ms of TTFT).
 * Chunked-prefill ablation on a long-prompt trace.
