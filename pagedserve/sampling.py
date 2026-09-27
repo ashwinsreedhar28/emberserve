@@ -138,14 +138,17 @@ class Sampler:
         return tokens.tolist()
 
 
-def check_stop(request: Request, token_id: int, eos_token_id: int,
+def check_stop(request: Request, token_id: int, eos_token_id: int | frozenset[int] | set[int],
                max_model_len: int) -> FinishReason | None:
     """Decide whether `request` is done. Call AFTER `token_id` was appended to its output.
 
+    `eos_token_id` is one id or the set of ids that end generation (Llama 3 has several).
     STOP wins over LENGTH when both apply. Stop strings are the engine's job.
     """
     params = request.sampling_params
-    if token_id == eos_token_id and not params.ignore_eos:
+    is_eos = (token_id in eos_token_id if isinstance(eos_token_id, (set, frozenset))
+              else token_id == eos_token_id)
+    if is_eos and not params.ignore_eos:
         return FinishReason.STOP
     if token_id in params.stop_token_ids:
         return FinishReason.STOP

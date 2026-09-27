@@ -1,4 +1,4 @@
-"""Download Qwen/Qwen2.5-0.5B-Instruct into models/ (weights, config, tokenizer only).
+"""Download an HF snapshot into models/ (weights, config, tokenizer only). Any Qwen2 / Llama / Mistral checkpoint.
 
     python scripts/download_model.py [--repo Qwen/Qwen2.5-0.5B-Instruct] [--out models/Qwen2.5-0.5B-Instruct]
 """

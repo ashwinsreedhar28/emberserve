@@ -38,4 +38,5 @@ def install(engine: LLMEngine) -> LLMEngine:
     engine.tokenizer = StubTokenizer()
     engine.detok = IncrementalDetokenizer(engine.tokenizer)
     engine.eos_token_id = EOS
+    engine.eos_token_ids = frozenset({EOS})
     return engine

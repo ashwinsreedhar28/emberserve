@@ -1,4 +1,7 @@
-"""Qwen2 decoder written from scratch against the `AttentionBackend` interface.
+"""Qwen2 / Llama / Mistral decoder written from scratch against the `AttentionBackend` interface.
+
+The three families share this block exactly (pre-norm RMSNorm, rotate-half RoPE, GQA,
+SwiGLU); `ModelConfig` carries the differences (attention bias, RoPE scaling, eos ids).
 
 Module attribute names mirror HF's `Qwen2ForCausalLM` so safetensors weight names map
 one-to-one (see `model/weights.py`). Every activation uses the packed layout
@@ -117,7 +120,8 @@ class Qwen2Model(nn.Module):
         super().__init__()
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
         self.rotary_emb = RotaryEmbedding(
-            config.head_dim, config.max_position_embeddings, config.rope_theta)
+            config.head_dim, config.max_position_embeddings, config.rope_theta,
+            rope_scaling=config.rope_scaling)
         self.layers = nn.ModuleList(
             Qwen2DecoderLayer(config, i, self.rotary_emb) for i in range(config.num_hidden_layers))
         self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
@@ -162,6 +166,10 @@ class Qwen2ForCausalLM(nn.Module):
                            meta: AttnMetadata) -> torch.Tensor:
         """Logits for every token in the step, `[N, vocab]` (golden-logit comparisons)."""
         return self.compute_logits(self.forward(input_ids, backend, meta))
+
+
+# Same module for every supported family; the name records where it started.
+LlamaForCausalLM = Qwen2ForCausalLM
 
 
 def reset_parameters_deterministic(model: nn.Module, seed: int) -> None:

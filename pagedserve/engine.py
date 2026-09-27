@@ -82,6 +82,8 @@ class LLMEngine:
         self.tokenizer = tokenizer
         self.detok = IncrementalDetokenizer(tokenizer)
         self.eos_token_id = tokenizer.eos_token_id if tokenizer else model_config.eos_token_id
+        # Every id that ends generation: the config's list plus the tokenizer's own eos.
+        self.eos_token_ids: frozenset[int] = model_config.all_eos_token_ids | {self.eos_token_id}
 
         model_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
         num_blocks = engine_config.num_gpu_blocks or default_num_blocks(
@@ -308,7 +310,7 @@ class LLMEngine:
             req.append_output(tok)
             if req.first_token_time is None:
                 req.first_token_time = now
-            reason = check_stop(req, tok, self.eos_token_id, self.config.max_model_len)
+            reason = check_stop(req, tok, self.eos_token_ids, self.config.max_model_len)
             emitted.append((req, tok, reason))
         if not emitted:
             return []

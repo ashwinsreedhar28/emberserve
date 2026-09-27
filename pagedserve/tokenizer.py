@@ -23,7 +23,9 @@ class Tokenizer:
         self._fast_batch = (self._backend is not None
                             and not getattr(self._tok, "clean_up_tokenization_spaces", False))
 
-    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+    def encode(self, text: str, add_special_tokens: bool = True) -> list[int]:
+        """HF's default: Llama/Mistral tokenizers prepend BOS, Qwen2's adds nothing. Chat
+        templates render their own BOS text and are encoded with `add_special_tokens=False`."""
         return self._tok.encode(text, add_special_tokens=add_special_tokens)
 
     def decode(self, ids: list[int], skip_special_tokens: bool = False) -> str:

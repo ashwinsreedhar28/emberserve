@@ -1,7 +1,9 @@
 """Static configuration: model architecture and engine/runtime knobs.
 
-ModelConfig mirrors the fields of an HF `config.json` for the Qwen2 family.
-The defaults are Qwen/Qwen2.5-0.5B-Instruct. Tests use `ModelConfig.tiny()`.
+ModelConfig mirrors the fields of an HF `config.json` for the Qwen2 and Llama families
+(`model_type` qwen2 / llama / mistral: the same decoder block, differing in attention
+bias, RoPE scaling and the set of end-of-sequence ids). The defaults are
+Qwen/Qwen2.5-0.5B-Instruct. Tests use `ModelConfig.tiny()`.
 """
 
 from __future__ import annotations
@@ -26,10 +28,25 @@ class ModelConfig:
     rms_norm_eps: float = 1e-6
     rope_theta: float = 1_000_000.0
     tie_word_embeddings: bool = True
-    # Qwen2 attention projections carry a bias; o_proj and the MLP do not.
+    # Qwen2 attention projections carry a bias; o_proj and the MLP do not. Llama/Mistral: none.
     attention_bias: bool = True
     eos_token_id: int = 151645  # <|im_end|> for the Instruct model
     bos_token_id: int | None = None
+    model_type: str = "qwen2"
+    # Every id that ends generation (Llama 3 lists several: <|end_of_text|>, <|eot_id|>...).
+    eos_token_ids: tuple[int, ...] = ()
+    # HF `rope_scaling` (e.g. Llama 3's {"rope_type": "llama3", "factor": 32, ...}); None = plain.
+    rope_scaling: dict | None = None
+
+    SUPPORTED_MODEL_TYPES = ("qwen2", "llama", "mistral")
+
+    def __post_init__(self) -> None:
+        if not self.eos_token_ids:  # normalize so configs compare equal however they were built
+            object.__setattr__(self, "eos_token_ids", (self.eos_token_id,))
+
+    @property
+    def all_eos_token_ids(self) -> frozenset[int]:
+        return frozenset(self.eos_token_ids) | {self.eos_token_id}
 
     @property
     def head_dim(self) -> int:
@@ -49,21 +66,49 @@ class ModelConfig:
     def from_hf_dir(cls, model_dir: str | os.PathLike) -> "ModelConfig":
         """Read an HF snapshot directory's config.json."""
         cfg = json.loads((Path(model_dir) / "config.json").read_text())
-        assert cfg.get("model_type") == "qwen2", f"unsupported model_type {cfg.get('model_type')}"
+        model_type = cfg.get("model_type")
+        if model_type not in cls.SUPPORTED_MODEL_TYPES:
+            raise ValueError(f"unsupported model_type {model_type!r}; supported: "
+                             f"{cls.SUPPORTED_MODEL_TYPES}")
+        if cfg.get("sliding_window") not in (None, 0) and cfg.get("use_sliding_window", True):
+            raise ValueError("sliding-window attention is not supported (set for this checkpoint)")
+        if cfg.get("mlp_bias", False):
+            raise ValueError("mlp_bias=True is not supported")
+        if cfg.get("head_dim") not in (None, cfg["hidden_size"] // cfg["num_attention_heads"]):
+            raise ValueError("head_dim != hidden_size / num_attention_heads is not supported")
+        eos = cfg.get("eos_token_id")
+        if isinstance(eos, list):
+            eos_ids = tuple(int(e) for e in eos)
+        elif isinstance(eos, int):
+            eos_ids = (eos,)
+        else:
+            eos_ids = (151645,) if model_type == "qwen2" else ()
+        if not eos_ids:
+            raise ValueError("config.json has no eos_token_id")
+        rope_scaling = cfg.get("rope_scaling")
+        if rope_scaling is not None:
+            kind = rope_scaling.get("rope_type", rope_scaling.get("type"))
+            if kind not in ("llama3", "default"):
+                raise ValueError(f"unsupported rope_scaling type {kind!r}")
+            if kind == "default":
+                rope_scaling = None
         return cls(
             vocab_size=cfg["vocab_size"],
             hidden_size=cfg["hidden_size"],
             intermediate_size=cfg["intermediate_size"],
             num_hidden_layers=cfg["num_hidden_layers"],
             num_attention_heads=cfg["num_attention_heads"],
-            num_key_value_heads=cfg["num_key_value_heads"],
+            num_key_value_heads=cfg.get("num_key_value_heads", cfg["num_attention_heads"]),
             max_position_embeddings=cfg.get("max_position_embeddings", 32768),
             rms_norm_eps=cfg.get("rms_norm_eps", 1e-6),
-            rope_theta=cfg.get("rope_theta", 1_000_000.0),
-            tie_word_embeddings=cfg.get("tie_word_embeddings", True),
-            attention_bias=True,
-            eos_token_id=cfg["eos_token_id"] if isinstance(cfg.get("eos_token_id"), int) else 151645,
+            rope_theta=cfg.get("rope_theta", 1_000_000.0 if model_type == "qwen2" else 10_000.0),
+            tie_word_embeddings=cfg.get("tie_word_embeddings", model_type == "qwen2"),
+            attention_bias=cfg.get("attention_bias", model_type == "qwen2"),
+            eos_token_id=eos_ids[0],
             bos_token_id=cfg.get("bos_token_id"),
+            model_type=model_type,
+            eos_token_ids=eos_ids,
+            rope_scaling=rope_scaling,
         )
 
     @classmethod
