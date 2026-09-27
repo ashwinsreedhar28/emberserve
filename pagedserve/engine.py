@@ -317,21 +317,25 @@ class LLMEngine:
 
     def shutdown(self) -> None:
         """Stop the tensor-parallel workers (rank 0) and leave the group. Idempotent."""
-        clean = True
         if self.tp.size > 1 and self.tp.is_driver and tpdist.is_initialized():
             if self._tp_step_open:
                 # A step raised after its plan went out: the workers are (or will be) blocked
                 # in collectives nothing pairs with, so a "stop" broadcast would hang here
                 # and hide the exception. Kill them and tear the group down with a timeout.
-                clean = False
                 for p in self._tp_workers:
                     p.kill()
+                tpdist.destroy_tp(timeout_s=15.0)
             else:
                 tpdist.broadcast_object(("stop",))
+                # Every rank tears its communicator down at the same time, *before* the
+                # driver waits for the worker processes: NCCL's destroy blocks for good when
+                # a peer has already exited (its peer-to-peer transport waits on the dead
+                # rank), so waiting for the workers first is a guaranteed hang.
+                tpdist.destroy_tp(timeout_s=60.0)
             tpdist.stop_workers(self._tp_workers)
             self._tp_workers = []
         if tpdist.is_initialized():
-            tpdist.destroy_tp(timeout_s=None if clean else 15.0)
+            tpdist.destroy_tp()
         self.tp = tpdist.get_tp()
 
     def __del__(self) -> None:
