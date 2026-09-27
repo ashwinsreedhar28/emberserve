@@ -42,10 +42,10 @@ output median 131), seed 0, same trace for every row. Raw files in `results/`.
 
 Against vLLM on the A100 with Qwen2.5-0.5B: throughput parity to 16 req/s (99%), TPOT within
 0.2 ms of vLLM's at 1 req/s and *below* it at saturation (6.2 vs 8.1 ms), 86% of its
-saturation throughput, up from 23% at the first measurement the same night. At 7–8B
-parameters (Qwen2.5-7B, DeepSeek-R1-Distill-Llama-8B) both engines sit on the weight-read
-floor and pagedserve is at 89% of vLLM at saturation before the engine-process change.
-The [gap analysis](#the-gap-against-vllm) has the per-phase profile and the six fixes it
+saturation throughput, up from 23% at the first measurement the same night. At 7B
+(Qwen2.5-7B-Instruct) both engines sit on the weight-read floor and pagedserve reaches 97%
+of vLLM at saturation once chunked prefill is on; DeepSeek-R1-Distill-Llama-8B runs on the
+same code. The [gap analysis](#the-gap-against-vllm) has the per-phase profile and the six fixes it
 drove, in order; [Models](#models) has the per-model table.
 
 ## How it works
