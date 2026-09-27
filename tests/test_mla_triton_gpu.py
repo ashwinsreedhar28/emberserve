@@ -63,10 +63,11 @@ def test_kernel_matches_reference(dtype, ctx_lens):
         torch.testing.assert_close(got, want, **tol)
 
 
-def _engine(model, backend: str, dtype, graphs: bool = False) -> LLMEngine:
+def _engine(model, backend: str, dtype, graphs: bool = False, chunk: int | None = None) -> LLMEngine:
     ecfg = EngineConfig(device=DEV, dtype=dtype, block_size=BLOCK, num_gpu_blocks=256,
-                        max_num_seqs=16, max_num_batched_tokens=512, max_model_len=256,
-                        attn_backend=backend, enable_cuda_graphs=graphs)
+                        max_num_seqs=16, max_num_batched_tokens=chunk or 512, max_model_len=256,
+                        attn_backend=backend, enable_cuda_graphs=graphs,
+                        enable_chunked_prefill=chunk is not None)
     return LLMEngine(model, model.config, ecfg, tokenizer=None)
 
 
@@ -102,3 +103,19 @@ def test_prefill_paths_agree(dtype=torch.float16):
         with torch.inference_mode():
             logits.append(model.forward_logits_all(input_ids, e.backend, meta).float().cpu())
     torch.testing.assert_close(logits[1], logits[0], atol=5e-2, rtol=2e-2)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_chunked_prefill_mixed_steps(dtype):
+    """Chunked prefill with a 12-token cap: prompts of 4..33 tokens are split across steps
+    and every later chunk attends through the cache beside decode rows (`_prefill_mixed`:
+    absorbed kernel for the decode rows, gathered latent -> per-head k/v -> flash varlen
+    for the chunk). Tokens must match mla_torch under the same schedule."""
+    model = tiny_model(seed=23).to(DEV, dtype)
+    prompts = [torch.randint(2, 256, (n,), generator=torch.Generator().manual_seed(n + 7)).tolist()
+               for n in (4, 17, 33, 9, 25)]
+    sp = SamplingParams.greedy(10, ignore_eos=True)
+    ref = LLM.from_engine(_engine(model, "mla_torch", dtype, chunk=12)).generate(prompts, sp)
+    got = LLM.from_engine(_engine(model, "mla_triton", dtype, chunk=12)).generate(prompts, sp)
+    for r, g in zip(ref, got):
+        assert r.output_token_ids == g.output_token_ids
