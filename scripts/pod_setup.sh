@@ -7,7 +7,7 @@ python -c "import torch; print('torch', torch.__version__, 'cuda', torch.version
 pip install flash-attn --no-build-isolation            # fetches the prebuilt wheel for the pod's torch
 pip install -e '.[hf,server,dev]'
 python scripts/download_model.py
-python scripts/dump_golden.py
+python scripts/dump_golden.py --device cuda            # on the GPU: the pod CPUs take 10+ min for this
 if [[ "${1:-}" != "--no-vllm" ]]; then
   # vLLM pins its own torch; keep it in a venv so it cannot break flash-attn.
   python -m venv /opt/vllm && /opt/vllm/bin/pip install -q vllm
