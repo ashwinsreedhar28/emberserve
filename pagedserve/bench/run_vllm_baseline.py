@@ -72,8 +72,14 @@ def launch(cmd: list[str], log_path: Path) -> subprocess.Popen:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = open(log_path, "w")  # noqa: SIM115 - handed to Popen, closed in kill()
     print(f"[baseline] launching: {' '.join(shlex.quote(c) for c in cmd)}", file=sys.stderr)
+    env = dict(os.environ)
+    # A vLLM in its own venv (/opt/vllm/bin/vllm) JIT-compiles FlashInfer sampling kernels
+    # and needs that venv's `ninja` on PATH; put the executable's directory first.
+    bin_dir = os.path.dirname(os.path.abspath(cmd[0]))
+    if os.path.isdir(bin_dir):
+        env["PATH"] = bin_dir + os.pathsep + env.get("PATH", "")
     return subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
-                            start_new_session=True)
+                            start_new_session=True, env=env)
 
 
 def kill(proc: subprocess.Popen) -> None:
