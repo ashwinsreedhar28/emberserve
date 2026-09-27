@@ -13,17 +13,22 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, PlainTextResponse
-from sse_starlette.sse import EventSourceResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 try:  # ~5x faster than json.dumps for the small per-token SSE bodies; optional
     import orjson
 
     def _dumps(obj: Any) -> str:
         return orjson.dumps(obj).decode()
+
+    def _dumpb(obj: Any) -> bytes:
+        return orjson.dumps(obj)
 except ImportError:  # pragma: no cover - depends on the environment
     def _dumps(obj: Any) -> str:
         return json.dumps(obj, separators=(",", ":"))
+
+    def _dumpb(obj: Any) -> bytes:
+        return json.dumps(obj, separators=(",", ":")).encode()
 
 from pagedserve import diag
 from pagedserve.config import EngineConfig
@@ -37,6 +42,15 @@ from pagedserve.server.openai_types import (ChatCompletionChoice, ChatCompletion
                                             ChatDelta, CompletionChoice, CompletionRequest,
                                             CompletionResponse, ErrorResponse, ModelCard,
                                             ModelList, Usage, new_id, now, to_sampling_params)
+
+SSE_HEADERS = {"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"}
+
+
+def _sse_response(body: AsyncIterator[bytes]) -> StreamingResponse:
+    """A text/event-stream response written straight from pre-encoded bytes. Starlette's
+    StreamingResponse watches the connection alongside the body, so a client that goes
+    away cancels the generator (its `finally` aborts the engine request)."""
+    return StreamingResponse(body, media_type="text/event-stream", headers=SSE_HEADERS)
 
 Chunk = Callable[[RequestOutput], dict[str, Any]]
 
@@ -120,27 +134,37 @@ def create_app(async_engine: "AsyncLLMEngine | AsyncEngineCoreClient", model_nam
 
     async def stream(request: Request, request_id: str, prompt_ids: list[int],
                      req: CompletionRequest | ChatCompletionRequest, chunk: Chunk,
-                     first: dict[str, Any] | None = None) -> AsyncIterator[dict[str, str]]:
+                     first: dict[str, Any] | None = None) -> AsyncIterator[bytes]:
         """SSE body: an optional leading chunk, one chunk per output, a `[DONE]` sentinel.
 
-        Client disconnects are detected by sse-starlette (it watches the ASGI receive channel
-        and cancels this generator), so the `finally` below aborts the engine request; no
-        per-token `request.is_disconnected()` poll, which cost a cancel scope and a receive
-        await per token per stream."""
+        Outputs are taken in batches (`generate_batches`: whatever the engine has queued
+        for this request since the last wake-up) and every batch goes out as ONE write,
+        several `data:` events in it. When the API process keeps up a batch is one token
+        and nothing changes; when it falls behind (the 0.5B saturation point: the engine
+        produces tokens faster than one Python process can encode and write them) the
+        per-token cost of the task wake-up, the encoder and the socket write is shared
+        across the batch instead of paid per token, so the process catches up rather than
+        stalling the engine through the pipe.
+
+        Client disconnects are detected by Starlette (the response watches the ASGI receive
+        channel and cancels this generator), so the `finally` below aborts the engine
+        request; no per-token `request.is_disconnected()` poll."""
         if first is not None:
-            yield {"data": _dumps(first)}
-        n_out = 0
-        gen = async_engine.generate(request_id, prompt_ids, to_sampling_params(req))
+            yield b"data: " + _dumpb(first) + b"\n\n"
+        n_prompt = len(prompt_ids)
+        gen = async_engine.generate_batches(request_id, prompt_ids, to_sampling_params(req))
         try:
-            async for out in gen:
-                n_out = len(out.output_token_ids)
-                body = chunk(out)
-                if out.finished:
-                    body["usage"] = Usage.of(len(prompt_ids), n_out).model_dump()
-                yield {"data": _dumps(body)}
+            async for batch in gen:
+                parts = []
+                for out in batch:
+                    body = chunk(out)
+                    if out.finished:
+                        body["usage"] = Usage.of(n_prompt, len(out.output_token_ids)).model_dump()
+                    parts.append(b"data: " + _dumpb(body) + b"\n\n")
+                yield b"".join(parts)
         finally:
             await gen.aclose()
-        yield {"data": "[DONE]"}
+        yield b"data: [DONE]\n\n"
 
     async def collect(request_id: str, prompt_ids: list[int],
                       req: CompletionRequest | ChatCompletionRequest) -> tuple[str, RequestOutput]:
@@ -168,7 +192,7 @@ def create_app(async_engine: "AsyncLLMEngine | AsyncEngineCoreClient", model_nam
             def chunk(out: RequestOutput) -> dict[str, Any]:
                 return {**base, "choices": [{"index": 0, "text": out.text_delta,
                                              "finish_reason": _finish(out)}]}
-            return EventSourceResponse(stream(request, rid, prompt_ids, req, chunk))
+            return _sse_response(stream(request, rid, prompt_ids, req, chunk))
         text, last = await collect(rid, prompt_ids, req)
         return CompletionResponse(
             id=rid, created=base["created"], model=req.model,
@@ -191,8 +215,8 @@ def create_app(async_engine: "AsyncLLMEngine | AsyncEngineCoreClient", model_nam
 
             def chunk(out: RequestOutput) -> dict[str, Any]:
                 return mk(ChatDelta(content=out.text_delta), _finish(out))
-            return EventSourceResponse(stream(request, rid, prompt_ids, req, chunk,
-                                              first=mk(ChatDelta(role="assistant", content=""))))
+            return _sse_response(stream(request, rid, prompt_ids, req, chunk,
+                                        first=mk(ChatDelta(role="assistant", content=""))))
         text, last = await collect(rid, prompt_ids, req)
         return ChatCompletionResponse(
             id=rid, created=created_at, model=req.model,

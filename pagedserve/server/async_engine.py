@@ -25,6 +25,36 @@ if TYPE_CHECKING:
     from pagedserve.server.engine_core import EngineSpec
 
 
+
+async def _drain_batches(stream: "asyncio.Queue[RequestOutput | BaseException]"):
+    """Yield lists of outputs: one awaited item plus everything already queued behind it.
+    Under load the API process runs behind the engine and a request's queue holds several
+    tokens; delivering them in one SSE write is what keeps the per-token cost bounded."""
+    finished = False
+    while not finished:
+        item = await stream.get()
+        if isinstance(item, BaseException):
+            raise item
+        batch = [item]
+        finished = item.finished
+        while not finished:
+            try:
+                nxt = stream.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if isinstance(nxt, BaseException):
+                raise nxt
+            batch.append(nxt)
+            finished = nxt.finished
+        yield batch
+
+
+async def _items(batches: "AsyncIterator[list[RequestOutput]]") -> "AsyncIterator[RequestOutput]":
+    async for batch in batches:
+        for item in batch:
+            yield item
+
+
 class EngineNotRunningError(RuntimeError):
     """The worker thread is not running: `start()` was never called or `stop()` already was."""
 
@@ -142,6 +172,13 @@ class AsyncLLMEngine:
         Closing the iterator early (consumer cancelled, client gone) aborts the request in
         the engine so its KV blocks are freed. Engine-side failures are raised here.
         """
+        async for item in _items(self.generate_batches(request_id, prompt, sampling_params, metadata)):
+            yield item
+
+    async def generate_batches(self, request_id: str, prompt: str | list[int],
+                               sampling_params: SamplingParams,
+                               metadata: dict | None = None) -> AsyncIterator[list[RequestOutput]]:
+        """`generate`, one list per wake-up: every output queued for the request by then."""
         if not self.is_running:
             raise EngineNotRunningError("engine is not running")
         if request_id in self._streams:
@@ -151,12 +188,9 @@ class AsyncLLMEngine:
         self._submit(_Add(request_id, prompt, sampling_params, metadata, time.perf_counter()))
         finished = False
         try:
-            while not finished:
-                item = await stream.get()
-                if isinstance(item, BaseException):
-                    raise item
-                finished = item.finished
-                yield item
+            async for batch in _drain_batches(stream):
+                finished = batch[-1].finished
+                yield batch
         finally:
             self._streams.pop(request_id, None)
             if not finished and self.is_running:
@@ -370,6 +404,12 @@ class AsyncEngineCoreClient:
     async def generate(self, request_id: str, prompt: str | list[int],
                        sampling_params: SamplingParams,
                        metadata: dict | None = None) -> AsyncIterator[RequestOutput]:
+        async for item in _items(self.generate_batches(request_id, prompt, sampling_params, metadata)):
+            yield item
+
+    async def generate_batches(self, request_id: str, prompt: str | list[int],
+                               sampling_params: SamplingParams,
+                               metadata: dict | None = None) -> AsyncIterator[list[RequestOutput]]:
         from pagedserve.server.engine_core import CoreRequest
 
         if not self.is_running:
@@ -393,12 +433,9 @@ class AsyncEngineCoreClient:
         self.core.send(("add", CoreRequest(request_id, prompt_ids, sampling_params, now)))
         finished = False
         try:
-            while not finished:
-                item = await stream.get()
-                if isinstance(item, BaseException):
-                    raise item
-                finished = item.finished
-                yield item
+            async for batch in _drain_batches(stream):
+                finished = batch[-1].finished
+                yield batch
         finally:
             self._streams.pop(request_id, None)
             if not finished and self.is_running:
@@ -536,7 +573,10 @@ class AsyncEngineCoreClient:
                 self.detok.reset(cr.request_id)
                 with self._reqs_lock:
                     self._reqs.pop(cr.request_id, None)
+            # `output_token_ids` is the request's live list, not a copy: at 200 streams and
+            # 400 steps/s the per-token copy of a growing list was a quarter of a core, and
+            # the consumers (the SSE route, the client) only read it.
             outputs.append(RequestOutput(
-                request_id=cr.request_id, new_token_ids=list(toks), output_token_ids=list(cr.output_ids),
+                request_id=cr.request_id, new_token_ids=toks, output_token_ids=cr.output_ids,
                 finished=finished, finish_reason=fr, text_delta=delta, metrics=metrics))
         self._post(self._deliver, outputs)

@@ -41,6 +41,9 @@ class EngineSpec:
     tiny: bool = False
     tiny_seed: int = 0
     tiny_overrides: dict = field(default_factory=dict)
+    # > 0: no model at all, a clock that hands every running request one token per step
+    # (server/fake_engine.py) - the API layer's own throughput ceiling.
+    fake_step_ms: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -59,6 +62,12 @@ StepRow = tuple[str, list[int], bool, str | None]  # request id, new token ids, 
 def build_engine(spec: EngineSpec):
     from pagedserve.engine import LLMEngine
 
+    if spec.fake_step_ms > 0:
+        from pagedserve.config import ModelConfig
+        from pagedserve.server.fake_engine import FakeEngine
+
+        return FakeEngine(ModelConfig.tiny(**spec.tiny_overrides), spec.engine_config,
+                          step_ms=spec.fake_step_ms, seed=spec.tiny_seed)
     if spec.engine_config.tensor_parallel_size > 1:
         from pagedserve.dist import WorkerSpec
 

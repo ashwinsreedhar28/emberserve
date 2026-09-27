@@ -541,9 +541,22 @@ against vLLM's 22,908–23,339 over three runs, i.e. **81% with a ±6% spread**,
 client's process count makes no systematic difference. So the number to quote at 0.5B
 saturation is ~80%, not the 92% a single synthetic run gave, and the spread is itself a
 finding: vLLM's runs land within 1% of each other while ours vary by 20% end to end, with
-TPOT p99 doubling (10 → 24 ms) in the slow runs — something stalls the pipeline
-intermittently, and finding it (GC pauses in the API process are the first suspect) is
-worth more than any kernel now.
+TPOT p99 doubling (10 → 24 ms) in the slow runs.
+
+The stall hunt (`PAGEDSERVE_STEP_LOG`, `scripts/stall_report.py`, README_GPU) found two
+things. Python's garbage collector is the tail: `gc.freeze()` after startup plus raised
+thresholds (`PAGEDSERVE_GC=tune`) took TPOT p99 from 9.7–18.1 to 9.4–11.1 ms over six
+runs and was worth ~5% of throughput. The throughput itself is the API process: the
+engine core's step is **2.5 ms at 100–200 running sequences** (a potential 60–80k tok/s)
+but the core is inside `step()` only ~65% of its active time; the rest is blocked in the
+pipe `send` to the API process (39% of its non-idle samples, `PAGEDSERVE_SAMPLE_PROFILE`),
+whose one Python event loop encoded and wrote one SSE event per token for 200 streams. At
+0.5B the saturation number is a comparison of the two API servers, not the engines. v9
+sends every output queued for a request in one write when the route wakes up
+(`generate_batches`, a raw `StreamingResponse` instead of sse-starlette) and drops the
+per-token list copies in the reader thread; on a 2-core box with a clock instead of a
+model (`scripts/bench_api_layer.py`) user CPU per delivered token went from 34–42 to
+18–24 µs. The A100 A/B is the first item of the next pod session.
 
 The saturation TTFT column (630 vs 433 ms) turned out to be the load generator, not the
 server. Both engines' `/metrics` now carry latency sums measured from the request's
@@ -787,7 +800,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 
 ## Roadmap
 
-* 0.5B saturation: find the intermittent stall (runs vary 17.0–20.8k tok/s, TPOT p99 10–24 ms, while vLLM's vary 1%): GC pauses in the API process, the core→API pipe backlog, and the SSE write path are the suspects, in that order. (The TTFT-at-saturation gap that used to be listed here was the single-process load generator: server-side the two engines match.)
+* 0.5B saturation: measure v9 (batched SSE writes; GC tuned) on the A100 — the API process was the limit (the core is idle 35% of the time waiting on the pipe), and its per-token CPU is down ~40% on a CPU box. If the API layer still caps below vLLM's 23k, the next steps are a second API worker process sharing one engine core, or moving the per-token path (detokenize + encode) into the core's process.
 * Piecewise graphs at 7B: `--piecewise-bucket-step 256` recovers the 1% saturation loss (3,168 vs v7's 3,166 tok/s) but not the tail (TPOT 18.3 vs 16.5 ms at 16 req/s; `results/pagedserve_7b_flash_v8b.json`), so the mode stays off above 4 GB; the remaining cost is the static-buffer copies and the eager attention launches, which a full-step graph does not pay.
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.

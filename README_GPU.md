@@ -273,6 +273,26 @@ The step log covers the whole server lifetime (all three repeats), which is what
 report expects; the `gap` stalls are time the core spent outside `step()` (draining the
 command pipe, sending outputs), the `step` stalls inside it.
 
+What the A100 logs said (`results/steps_sat_*.tsv`, pasted in the README): the GC knob
+removes the p99 tail (18 → ≤ 11 ms) and is worth ~5%; but the core's step is 2.5 ms at
+100–200 running sequences and the core is inside `step()` only ~65% of its active time —
+the rest is blocked in the pipe `send` to the API process (39% of the core's non-idle
+samples, `PAGEDSERVE_SAMPLE_PROFILE`). The API process, one Python event loop encoding
+and writing one SSE event per token, is the 0.5B saturation limit. v9 (`generate_batches`
++ raw `StreamingResponse`): every wake-up of a request's route takes all the outputs
+queued for it and sends them in one write, and the per-token list copies in the reader
+thread are gone; `scripts/bench_api_layer.py` (a clock instead of a model, 80k tok/s
+offered) measures the API layer alone — on a 2-core box user CPU per delivered token went
+from 34–42 µs to 18–24 µs. The pod A/B, three repeats, default GC and tuned:
+
+```bash
+T="--tokenizer models/Qwen2.5-0.5B-Instruct --sharegpt data/ShareGPT_V3_unfiltered_cleaned_split.json --max-model-len 4096 --rates inf,inf,inf --trace-n 200 --client-procs 4"
+S="--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs"
+python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 $T --server-args "$S" --name pagedserve_flash_text_sat_v9
+PAGEDSERVE_GC=tune python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 $T --server-args "$S" --name pagedserve_flash_text_sat_v9gc
+python scripts/bench_api_layer.py --repeats 3     # the API layer's ceiling on the pod's CPU, no model
+```
+
 ## Block size 256 with `paged_flash`
 
 Upstream flash-attn (2.6.3 through 2.8.3.post1 and `main`) hard-checks
