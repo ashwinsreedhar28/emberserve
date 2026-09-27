@@ -42,8 +42,10 @@ output median 131), seed 0, same trace for every row. Raw files in `results/`.
 
 Against vLLM on the A100 with Qwen2.5-0.5B: throughput parity to 16 req/s (100%), lower
 latency than vLLM at every offered rate (TPOT 1.8 vs 2.0 ms and TTFT 9.4 vs 12.9 ms at
-1 req/s; TPOT 6.0 vs 8.1 ms at saturation), 92% of its saturation throughput, up from 23% at
-the first measurement the same night. At 7B (Qwen2.5-7B-Instruct) both engines sit on the
+1 req/s; TPOT 6.0 vs 8.1 ms at saturation), 92% of its saturation throughput on the
+synthetic trace (a single run; eight repeats on real text put the same point at 81 ± 6%,
+see [Real text](#real-text-sharegpt-conversations-results_textjson)), up from 23% at the
+first measurement the same night. At 7B (Qwen2.5-7B-Instruct) both engines sit on the
 weight-read floor and pagedserve reaches 99% of vLLM at saturation with chunked prefill and
 async scheduling; DeepSeek-R1-Distill-Llama-8B (llama path) is also at 99%, and Moonlight-16B-A3B (DeepSeek-V3's
 latent attention + MoE) reaches 84% on the synthetic trace and 89% on real text with a
@@ -530,20 +532,27 @@ out shorter in prompt and longer in output than the synthetic one (mean 102 / 25
 | all at t=0 | **22,908** | **18,763 (82%)** | 3,913 | 6.08 | **5.60** | 28.9 | 433 | 630 |
 
 The shape is the synthetic result again: parity to 16 req/s with lower TPOT and TTFT at
-every rate, a lower TPOT at saturation, and a saturation throughput gap (82% here, 92% on
-the synthetic trace; a repeat of this saturation point gave 20,469 vs 23,085, so the
-run-to-run spread is ±5%).
+every rate, a lower TPOT at saturation, and a saturation throughput gap. The saturation
+point was then repeated eight times (`results/pagedserve_flash_text_sat_*.json`), with the
+load generator in one process and in four: **18,716 ± 1,080 tok/s** (17,036–20,765)
+against vLLM's 22,908–23,339 over three runs, i.e. **81% with a ±6% spread**, and the
+client's process count makes no systematic difference. So the number to quote at 0.5B
+saturation is ~80%, not the 92% a single synthetic run gave, and the spread is itself a
+finding: vLLM's runs land within 1% of each other while ours vary by 20% end to end, with
+TPOT p99 doubling (10 → 24 ms) in the slow runs — something stalls the pipeline
+intermittently, and finding it (GC pauses in the API process are the first suspect) is
+worth more than any kernel now.
 
 The saturation TTFT column (630 vs 433 ms) turned out to be the load generator, not the
 server. Both engines' `/metrics` now carry latency sums measured from the request's
-arrival at the API process, and at this saturation point pagedserve's server-side mean
-TTFT is **122 ms against vLLM's 162** while the client-side p50 reads 488 vs 337
-(`results/*_text_sat*.log`): a single-process client sending 200 requests and parsing
-200 SSE streams queues for hundreds of milliseconds, and it queues more behind the server
-that streams faster. The budget hypothesis was wrong the other way: an 8,192-token prefill
-budget gives 243 ms server-side and 17.7k tok/s, because bigger prefill steps hold every
-first token longer, so 2,048 stays. `run_vllm_baseline --client-procs 4` runs the load
-generator from four processes for saturation points (README_GPU).
+arrival at the API process, and server-side the two engines' mean saturation TTFT is the
+same within noise (pagedserve 105–124 ms across the repeats, vLLM 98–162) while the
+client-side p50 reads 240–630 vs 205–433: a single-process client sending 200 requests
+and parsing 200 SSE streams queues for hundreds of milliseconds. The budget hypothesis was
+wrong the other way: an 8,192-token prefill budget gives 243 ms server-side and 17.7k
+tok/s, because bigger prefill steps hold every first token longer, so 2,048 stays.
+`run_vllm_baseline --client-procs 4` runs the load generator from four processes
+(README_GPU).
 
 **n-gram speculation at 0.5B loses at every rate** (third column): TPOT 2.14 vs 1.84 ms at
 1 req/s and 10.1 vs 2.2 at 16, throughput a fifth of the baseline at saturation. The mode
@@ -774,7 +783,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 
 ## Roadmap
 
-* Close the last 8% at 0.5B saturation. (The TTFT-at-saturation gap that used to be listed here was the single-process load generator: server-side, pagedserve's is lower than vLLM's.)
+* 0.5B saturation: find the intermittent stall (runs vary 17.0–20.8k tok/s, TPOT p99 10–24 ms, while vLLM's vary 1%): GC pauses in the API process, the core→API pipe backlog, and the SSE write path are the suspects, in that order. (The TTFT-at-saturation gap that used to be listed here was the single-process load generator: server-side the two engines match.)
 * Piecewise graphs at 7B: `--piecewise-bucket-step 256` recovers the 1% saturation loss (3,168 vs v7's 3,166 tok/s) but not the tail (TPOT 18.3 vs 16.5 ms at 16 req/s; `results/pagedserve_7b_flash_v8b.json`), so the mode stays off above 4 GB; the remaining cost is the static-buffer copies and the eager attention launches, which a full-step graph does not pay.
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
