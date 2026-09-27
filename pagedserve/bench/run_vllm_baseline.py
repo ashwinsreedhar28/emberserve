@@ -48,7 +48,7 @@ def parse_rates(s: str) -> list[float | None]:
 def server_command(args: argparse.Namespace) -> list[str]:
     extra = shlex.split(args.server_args) if args.server_args else []
     if args.server == "vllm":
-        cmd = ["vllm", "serve", args.model, "--port", str(args.port), "--host", args.host,
+        cmd = [args.vllm_bin, "serve", args.model, "--port", str(args.port), "--host", args.host,
                "--served-model-name", args.served_model_name or args.model]
         if args.dtype:
             cmd += ["--dtype", args.dtype]
@@ -95,6 +95,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pagedserve.bench.run_vllm_baseline", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--server", choices=["vllm", "pagedserve"], default="vllm")
+    p.add_argument("--vllm-bin", default="vllm",
+                   help="path to the vllm executable, e.g. /opt/vllm/bin/vllm when vLLM lives in its own venv")
     p.add_argument("--base-url", default=None, help="use a running endpoint; no subprocess")
     p.add_argument("--model", required=True, help="model name/dir; also the `model` field sent")
     p.add_argument("--served-model-name", default=None)

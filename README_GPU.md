@@ -10,6 +10,21 @@ python scripts/gpu_smoke.py           # Wed gate: identical tokens across backen
 python -m pytest -m gpu -q            # tests/test_paged_flash_gpu.py, tests/test_cuda_graphs_gpu.py
 ```
 
+## vLLM goes in its own venv
+
+`pip install vllm` replaces torch with the version vLLM pins (2.13/cu130 on Sep 27, 2026),
+which breaks the flash-attn binary built against the pod's torch (`undefined symbol:
+_ZN3c104cuda29c10_cuda_check_implementation...`). Keep them apart:
+
+```bash
+python -m venv /opt/vllm && /opt/vllm/bin/pip install vllm
+python -m pagedserve.bench.run_vllm_baseline --server vllm --vllm-bin /opt/vllm/bin/vllm ...
+```
+
+If it already happened: `pip uninstall -y vllm && pip install torch==2.8.0 --index-url
+https://download.pytorch.org/whl/cu128 && pip install --no-cache-dir --force-reinstall
+flash-attn --no-build-isolation`.
+
 ## Block size 256 with `paged_flash`
 
 Upstream flash-attn (2.6.3 through 2.8.3.post1 and `main`) hard-checks
