@@ -42,6 +42,19 @@ from pagedserve.attn.base import AttnMetadata
 DEFAULT_TOKEN_BUCKETS = (16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192)
 
 
+def token_buckets(max_tokens: int, step: int = 0) -> tuple[int, ...]:
+    """The capture buckets: powers of two (`step` 0), or powers of two up to `step` and then
+    every `step` tokens (`step` 256: 16, 32, 64, 128, 256, 512, 768, ...). A mixed step is
+    padded up to its bucket, and at 7B that padding is real compute (a 270-token step
+    padded to 512 nearly doubles its MLP work), so finer buckets trade capture count and
+    memory for less waste; at 0.5B the powers of two are enough because the step is launches."""
+    if step <= 0:
+        return DEFAULT_TOKEN_BUCKETS
+    out = [b for b in DEFAULT_TOKEN_BUCKETS if b <= step]
+    out += list(range(2 * step, max_tokens + 1, step))
+    return tuple(out)
+
+
 class _Eager:
     """A replayable that just runs the piece (CPU tests, and the no-CUDA fallback)."""
 

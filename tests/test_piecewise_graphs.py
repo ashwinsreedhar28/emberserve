@@ -118,6 +118,17 @@ def test_runner_matches_eager_forward(family, chunked):
     assert steps >= 4
 
 
+def test_token_buckets():
+    from pagedserve.attn.piecewise_graphs import DEFAULT_TOKEN_BUCKETS, token_buckets
+
+    assert token_buckets(2048, 0) == DEFAULT_TOKEN_BUCKETS
+    assert token_buckets(2048, 256) == (16, 32, 64, 128, 256, 512, 768, 1024, 1280, 1536, 1792, 2048)
+    assert token_buckets(1000, 128) == (16, 32, 64, 128, 256, 384, 512, 640, 768, 896)
+    runner = PiecewiseGraphRunner(dense_model(), engine(dense_model()).backend, max_tokens=1000,
+                                  buckets=token_buckets(1000, 128), device="cpu")
+    assert runner.buckets[-1] == 1000 and runner.bucket_for(897) == 1000 and runner.bucket_for(300) == 384
+
+
 def test_engine_flag_is_ignored_off_cuda():
     model = dense_model()
     ecfg = EngineConfig(device="cpu", dtype=torch.float32, block_size=4, num_gpu_blocks=64,

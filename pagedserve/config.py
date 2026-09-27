@@ -275,6 +275,9 @@ class EngineConfig:
     # per token bucket, attention runs eagerly between them (attn/piecewise_graphs.py).
     # Needs enable_cuda_graphs.
     piecewise_cuda_graphs: bool = False
+    # Token buckets for the piecewise graphs: 0 = powers of two; N = every N tokens past N
+    # (attn/piecewise_graphs.py `token_buckets`). Finer buckets waste less padding at 7B.
+    piecewise_bucket_step: int = 0
     # Chunked prefill (Sarathi-Serve / vLLM): every step carries one token per decoding
     # request plus as many prompt tokens as fit in the remaining `max_num_batched_tokens`,
     # so a long prompt is split across steps instead of stalling every decode for one

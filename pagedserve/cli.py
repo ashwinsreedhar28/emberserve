@@ -34,6 +34,9 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
                         "off above (7B: -1%% and a longer TPOT tail, the bucket padding costs real "
                         "compute there)")
     p.add_argument("--no-piecewise-cuda-graphs", dest="piecewise_cuda_graphs", action="store_false")
+    p.add_argument("--piecewise-bucket-step", type=int, default=0,
+                   help="token buckets for piecewise graphs: 0 = powers of two (default), N = every N "
+                        "tokens past N (less padding per mixed step at 7B, more graphs)")
     p.add_argument("--enable-chunked-prefill", dest="enable_chunked_prefill", action="store_true",
                    default=None,
                    help="mix decode tokens and prompt chunks in every step; --max-num-batched-tokens "
@@ -106,6 +109,7 @@ def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
                         enable_prefix_caching=args.enable_prefix_caching,
                         enable_cuda_graphs=args.enable_cuda_graphs,
                         piecewise_cuda_graphs=bool(piecewise),
+                        piecewise_bucket_step=int(getattr(args, "piecewise_bucket_step", 0) or 0),
                         enable_chunked_prefill=chunked,
                         async_scheduling=bool(async_sched),
                         quantization=getattr(args, "quantization", None),

@@ -639,7 +639,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 ## Roadmap
 
 * Close the last 8% at 0.5B saturation: TTFT there is 543 vs 421 ms, a matter of how many prompt pieces are admitted per step at the very start of a burst (a smaller first chunk, or vLLM-style prefill token budgeting).
-* Finer token buckets (or bucket-free capture) for piecewise graphs, so the padded chunk stops costing compute at 7B and the mode can be the default at every size.
+* Finer token buckets for piecewise graphs (`--piecewise-bucket-step 256` is implemented; 7B A/B pending) so the padded chunk stops costing compute at 7B and the mode can be the default at every size.
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.

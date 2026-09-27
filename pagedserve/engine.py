@@ -179,10 +179,11 @@ class LLMEngine:
             self.graph_runner.capture()
         self.piecewise_runner = None
         if use_graphs and engine_config.piecewise_cuda_graphs:
-            from pagedserve.attn.piecewise_graphs import PiecewiseGraphRunner
+            from pagedserve.attn.piecewise_graphs import PiecewiseGraphRunner, token_buckets
+            max_tokens = max(engine_config.max_num_batched_tokens, engine_config.max_num_seqs)
             self.piecewise_runner = PiecewiseGraphRunner(
-                self.model, self.backend,
-                max_tokens=max(engine_config.max_num_batched_tokens, engine_config.max_num_seqs),
+                self.model, self.backend, max_tokens=max_tokens,
+                buckets=token_buckets(max_tokens, engine_config.piecewise_bucket_step),
                 device=self.device)
             self.piecewise_runner.capture()
         elif engine_config.piecewise_cuda_graphs:

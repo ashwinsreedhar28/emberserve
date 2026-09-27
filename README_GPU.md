@@ -76,6 +76,19 @@ python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/
   --rates 1,2,4,8,16,inf --trace-n 200 --name pagedserve_flash_v8      # add --no-piecewise-cuda-graphs for the other arm
 ```
 
+At 7B piecewise graphs lost 1% (`pagedserve_7b_flash_v8.json` vs `_v7.json`) because a
+mixed step is padded up to a power-of-two token bucket and the padding is real compute
+there. `--piecewise-bucket-step 256` captures a bucket every 256 tokens instead (16, 32,
+64, 128, 256, 512, 768, ... 2048 under the default 2048-token cap: 12 buckets instead of
+8), so the worst-case padding drops from ~2x to +255 tokens. The 7B A/B:
+
+```bash
+python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-7B-Instruct --dtype float16 \
+  --max-model-len 4096 --rates 1,2,4,8,16,inf --trace-n 200 \
+  --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --piecewise-cuda-graphs --piecewise-bucket-step 256" \
+  --name pagedserve_7b_flash_v8b     # vs _v7 (no piecewise, 3,166) and _v8 (powers of two, 3,132)
+```
+
 ## DeepSeek / Moonlight checkpoints
 
 `scripts/download_model.py` fetches the repo's own tokenizer/modeling code and tiktoken
