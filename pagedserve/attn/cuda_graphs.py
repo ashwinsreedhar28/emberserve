@@ -125,14 +125,44 @@ class CUDAGraphRunner:
         torch.cuda.synchronize(self.device)
         for b in reversed(self.buckets):
             g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g, pool=self._pool):
-                out = self._forward(b)
-                self.logits[:b].copy_(out)
+            try:
+                with torch.cuda.graph(g, pool=self._pool):
+                    out = self._forward(b)
+                    self.logits[:b].copy_(out)
+            except Exception as capture_err:  # noqa: BLE001 - re-raised with diagnostics
+                raise RuntimeError(self._diagnose(b, capture_err)) from capture_err
             self.graphs[b] = g
         torch.cuda.synchronize(self.device)
         # Capture ran real KV writes into scratch; wipe anything it may have touched.
         self.backend.reset()
         self._captured = True
+
+    def _diagnose(self, bucket: int, capture_err: Exception) -> str:
+        """Capture errors are opaque ("previous error during capture"); re-run the same
+        bucket eagerly with a sync after every layer to name the kernel that fails."""
+        lines = [f"CUDA graph capture failed for bucket {bucket} "
+                 f"(backend {type(self.backend).__name__}): {capture_err}"]
+        try:
+            torch.cuda.synchronize(self.device)
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"  device already in error state: {e}")
+            return "\n".join(lines)
+        meta = self._meta(bucket)
+        try:
+            hidden = self.model.model.embed_tokens(self.input_ids[:bucket])
+            for i, layer in enumerate(self.model.model.layers):
+                hidden = layer(hidden, self.backend, meta)
+                torch.cuda.synchronize(self.device)
+                lines.append(f"  eager layer {i}: ok")
+            self.model.compute_logits(self.model.model.norm(hidden), meta)
+            torch.cuda.synchronize(self.device)
+            lines.append("  eager forward of the same bucket succeeds: the failure is "
+                         "capture-specific (an allocation, sync, or host-side op inside "
+                         "the captured region). Re-run with CUDA_LAUNCH_BLOCKING=1 via "
+                         "scripts/gpu_debug_capture.py to localise it.")
+        except Exception as e:  # noqa: BLE001
+            lines.append(f"  eager re-run fails too: {type(e).__name__}: {e}")
+        return "\n".join(lines)
 
     # ---- replay ---------------------------------------------------------------------
     def bucket_for(self, batch: int) -> int | None:

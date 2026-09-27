@@ -58,7 +58,7 @@ BLOCK_MULTIPLE = 16
 SUPPORTED_HEAD_DIMS = (64, 128)
 SUPPORTED_DTYPES = (torch.float16, torch.bfloat16, torch.float32)
 MAX_SPLITS = 16
-SPLIT_CONTEXT = 512  # target context per split when splitting
+SPLIT_CONTEXT = 256  # never split finer than this many keys per program
 
 
 def interpreter_enabled() -> bool:
@@ -227,13 +227,27 @@ def num_sms(device: torch.device) -> int:
 
 def default_num_splits(batch: int, num_kv_heads: int, max_context: int,
                        device: torch.device) -> int:
-    """`1` when the batch already fills the GPU, else split long contexts (flash-decoding).
+    """Split-K factor from SHAPES only (never tensor values), so a captured CUDA graph
+    replays exactly what was captured.
 
-    Depends on shapes only, so a CUDA-graph replay always launches what was captured.
+    `PAGEDSERVE_TRITON_SPLITS=<n>` forces a value (1 disables split-K) for A/B runs.
+    Otherwise: launch enough programs to keep every SM busy. `batch * num_kv_heads`
+    programs already exist; if that is below ~2 per SM, split each sequence's context
+    into `ceil(2 * SMs / programs)` pieces, capped by MAX_SPLITS and by how many tiles
+    the (shape-derived) maximum context actually has. The earlier heuristic split by
+    context length alone and paid the reduce launch even at B=128, where 256 programs
+    already fill an RTX 4090 (128 SMs) - that was the 0.14 ms floor in results/kernels.json.
     """
-    if batch * num_kv_heads >= 4 * num_sms(device):
+    forced = os.environ.get("PAGEDSERVE_TRITON_SPLITS")
+    if forced:
+        return max(1, int(forced))
+    programs = max(1, batch * num_kv_heads)
+    target = 2 * num_sms(device)
+    if programs >= target:
         return 1
-    return max(1, min(MAX_SPLITS, -(-max_context // SPLIT_CONTEXT)))
+    want = -(-target // programs)
+    by_context = max(1, -(-max_context // SPLIT_CONTEXT))
+    return max(1, min(MAX_SPLITS, want, by_context))
 
 
 class _Scratch:

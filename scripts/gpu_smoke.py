@@ -39,12 +39,30 @@ def make(model_dir: str, name: str, block: int, graphs: bool, max_seqs: int) -> 
     return LLMEngine.from_pretrained(model_dir, cfg)
 
 
+def top2_margin(eng: LLMEngine, ids: list[int]) -> float:
+    """Gap between the two largest next-token logits after `ids`, under `eng` (fp32)."""
+    eng.reset()
+    req = eng.add_request("margin", ids, SamplingParams.greedy(1))
+    so = eng.scheduler.schedule()
+    input_ids, meta = eng._build_inputs(so)
+    with torch.inference_mode():
+        hidden = eng.model(input_ids, eng.backend, meta)
+        logits = eng.model.compute_logits(hidden, meta)[0].float()
+    eng.abort_request(req.request_id)
+    eng.reset()
+    top = torch.topk(logits, 2).values
+    return float(top[0] - top[1])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="models/Qwen2.5-0.5B-Instruct")
     ap.add_argument("--batches", default="1,8,32,128")
     ap.add_argument("--out-tokens", type=int, default=128)
     ap.add_argument("--prompt-len", type=int, default=256)
+    ap.add_argument("--tie-margin", type=float, default=2e-2,
+                    help="a divergence whose top-2 logit gap (under the reference backend) is "
+                         "below this is reported as a numeric tie-break, not a failure")
     args = ap.parse_args()
     if not torch.cuda.is_available():
         print("no CUDA: skipping")
@@ -76,9 +94,23 @@ def main() -> int:
         outputs[name] = res.output_token_ids
         print(f"[{name:20s}] {res.text[:80]!r}")
     ref = outputs["naive"]
+    prompt_ids = engines["naive"].tokenizer.encode(prompt)
+    clean = True
     for name, toks in outputs.items():
-        assert toks == ref, f"{name} diverged from naive at {next(i for i,(a,b) in enumerate(zip(toks,ref)) if a!=b)}"
-    print("all backends produce identical greedy tokens\n")
+        if toks == ref:
+            continue
+        pos = next(i for i, (a, b) in enumerate(zip(toks, ref)) if a != b)
+        margin = top2_margin(engines["naive"], prompt_ids + ref[:pos])
+        if margin < args.tie_margin:
+            print(f"[{name:20s}] tie-break at token {pos} (top-2 logit margin {margin:.2e} "
+                  f"< {args.tie_margin:.0e}) - numerics, not a bug")
+        else:
+            clean = False
+            print(f"[{name:20s}] DIVERGED at token {pos}: got {toks[pos]} want {ref[pos]} "
+                  f"(margin {margin:.2e})")
+    if not clean:
+        return 1
+    print("all backends agree on greedy tokens (up to sub-margin tie-breaks)\n")
 
     g = torch.Generator().manual_seed(0)
     vocab = engines["naive"].model_config.vocab_size

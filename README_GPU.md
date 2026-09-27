@@ -71,3 +71,36 @@ python scripts/bench_kernels.py          # ms/call + effective K/V GB/s, B x ctx
 `--enable-cuda-graphs` (needs cuda + paged_flash or paged_triton) captures decode for batch buckets
 1,2,4,...,256 (capped at `max_num_seqs`). One KV block (the last id) is reserved as
 scratch for padding rows, so the BlockManager sees `num_blocks - 1`.
+
+## Kernel micro-benchmark, RTX 4090 (pre-optimization baseline)
+
+Decode attention only, H=14 Hkv=2 D=64 fp16, median of 20; `results/kernels.json`.
+
+| backend | block | ctx | B=1 | B=8 | B=32 | B=128 |
+|---|---|---|---|---|---|---|
+| paged_torch | 256 | 2048 | 0.178 ms / 6 GB/s | 0.616 ms / 14 GB/s | 2.666 ms / 13 GB/s | 10.452 ms / 13 GB/s |
+| paged_flash | 256 | 2048 | 0.020 ms / 53 GB/s | 0.020 ms / 410 GB/s | 0.035 ms / 967 GB/s | 0.170 ms / 789 GB/s |
+| paged_triton | 256 | 2048 | 0.148 ms / 7 GB/s | 0.147 ms / 57 GB/s | 0.214 ms / 157 GB/s | 0.708 ms / 190 GB/s |
+| paged_triton | 16 | 2048 | 0.147 ms / 7 GB/s | 0.147 ms / 57 GB/s | 0.212 ms / 158 GB/s | 0.700 ms / 192 GB/s |
+
+Reading: block 16 costs nothing over block 256 in the Triton kernel (same time at every
+shape), which is the point. The kernel is correct (max err 5e-4 vs paged_torch) but ~4x
+behind flash-attn at large batch and has a ~0.15 ms floor at small batch that came from
+splitting the context whenever `B*Hkv < 512` (the reduce launch dominates). The split
+heuristic is now occupancy-based (see `default_num_splits`); A/B it with
+`PAGEDSERVE_TRITON_SPLITS=1 python scripts/bench_kernels.py`.
+
+## If CUDA-graph capture fails
+
+`CUDAGraphRunner.capture()` now re-runs the failing bucket eagerly, layer by layer, and
+reports which one breaks. For the raw kernel name:
+
+```bash
+python scripts/gpu_debug_capture.py --backend paged_triton --block-size 16   # CUDA_LAUNCH_BLOCKING=1
+```
+
+## Fresh pod
+
+```bash
+git clone https://github.com/ashwinsreedhar28/pagedserve && cd pagedserve && bash scripts/pod_setup.sh
+```
