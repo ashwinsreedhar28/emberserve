@@ -54,6 +54,7 @@ def kernel_enabled(x: Tensor) -> bool:
 
 
 _KERNEL = None  # the plain JIT kernel (fixed config; interpreter and A/B)
+_REDUCE = None  # the split-K reduce kernel
 _TUNED = None  # the autotuned launcher (CUDA)
 
 # Tile configs the autotuner picks from, keyed on the M bucket (rows are decode batch
@@ -73,7 +74,15 @@ _CONFIGS_LARGE_M = [
     dict(BM=128, BN=256, BK=64, num_warps=8, num_stages=3),
     dict(BM=64, BN=256, BK=32, num_warps=8, num_stages=4),
     dict(BM=32, BN=128, BK=64, num_warps=4, num_stages=4),
+    dict(BM=32, BN=64, BK=64, num_warps=4, num_stages=4),
 ]
+# Split-K: a [M, N] output of a weight-read-bound GEMM has too few tiles to keep the GPU's
+# memory system busy (7B down_proj at batch 1: 3584 / 64 = 56 programs on 108 SMs), so
+# the K range is cut into pieces that run as separate programs writing fp32 partials, and
+# a reduce kernel sums them with the scale and bias. Chosen on the host from the tile
+# count (target ~2 programs per SM, at most 8 pieces), only where the workspace is small.
+SPLIT_K_MAX_M = 128
+_TARGET_PROGRAMS = 216
 
 
 def _m_bucket(m: int) -> int:
@@ -84,46 +93,96 @@ def _m_bucket(m: int) -> int:
     return min(triton.next_power_of_2(max(m, 1)), 8192)
 
 
+def split_k(m: int, n: int, k: int, bk: int = 64) -> int:
+    """Pieces to cut K into (a power of two, 1..8) for an `[m, n]` output."""
+    if m > SPLIT_K_MAX_M:
+        return 1
+    tiles = max(1, -(-m // (16 if m <= 16 else 64))) * max(1, -(-n // 64))
+    k_tiles = max(1, -(-k // bk))
+    s = 1
+    while s < 8 and tiles * s < _TARGET_PROGRAMS and s * 2 <= k_tiles:
+        s *= 2
+    return s
+
+
 def _define_kernel():
     import triton
     import triton.language as tl
 
     @triton.jit
     def _int8_gemm_kernel(
-        a_ptr, w_ptr, scale_ptr, bias_ptr, out_ptr, M, N, K,
+        a_ptr, w_ptr, scale_ptr, bias_ptr, out_ptr, ws_ptr, M, N, K,
         stride_am, stride_wn, stride_om,
-        M_BUCKET: tl.constexpr, HAS_BIAS: tl.constexpr,
+        M_BUCKET: tl.constexpr, SPLIT_K: tl.constexpr, HAS_BIAS: tl.constexpr,
         BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr,
     ):
         pid_m = tl.program_id(0)
         pid_n = tl.program_id(1)
+        pid_k = tl.program_id(2)
         offs_m = pid_m * BM + tl.arange(0, BM)
         offs_n = pid_n * BN + tl.arange(0, BN)
         offs_k = tl.arange(0, BK)
         m_valid = offs_m < M
         n_valid = offs_n < N
-        a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_k[None, :]  # [BM, BK]
+        # this program's share of the K tiles (contiguous range; the last split may be short)
+        k_tiles = tl.cdiv(K, BK)
+        per = tl.cdiv(k_tiles, SPLIT_K)
+        t0 = pid_k * per
+        t1 = tl.minimum(t0 + per, k_tiles)
+        a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_k[None, :] + t0 * BK  # [BM, BK]
         # the weight is [N, K] row-major; the B operand is read as a [BK, BN] tile straight
         # from that layout (K contiguous down the tile), so no register transpose is needed
-        w_ptrs = w_ptr + offs_k[:, None] + offs_n[None, :] * stride_wn  # [BK, BN]
+        w_ptrs = w_ptr + offs_k[:, None] + offs_n[None, :] * stride_wn + t0 * BK  # [BK, BN]
         acc = tl.zeros([BM, BN], dtype=tl.float32)
-        for k0 in range(0, tl.cdiv(K, BK)):
-            kk = k0 * BK + offs_k
+        for t in range(t0, t1):
+            kk = t * BK + offs_k
             k_valid = kk < K
             a = tl.load(a_ptrs, mask=m_valid[:, None] & k_valid[None, :], other=0.0)
             w = tl.load(w_ptrs, mask=k_valid[:, None] & n_valid[None, :], other=0)  # int8
             acc = tl.dot(a, w.to(a.dtype), acc)
             a_ptrs += BK
             w_ptrs += BK
-        scale = tl.load(scale_ptr + offs_n, mask=n_valid, other=0.0)
-        out = acc * scale[None, :]
-        if HAS_BIAS:
-            bias = tl.load(bias_ptr + offs_n, mask=n_valid, other=0.0).to(tl.float32)
-            out = out + bias[None, :]
-        tl.store(out_ptr + offs_m[:, None] * stride_om + offs_n[None, :],
-                 out.to(out_ptr.dtype.element_ty), mask=m_valid[:, None] & n_valid[None, :])
+        if SPLIT_K == 1:
+            scale = tl.load(scale_ptr + offs_n, mask=n_valid, other=0.0)
+            out = acc * scale[None, :]
+            if HAS_BIAS:
+                bias = tl.load(bias_ptr + offs_n, mask=n_valid, other=0.0).to(tl.float32)
+                out = out + bias[None, :]
+            tl.store(out_ptr + offs_m[:, None] * stride_om + offs_n[None, :],
+                     out.to(out_ptr.dtype.element_ty), mask=m_valid[:, None] & n_valid[None, :])
+        else:  # fp32 partial for the reduce kernel: ws[pid_k, m, n]
+            tl.store(ws_ptr + pid_k * M * N + offs_m[:, None] * N + offs_n[None, :], acc,
+                     mask=m_valid[:, None] & n_valid[None, :])
 
     return _int8_gemm_kernel
+
+
+def _define_reduce():
+    import triton
+    import triton.language as tl
+
+    @triton.jit
+    def _int8_reduce_kernel(ws_ptr, scale_ptr, bias_ptr, out_ptr, M, N, stride_om,
+                            SPLIT_K: tl.constexpr, HAS_BIAS: tl.constexpr,
+                            BM: tl.constexpr, BN: tl.constexpr):
+        pid_m = tl.program_id(0)
+        pid_n = tl.program_id(1)
+        offs_m = pid_m * BM + tl.arange(0, BM)
+        offs_n = pid_n * BN + tl.arange(0, BN)
+        mask = (offs_m < M)[:, None] & (offs_n < N)[None, :]
+        idx = offs_m[:, None] * N + offs_n[None, :]
+        acc = tl.zeros([BM, BN], dtype=tl.float32)
+        for s in range(SPLIT_K):
+            acc += tl.load(ws_ptr + s * M * N + idx, mask=mask, other=0.0)
+        scale = tl.load(scale_ptr + offs_n, mask=offs_n < N, other=0.0)
+        out = acc * scale[None, :]
+        if HAS_BIAS:
+            bias = tl.load(bias_ptr + offs_n, mask=offs_n < N, other=0.0).to(tl.float32)
+            out = out + bias[None, :]
+        tl.store(out_ptr + offs_m[:, None] * stride_om + offs_n[None, :],
+                 out.to(out_ptr.dtype.element_ty), mask=mask)
+
+    return _int8_reduce_kernel
 
 
 def _kernel():
@@ -133,8 +192,15 @@ def _kernel():
     return _KERNEL
 
 
+def _reduce():
+    global _REDUCE
+    if _REDUCE is None:
+        _REDUCE = _define_reduce()
+    return _REDUCE
+
+
 def _tuned():
-    """The autotuned launcher: one benchmark per (M bucket, N, K), then cached."""
+    """The autotuned launcher: one benchmark per (M bucket, split, N, K), then cached."""
     global _TUNED
     if _TUNED is None:
         import triton
@@ -148,7 +214,7 @@ def _tuned():
             keep = [c for c in configs if (c.kwargs["BM"] == 16) == small]
             return keep or configs
 
-        kw = dict(configs=configs, key=["M_BUCKET", "N", "K"],
+        kw = dict(configs=configs, key=["M_BUCKET", "SPLIT_K", "N", "K"],
                   prune_configs_by={"early_config_prune": prune})
         try:  # short benchmarks: ~70 keys are tuned at load time (warm_int8_kernels)
             _TUNED = triton.autotune(**kw, warmup=5, rep=20)(_define_kernel())
@@ -173,18 +239,26 @@ def int8_gemm(x: Tensor, q: Tensor, scale: Tensor, bias: Tensor | None = None) -
     if m == 0:
         return out
     bucket = _m_bucket(m)
-    args = (x, q, scale, bias if bias is not None else scale, out, m, n, k,
-            x.stride(0), q.stride(0), out.stride(0))
+    splits = split_k(m, n, k) if os.environ.get("PAGEDSERVE_INT8_SPLITK", "1") != "0" else 1
+    ws = (torch.empty((splits, m, n), dtype=torch.float32, device=x.device) if splits > 1
+          else out)  # unused at SPLIT_K == 1
+    b = bias if bias is not None else scale
+    args = (x, q, scale, b, out, ws, m, n, k, x.stride(0), q.stride(0), out.stride(0))
     if autotune_enabled(x):
-        grid = lambda meta: (triton.cdiv(m, meta["BM"]), triton.cdiv(n, meta["BN"]))  # noqa: E731
-        _tuned()[grid](*args, M_BUCKET=bucket, HAS_BIAS=bias is not None)
-        return out
-    cfg = _CONFIGS_SMALL_M[0] if m <= 16 else _CONFIGS_LARGE_M[0]
-    bk = min(cfg["BK"], max(16, triton.next_power_of_2(k)))
-    grid = (triton.cdiv(m, cfg["BM"]), triton.cdiv(n, cfg["BN"]))
-    _kernel()[grid](*args, M_BUCKET=bucket, HAS_BIAS=bias is not None,
-                    BM=cfg["BM"], BN=cfg["BN"], BK=bk,
-                    num_warps=cfg["num_warps"], num_stages=cfg["num_stages"])
+        grid = lambda meta: (triton.cdiv(m, meta["BM"]), triton.cdiv(n, meta["BN"]), splits)  # noqa: E731
+        _tuned()[grid](*args, M_BUCKET=bucket, SPLIT_K=splits, HAS_BIAS=bias is not None)
+    else:
+        cfg = _CONFIGS_SMALL_M[0] if m <= 16 else _CONFIGS_LARGE_M[0]
+        bk = min(cfg["BK"], max(16, triton.next_power_of_2(k)))
+        grid = (triton.cdiv(m, cfg["BM"]), triton.cdiv(n, cfg["BN"]), splits)
+        _kernel()[grid](*args, M_BUCKET=bucket, SPLIT_K=splits, HAS_BIAS=bias is not None,
+                        BM=cfg["BM"], BN=cfg["BN"], BK=bk,
+                        num_warps=cfg["num_warps"], num_stages=cfg["num_stages"])
+    if splits > 1:
+        rbm, rbn = (16 if m <= 16 else 32), 128
+        _reduce()[(triton.cdiv(m, rbm), triton.cdiv(n, rbn))](
+            ws, scale, b, out, m, n, out.stride(0), SPLIT_K=splits, HAS_BIAS=bias is not None,
+            BM=rbm, BN=rbn, num_warps=4)
     return out
 
 

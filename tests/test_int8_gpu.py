@@ -55,10 +55,15 @@ def test_fixed_configs_match_autotuned(monkeypatch):
 
             out = torch.empty((m, 3584), dtype=torch.float16, device=DEV)
             grid = (triton.cdiv(m, cfg["BM"]), triton.cdiv(3584, cfg["BN"]))
-            quant._kernel()[grid](x, q, s, s, out, m, 3584, 4608, x.stride(0), q.stride(0), out.stride(0),
-                                  M_BUCKET=quant._m_bucket(m), HAS_BIAS=False, BM=cfg["BM"], BN=cfg["BN"],
-                                  BK=cfg["BK"], num_warps=cfg["num_warps"], num_stages=cfg["num_stages"])
+            quant._kernel()[grid](x, q, s, s, out, out, m, 3584, 4608, x.stride(0), q.stride(0), out.stride(0),
+                                  M_BUCKET=quant._m_bucket(m), SPLIT_K=1, HAS_BIAS=False, BM=cfg["BM"],
+                                  BN=cfg["BN"], BK=cfg["BK"], num_warps=cfg["num_warps"],
+                                  num_stages=cfg["num_stages"])
             torch.testing.assert_close(out.float(), want, atol=2e-2, rtol=2e-2), cfg
+        # split-K off must give the same answer as the host's choice of splits
+        monkeypatch.setenv("PAGEDSERVE_INT8_SPLITK", "0")
+        torch.testing.assert_close(int8_gemm(x, q, s).float(), want, atol=2e-2, rtol=2e-2)
+        monkeypatch.delenv("PAGEDSERVE_INT8_SPLITK")
     lin = torch.nn.Linear(4608, 3584, bias=False).to(DEV, torch.float16)
     model = torch.nn.Sequential(lin)
     quantize_model(model)
