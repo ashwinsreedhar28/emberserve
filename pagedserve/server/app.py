@@ -87,6 +87,8 @@ def create_app(async_engine: "AsyncLLMEngine | AsyncEngineCoreClient", model_nam
     async def _internal(_: Request, exc: Exception) -> JSONResponse:
         if isinstance(exc, EngineNotRunningError):
             return _error(503, str(exc), "service_unavailable")
+        if isinstance(exc, ValueError):  # engine-side request validation (ids, lengths)
+            return _error(400, str(exc), "invalid_request_error")
         return _error(500, f"{type(exc).__name__}: {exc}", "internal_error")
 
     @app.get("/health")
@@ -153,6 +155,9 @@ def create_app(async_engine: "AsyncLLMEngine | AsyncEngineCoreClient", model_nam
             prompt_ids = tokenizer().encode(p)
         elif p and all(isinstance(x, int) for x in p):
             prompt_ids = list(p)
+            if max(prompt_ids) >= async_engine.vocab_size or min(prompt_ids) < 0:
+                raise HTTPException(400, f"prompt token id out of vocabulary "
+                                         f"(vocab_size {async_engine.vocab_size})")
         else:
             raise HTTPException(400, "prompt must be a string or a list of token ids")
         rid = new_id("cmpl-")

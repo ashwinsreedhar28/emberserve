@@ -155,6 +155,19 @@ async def test_rejects_n_and_echo(served) -> None:
     assert r.status_code == 400
 
 
+async def test_out_of_vocabulary_prompt_ids_are_400(served) -> None:
+    """Synthetic benchmark prompts are random ids; ids past the model's vocabulary must be a
+    clean client error, not a CUDA index fault inside the step (what vLLM does too)."""
+    client, _ = served
+    r = await client.post("/v1/completions", json={"model": MODEL, "prompt": [5, 6, 99_999],
+                                                   "max_tokens": 2})
+    assert r.status_code == 400, r.text
+    assert "vocabulary" in r.json()["error"]["message"]
+    r = await client.post("/v1/completions", json={"model": MODEL, "prompt": [5, 6, 7],
+                                                   "max_tokens": 2})
+    assert r.status_code == 200
+
+
 async def test_seeded_determinism(served) -> None:
     client, _ = served
     payload = {"model": MODEL, "prompt": "seed test", "max_tokens": 12, "temperature": 0.9,

@@ -68,6 +68,19 @@ def server_command(args: argparse.Namespace) -> list[str]:
     raise ValueError(args.server)
 
 
+def _vocab_size_for(model: str) -> int:
+    """`vocab_size` from a local snapshot's config.json; the Qwen2.5 default otherwise.
+    Synthetic prompts are random token ids, and ids past the model's vocabulary are
+    rejected by vLLM ("Token id ... is out of vocabulary") and by pagedserve."""
+    cfg = Path(model) / "config.json"
+    if cfg.exists():
+        try:
+            return int(json.loads(cfg.read_text())["vocab_size"])
+        except (KeyError, ValueError, OSError):
+            pass
+    return 151_936
+
+
 def launch(cmd: list[str], log_path: Path) -> subprocess.Popen:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = open(log_path, "w")  # noqa: SIM115 - handed to Popen, closed in kill()
@@ -121,6 +134,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout-s", type=float, default=600.0)
     p.add_argument("--startup-timeout-s", type=float, default=900.0)
     p.add_argument("--api-key", default=os.environ.get("OPENAI_API_KEY", "x"))
+    p.add_argument("--vocab-size", type=int, default=None,
+                   help="range of the synthetic prompt ids; default: vocab_size from <model>/config.json "
+                        "when --model is a local directory, else 151936 (Qwen2.5)")
     p.add_argument("--tokenizer", default=None,
                    help="HF dir for text prompts (default: send token ids)")
     p.add_argument("--slo-ttft-ms", type=float, default=None)
@@ -143,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
 
         tokenizer = Tokenizer(args.tokenizer)
     model_name = args.served_model_name or args.model
+    vocab_size = args.vocab_size or _vocab_size_for(args.model)
+    print(f"[baseline] synthetic prompt ids drawn from [2, {vocab_size})", file=sys.stderr)
     proc: subprocess.Popen | None = None
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     try:
@@ -154,14 +172,15 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         runs: list[dict[str, Any]] = []
         if args.warmup:
-            warm = generate_trace(4, seed=1234, max_prompt_len=64, max_output_len=16)
+            warm = generate_trace(4, seed=1234, max_prompt_len=64, max_output_len=16,
+                                  vocab_size=vocab_size)
             asyncio.run(run_http_benchmark(base_url, model_name, warm, tokenizer=tokenizer,
                                            api_key=args.api_key, progress=False))
         for rate in parse_rates(args.rates):
             trace = generate_trace(args.trace_n, seed=args.seed, request_rate=rate,
                                    shared_prefix_len=args.shared_prefix_len,
                                    max_prompt_len=args.max_prompt_len,
-                                   max_output_len=args.max_output_len)
+                                   max_output_len=args.max_output_len, vocab_size=vocab_size)
             label = "inf" if rate is None else f"{rate:g}"
             print(f"[baseline] {name} @ rate={label} req/s, n={len(trace)}", file=sys.stderr)
             t0 = time.perf_counter()

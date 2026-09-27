@@ -80,6 +80,10 @@ class AsyncLLMEngine:
 
     # ---- lifecycle (call from the event-loop thread) -------------------------------------
     @property
+    def vocab_size(self) -> int:
+        return self.engine.model_config.vocab_size
+
+    @property
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
@@ -305,6 +309,10 @@ class AsyncEngineCoreClient:
     @property
     def engine(self) -> "AsyncEngineCoreClient":  # the app reads `.engine.tokenizer`
         return self
+
+    @property
+    def vocab_size(self) -> int:
+        return int(self.core.info.get("vocab_size", 0)) or (1 << 31)
 
     def start(self) -> None:
         if self.is_running:

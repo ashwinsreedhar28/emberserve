@@ -168,6 +168,9 @@ class LLMEngine:
             prompt_ids = self.tokenizer.encode(prompt)
         else:
             prompt_ids = list(prompt)
+        if prompt_ids and (max(prompt_ids) >= self.model_config.vocab_size or min(prompt_ids) < 0):
+            raise ValueError(f"prompt token id out of vocabulary (vocab_size "
+                             f"{self.model_config.vocab_size})")
         req = Request(request_id=request_id, prompt_token_ids=prompt_ids,
                       sampling_params=sampling_params or SamplingParams(),
                       seq_id=self._next_seq_id, metadata=metadata or {})

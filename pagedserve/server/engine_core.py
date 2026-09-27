@@ -84,6 +84,7 @@ def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connectio
         engine.keep_stats = False
         out_conn.send(("ready", {"eos_token_ids": sorted(engine.eos_token_ids),
                                  "max_model_len": engine.config.max_model_len,
+                                 "vocab_size": engine.model_config.vocab_size,
                                  "pid": os.getpid()}))
         sched = engine.scheduler
 
