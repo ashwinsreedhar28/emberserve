@@ -200,8 +200,12 @@ def test_checkpoint_round_trip(tmp_path: Path):
     save_file(tensors, str(tmp_path / "model.safetensors"))
     loaded = load_model(tmp_path)
     assert isinstance(loaded, DeepseekForCausalLM)
-    for (n1, p1), (n2, p2) in zip(ref.state_dict().items(), loaded.state_dict().items()):
-        assert n1 == n2 and torch.equal(p1, p2), n1
+    assert loaded.rope_folded and not ref.rope_folded  # load_model folds the rope layout in
+    sd2 = hf_state_dict(loaded)  # ... and the HF view is unchanged by it
+    for name, t in sd.items():
+        assert torch.equal(t, sd2[name]), name
+    assert not torch.equal(ref.model.layers[0].self_attn.q_proj.weight,
+                           loaded.model.layers[0].self_attn.q_proj.weight)
     ids = list(range(2, 12))
     a = LLM.from_engine(make_engine(ref)).generate([ids], SamplingParams.greedy(6, ignore_eos=True))[0]
     b = LLM.from_engine(make_engine(loaded)).generate([ids], SamplingParams.greedy(6, ignore_eos=True))[0]
@@ -211,3 +215,31 @@ def test_checkpoint_round_trip(tmp_path: Path):
 def test_scale_is_qk_head_dim():
     attn = tiny_model(seed=8, layers=1, moe=False).model.layers[0].self_attn
     assert math.isclose(attn.softmax_scale, (NOPE + ROPE) ** -0.5)
+
+
+def test_rope_fold_is_exact():
+    """Folding the halves permutation into the projections changes the weights, not the
+    math: prompt logits agree to float precision and greedy tokens are identical; unfolding
+    restores the original weights bit for bit."""
+    m = tiny_model(seed=31)
+    ids = list(range(2, 30))
+    sp = SamplingParams.greedy(8, ignore_eos=True)
+
+    def prompt_logits():
+        e = make_engine(m)
+        e.add_request("r", ids, SamplingParams.greedy(1))
+        so = e.scheduler.schedule()
+        input_ids, meta = e._build_inputs(so)
+        with torch.inference_mode():
+            return m.forward_logits_all(input_ids, e.backend, meta).clone()
+
+    before_logits = prompt_logits()
+    before = LLM.from_engine(make_engine(m)).generate([ids], sp)[0].output_token_ids
+    w0 = m.model.layers[0].self_attn.q_proj.weight.clone()
+    m.fold_rope_permutation()
+    assert m.rope_folded
+    assert not torch.equal(w0, m.model.layers[0].self_attn.q_proj.weight)
+    torch.testing.assert_close(prompt_logits(), before_logits, atol=1e-5, rtol=1e-5)
+    assert LLM.from_engine(make_engine(m)).generate([ids], sp)[0].output_token_ids == before
+    m.fold_rope_permutation(False)
+    assert not m.rope_folded and torch.equal(w0, m.model.layers[0].self_attn.q_proj.weight)

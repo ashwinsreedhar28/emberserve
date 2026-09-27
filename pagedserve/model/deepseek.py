@@ -31,6 +31,19 @@ def interleave_to_halves(x: torch.Tensor) -> torch.Tensor:
     return x.view(*lead, d // 2, 2).transpose(-1, -2).reshape(*lead, d)
 
 
+def halves_permutation(d: int) -> torch.Tensor:
+    """`perm` with `interleave_to_halves(y) == y[perm]` for a `[d]` vector: the even
+    indices then the odd ones."""
+    return torch.cat([torch.arange(0, d, 2), torch.arange(1, d, 2)])
+
+
+def _permute_rows(weight: torch.Tensor, rows: torch.Tensor, perm: torch.Tensor) -> None:
+    """In place: `weight[rows] = weight[rows][perm]` (rows of a linear layer's weight are
+    output dimensions, so permuting them permutes that projection's output)."""
+    with torch.no_grad():
+        weight[rows] = weight[rows][perm.to(weight.device)]
+
+
 class MLAAttention(nn.Module):
     def __init__(self, config: ModelConfig, layer_idx: int, rotary_emb: RotaryEmbedding) -> None:
         super().__init__()
@@ -57,6 +70,35 @@ class MLAAttention(nn.Module):
         self.o_proj = nn.Linear(self.num_heads * m.v_head_dim, hidden, bias=False)
         self.softmax_scale = self.q_head_dim ** -0.5
         self.rotary_emb = rotary_emb
+        # True once the rope permutation lives in the weights (see `fold_rope_permutation`).
+        self.rope_folded = False
+
+    # ---- rope layout folded into the projections -------------------------------------
+    def _rope_rows(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """(q rope rows over all heads, k rope rows, the halves permutation of one head)."""
+        dr = self.qk_rope
+        per_head = torch.arange(self.qk_nope, self.q_head_dim)
+        q_rows = (torch.arange(self.num_heads)[:, None] * self.q_head_dim + per_head[None, :]).reshape(-1)
+        k_rows = torch.arange(self.kv_lora_rank, self.kv_lora_rank + dr)
+        return q_rows, k_rows, halves_permutation(dr)
+
+    def fold_rope_permutation(self, fold: bool = True) -> None:
+        """Move `interleave_to_halves` into the weights: permuting the rope rows of the q
+        projection (per head) and of `kv_a_proj_with_mqa` makes those projections emit
+        q_pe / k_pe already in halves order, so the forward skips two copies per layer.
+        Exact: the rope rotation commutes with a permutation applied to both q_pe and k_pe
+        alike, and the scores are dot products of the two. `fold=False` undoes it (for
+        exporting HF-layout checkpoints); idempotent either way."""
+        if fold == self.rope_folded:
+            return
+        q_rows, k_rows, perm = self._rope_rows()
+        if not fold:
+            perm = torch.argsort(perm)
+        q_weight = self.q_proj.weight if hasattr(self, "q_proj") else self.q_b_proj.weight
+        per_head_perm = (torch.arange(self.num_heads)[:, None] * self.qk_rope + perm[None, :]).reshape(-1)
+        _permute_rows(q_weight, q_rows, per_head_perm)
+        _permute_rows(self.kv_a_proj_with_mqa.weight, k_rows, perm)
+        self.rope_folded = fold
 
     def up_projections(self) -> tuple[torch.Tensor, torch.Tensor]:
         """`(w_uk [H, Dn, Dl], w_uv [H, Dv, Dl])`: kv_b_proj split per head into the
@@ -75,9 +117,12 @@ class MLAAttention(nn.Module):
         ckv = self.kv_a_proj_with_mqa(hidden)
         c, k_pe = ckv.split([self.kv_lora_rank, self.qk_rope], dim=-1)
         c = self.kv_a_layernorm(c)
-        q_pe, k_pe = self.rotary_emb(interleave_to_halves(q_pe).contiguous(),
-                                     interleave_to_halves(k_pe).unsqueeze(1).contiguous(),
-                                     meta.positions)
+        if self.rope_folded:  # the projections already emit halves order: rope on the views
+            q_pe, k_pe = self.rotary_emb(q_pe, k_pe.unsqueeze(1), meta.positions)
+        else:
+            q_pe, k_pe = self.rotary_emb(interleave_to_halves(q_pe).contiguous(),
+                                         interleave_to_halves(k_pe).unsqueeze(1).contiguous(),
+                                         meta.positions)
         latent = torch.cat([c, k_pe.squeeze(1)], dim=-1)  # [n, Dl + Dr]
         w_uk, w_uv = self.up_projections()
         out = backend.forward(self.layer_idx, q_nope, q_pe, latent, w_uk, w_uv,
@@ -146,6 +191,15 @@ class DeepseekForCausalLM(nn.Module):
     def forward(self, input_ids: torch.Tensor, backend, meta: AttnMetadata) -> torch.Tensor:
         return self.model(input_ids, backend, meta)
 
+    def fold_rope_permutation(self, fold: bool = True) -> None:
+        """See `MLAAttention.fold_rope_permutation`; `load_model` calls this after loading."""
+        for layer in self.model.layers:
+            layer.self_attn.fold_rope_permutation(fold)
+
+    @property
+    def rope_folded(self) -> bool:
+        return all(layer.self_attn.rope_folded for layer in self.model.layers)
+
     def compute_logits(self, hidden: torch.Tensor, meta: AttnMetadata | None = None) -> torch.Tensor:
         if meta is not None:
             last = (meta.cu_seqlens_q[1:] - 1).to(torch.long)
@@ -156,4 +210,5 @@ class DeepseekForCausalLM(nn.Module):
         return self.compute_logits(self.forward(input_ids, backend, meta))
 
 
-__all__ = ["DeepseekForCausalLM", "DeepseekDecoderLayer", "MLAAttention", "interleave_to_halves"]
+__all__ = ["DeepseekForCausalLM", "DeepseekDecoderLayer", "MLAAttention", "halves_permutation",
+           "interleave_to_halves"]

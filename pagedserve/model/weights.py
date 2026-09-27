@@ -120,10 +120,18 @@ def hf_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
     """The model's parameters under HF names, fused projections and stacked experts split
     back apart (for writing checkpoints the HF loader, or this loader, can read)."""
     config = model.config
-    out: dict[str, torch.Tensor] = {}
-    for local, tensor in model.state_dict().items():
-        for shard in _expected_shards(local, tensor):
-            out[_hf_name(local, shard)] = _shard_view(config, tensor, shard)
+    folded = bool(getattr(model, "rope_folded", False))
+    if folded:  # export the HF rope layout, then put the folded one back
+        model.fold_rope_permutation(False)
+    try:
+        out: dict[str, torch.Tensor] = {}
+        for local, tensor in model.state_dict().items():
+            for shard in _expected_shards(local, tensor):
+                t = _shard_view(config, tensor, shard)
+                out[_hf_name(local, shard)] = t.clone() if folded else t
+    finally:
+        if folded:
+            model.fold_rope_permutation(True)
     return out
 
 
@@ -199,4 +207,6 @@ def load_model(model_dir: str | os.PathLike, device: torch.device | str = "cpu",
     finally:
         torch.set_default_dtype(prev)
     load_hf_weights(model, model_dir, dtype=dtype, device=device)
+    if hasattr(model, "fold_rope_permutation"):  # DeepSeek: rope layout into the weights
+        model.fold_rope_permutation()
     return model.eval()

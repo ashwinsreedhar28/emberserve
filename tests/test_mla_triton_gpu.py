@@ -119,3 +119,18 @@ def test_chunked_prefill_mixed_steps(dtype):
     got = LLM.from_engine(_engine(model, "mla_triton", dtype, chunk=12)).generate(prompts, sp)
     for r, g in zip(ref, got):
         assert r.output_token_ids == g.output_token_ids
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+def test_rope_fold_matches_unfolded_on_cuda(dtype):
+    """With the rope permutation folded into the weights the fused RoPE kernel runs in
+    place on strided views of q and of kv_a's output; tokens must not change."""
+    model = tiny_model(seed=24).to(DEV, dtype)
+    prompts = [torch.randint(2, 256, (n,), generator=torch.Generator().manual_seed(n + 3)).tolist()
+               for n in (5, 19, 30)]
+    sp = SamplingParams.greedy(12, ignore_eos=True)
+    ref = LLM.from_engine(_engine(model, "mla_triton", dtype)).generate(prompts, sp)
+    model.fold_rope_permutation()
+    got = LLM.from_engine(_engine(model, "mla_triton", dtype, graphs=True)).generate(prompts, sp)
+    for r, g in zip(ref, got):
+        assert r.output_token_ids == g.output_token_ids
