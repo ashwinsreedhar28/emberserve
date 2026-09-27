@@ -289,9 +289,25 @@ def topk_gate(logits: Tensor, bias: Tensor, k: int, norm_topk_prob: bool,
     return idx, w
 
 
+def gemm_config(num_tokens: int) -> dict:
+    """Tile config for the grouped GEMM: `(block_n, block_k, num_warps, num_stages)`.
+
+    Decode-sized steps (few tokens) are pure weight streaming; prefill-sized steps have
+    real reuse across the 16 rows of a block, so the two may want different tiles.
+    `PAGEDSERVE_MOE_CONFIG=bn,bk,warps,stages` overrides for A/B runs
+    (`scripts/bench_moe.py` sweeps them at Moonlight's geometry).
+    """
+    forced = os.environ.get("PAGEDSERVE_MOE_CONFIG")
+    if forced:
+        bn, bk, warps, stages = (int(v) for v in forced.split(","))
+        return dict(block_n=bn, block_k=bk, num_warps=warps, num_stages=stages)
+    return dict(block_n=64, block_k=64, num_warps=4, num_stages=3)  # until bench_moe says otherwise
+
+
 def _grouped_gemm(a: Tensor, w: Tensor, sorted_ids: Tensor, block_expert: Tensor, num_valid: int,
                   a_div: int, topk_w: Tensor | None, out_rows: int, block_m: int = BLOCK_M,
-                  block_n: int = 64, block_k: int = 64) -> Tensor:
+                  block_n: int = 64, block_k: int = 64, num_warps: int = 4,
+                  num_stages: int = 3) -> Tensor:
     """`out[assignment, :] = a[assignment // a_div, :] @ w[expert]^T (* topk_w[assignment])`.
     `w: [E, N_out, K]`."""
     import triton
@@ -308,7 +324,7 @@ def _grouped_gemm(a: Tensor, w: Tensor, sorted_ids: Tensor, block_expert: Tensor
         n_out, k_dim, num_valid, num_experts,
         a.stride(0), w.stride(0), w.stride(1), w.stride(2), out.stride(0),
         A_DIV=a_div, MUL_ROUTED_WEIGHT=topk_w is not None,
-        BM=block_m, BN=block_n, BK=block_k, num_warps=4,
+        BM=block_m, BN=block_n, BK=block_k, num_warps=num_warps, num_stages=num_stages,
     )
     return out
 
@@ -319,10 +335,12 @@ def fused_moe_forward(x: Tensor, topk_ids: Tensor, topk_w: Tensor, w_gate_up: Te
     `w_down [E, H, I]` -> `[N, H]` (routed experts only; shared experts are added by the caller)."""
     n, k = topk_ids.shape
     num_experts = w_gate_up.shape[0]
+    cfg = gemm_config(n)
     sorted_ids, block_expert, num_valid = moe_align(topk_ids, num_experts)
     inter = _grouped_gemm(x, w_gate_up, sorted_ids, block_expert, num_valid, a_div=k,
-                          topk_w=None, out_rows=num_valid)  # [N*k, 2I]
+                          topk_w=None, out_rows=num_valid, **cfg)  # [N*k, 2I]
     act = ops.silu_and_mul(inter)  # [N*k, I]
     down = _grouped_gemm(act, w_down, sorted_ids, block_expert, num_valid, a_div=1,
-                         topk_w=topk_w.reshape(-1).float().contiguous(), out_rows=num_valid)  # [N*k, H]
+                         topk_w=topk_w.reshape(-1).float().contiguous(), out_rows=num_valid,
+                         **cfg)  # [N*k, H]
     return down.view(n, k, -1).sum(dim=1)
