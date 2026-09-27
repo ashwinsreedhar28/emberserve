@@ -1,0 +1,28 @@
+[baseline] synthetic prompt ids drawn from [2, 152064)
+[baseline] launching: /usr/local/bin/python -m pagedserve.cli serve --model models/Qwen2.5-7B-Instruct --port 8000 --host 127.0.0.1 --dtype float16 --max-model-len 4096 --device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --quantization int8
+[baseline] waiting for http://127.0.0.1:8000/health ...
+[baseline] pagedserve_7b_flash_int8_v2 @ rate=1 req/s, n=200
+[load] 10/200 done    17.3s[load] 20/200 done    29.4s[load] 30/200 done    38.7s[load] 40/200 done    48.4s[load] 50/200 done    54.1s[load] 60/200 done    64.0s[load] 70/200 done    74.9s[load] 80/200 done    84.9s[load] 90/200 done    93.9s[load] 100/200 done   104.6s[load] 110/200 done   115.7s[load] 120/200 done   121.3s[load] 130/200 done   129.7s[load] 140/200 done   138.1s[load] 150/200 done   148.3s[load] 160/200 done   152.2s[load] 170/200 done   166.9s[load] 180/200 done   178.3s[load] 190/200 done   187.0s[load] 200/200 done   196.6s
+pagedserve_7b_flash_int8_v2@1 tok/s=   175.9 req/s=  1.02 ttft p50/p99=   44.8/  759.4ms tpot p50/p99=   6.6/   7.6ms ok=200/200
+[baseline] server-side means: ttft_ms_mean 69.9, tpot_ms_mean 6.7, e2e_ms_mean 1222.6
+[baseline] e2e @ rate=2 req/s, n=200
+[load] 10/200 done     9.4s[load] 20/200 done    15.1s[load] 30/200 done    19.7s[load] 40/200 done    24.6s[load] 50/200 done    28.4s[load] 60/200 done    32.3s[load] 70/200 done    37.4s[load] 80/200 done    43.2s[load] 90/200 done    47.6s[load] 100/200 done    53.3s[load] 110/200 done    58.4s[load] 120/200 done    61.6s[load] 130/200 done    65.1s[load] 140/200 done    69.3s[load] 150/200 done    74.7s[load] 160/200 done    77.5s[load] 170/200 done    84.4s[load] 180/200 done    89.4s[load] 190/200 done    94.3s[load] 200/200 done    99.8s
+                 e2e@2 tok/s=   346.4 req/s=  2.00 ttft p50/p99=   46.8/  120.2ms tpot p50/p99=   7.0/  11.2ms ok=200/200
+[baseline] server-side means: ttft_ms_mean 54.8, tpot_ms_mean 7.2, e2e_ms_mean 1287.3
+[baseline] e2e @ rate=4 req/s, n=200
+[load] 10/200 done     5.2s[load] 20/200 done     8.3s[load] 30/200 done    10.9s[load] 40/200 done    13.5s[load] 50/200 done    14.9s[load] 60/200 done    17.2s[load] 70/200 done    19.6s[load] 80/200 done    22.3s[load] 90/200 done    24.1s[load] 100/200 done    27.2s[load] 110/200 done    29.8s[load] 120/200 done    31.8s[load] 130/200 done    33.4s[load] 140/200 done    35.0s[load] 150/200 done    37.8s[load] 160/200 done    40.0s[load] 170/200 done    42.7s[load] 180/200 done    45.4s[load] 190/200 done    47.6s[load] 200/200 done    51.5s
+                 e2e@4 tok/s=   672.1 req/s=  3.89 ttft p50/p99=   48.9/  127.9ms tpot p50/p99=   7.9/  10.5ms ok=200/200
+[baseline] server-side means: ttft_ms_mean 54.4, tpot_ms_mean 7.9, e2e_ms_mean 1413.9
+[baseline] e2e @ rate=8 req/s, n=200
+[load] 10/200 done     2.9s[load] 20/200 done     5.1s[load] 30/200 done     6.0s[load] 40/200 done     8.8s[load] 50/200 done     9.7s[load] 60/200 done    10.6s[load] 70/200 done    11.7s[load] 80/200 done    12.4s[load] 90/200 done    13.8s[load] 100/200 done    15.3s[load] 110/200 done    16.1s[load] 120/200 done    17.4s[load] 130/200 done    18.1s[load] 140/200 done    19.4s[load] 150/200 done    20.0s[load] 160/200 done    21.2s[load] 170/200 done    22.8s[load] 180/200 done    23.9s[load] 190/200 done    24.8s[load] 200/200 done    27.3s
+                 e2e@8 tok/s=  1267.1 req/s=  7.33 ttft p50/p99=   64.7/  988.9ms tpot p50/p99=  12.2/  28.3ms ok=200/200
+[baseline] server-side means: ttft_ms_mean 114.4, tpot_ms_mean 11.8, e2e_ms_mean 2121.4
+[baseline] e2e @ rate=16 req/s, n=200
+[load] 10/200 done     3.1s[load] 20/200 done     4.6s[load] 30/200 done     5.5s[load] 40/200 done     6.4s[load] 50/200 done     6.9s[load] 60/200 done     7.8s[load] 70/200 done     8.6s[load] 80/200 done    10.2s[load] 90/200 done    11.1s[load] 100/200 done    11.8s[load] 110/200 done    12.4s[load] 120/200 done    12.8s[load] 130/200 done    13.2s[load] 140/200 done    13.4s[load] 150/200 done    13.6s[load] 160/200 done    13.9s[load] 170/200 done    14.6s[load] 180/200 done    15.1s[load] 190/200 done    15.4s[load] 200/200 done    16.8s
+                e2e@16 tok/s=  2059.2 req/s= 11.91 ttft p50/p99=  108.3/  380.0ms tpot p50/p99=  26.3/  36.5ms ok=200/200
+[baseline] server-side means: ttft_ms_mean 112.9, tpot_ms_mean 25.3, e2e_ms_mean 4198.7
+[baseline] e2e @ rate=inf req/s, n=200
+[load] 10/200 done     6.9s[load] 20/200 done     7.2s[load] 30/200 done     7.6s[load] 40/200 done     7.9s[load] 50/200 done     8.0s[load] 60/200 done     8.4s[load] 70/200 done     8.5s[load] 80/200 done     8.9s[load] 90/200 done     9.1s[load] 100/200 done     9.2s[load] 110/200 done     9.5s[load] 120/200 done     9.9s[load] 130/200 done    10.3s[load] 140/200 done    10.6s[load] 150/200 done    11.0s[load] 160/200 done    11.3s[load] 170/200 done    11.7s[load] 180/200 done    12.3s[load] 190/200 done    13.1s[load] 200/200 done    13.6s
+               e2e@inf tok/s=  2548.0 req/s= 14.74 ttft p50/p99= 3254.3/ 5424.2ms tpot p50/p99=  40.5/ 167.9ms ok=200/200
+[baseline] server-side means: ttft_ms_mean 2682.8, tpot_ms_mean 48.5, e2e_ms_mean 9075.1
+[baseline] wrote results/e2e.json
