@@ -18,7 +18,6 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pagedserve.attn.base import AttnMetadata  # noqa: E402
 from pagedserve.config import EngineConfig  # noqa: E402
 from pagedserve.engine import LLMEngine  # noqa: E402
 from pagedserve.llm import LLM  # noqa: E402
@@ -29,10 +28,9 @@ def check_logits(engine: LLMEngine, prompt_ids: list[int], ref: torch.Tensor, at
     n = len(prompt_ids)
     req = engine.add_request("logits-check", prompt_ids, SamplingParams.greedy(1))
     so = engine.scheduler.schedule()
-    input_ids, meta = engine._build_inputs(so)
-    assert isinstance(meta, AttnMetadata) and meta.is_prefill and meta.num_tokens == n
+    assert so.is_prefill and sum(so.query_lens) == n
     with torch.inference_mode():
-        logits = engine.model.forward_logits_all(input_ids, engine.backend, meta).float().cpu()
+        logits = engine.step_logits(so, all_positions=True).float().cpu()
     engine.abort_request(req.request_id)
     engine.backend.free_sequence(req.seq_id)
     diff = (logits - ref).abs().max().item()
@@ -43,9 +41,8 @@ def top2_margin(engine: LLMEngine, ids: list[int]) -> float:
     """Gap between the two largest next-token logits after `ids` under this engine."""
     req = engine.add_request("margin", ids, SamplingParams.greedy(1))
     so = engine.scheduler.schedule()
-    input_ids, meta = engine._build_inputs(so)
     with torch.inference_mode():
-        logits = engine.model.compute_logits(engine.model(input_ids, engine.backend, meta), meta)
+        logits = engine.step_logits(so)
     engine.abort_request(req.request_id)
     engine.backend.free_sequence(req.seq_id)
     top = torch.topk(logits[0].float(), 2).values

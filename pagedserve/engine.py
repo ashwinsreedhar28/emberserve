@@ -596,6 +596,25 @@ class LLMEngine:
                 req.pending_row = None
         return self._postprocess(so, sampled)
 
+    def step_logits(self, so: SchedulerOutput, all_positions: bool = False) -> torch.Tensor:
+        """The scheduled step's logits without sampling or bookkeeping (the golden checks).
+        `all_positions` projects every token's row, not only each sequence's last one. The
+        choice travels in the plan, so under tensor parallelism every rank gathers the same
+        logits shape: calling the model directly on the driver with a different row set
+        while the workers ran the plan's is a collective mismatch, i.e. a hang."""
+        plan = self._plan_inputs(so)
+        if all_positions:
+            plan.logit_rows = list(range(len(plan.tokens)))
+        if self.tp.size > 1:
+            self._tp_step_open = True
+            tpdist.broadcast_object(("step", plan))
+        input_ids, meta = self._materialize(plan)
+        if self.tp.size > 1:
+            tpdist.broadcast_tensor(input_ids)
+        logits = self.model.compute_logits(self.model(input_ids, self.backend, meta), meta)
+        self._tp_step_open = False
+        return logits
+
     def _build_inputs(self, so: SchedulerOutput) -> tuple[torch.Tensor, AttnMetadata]:
         """Per-step tensors in two host->device copies (one int64, one int32) instead of one
         per field: at 200 running sequences the original six `torch.tensor(..., device=cuda)`

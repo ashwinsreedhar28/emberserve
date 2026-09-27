@@ -132,6 +132,30 @@ def test_tp2_matches_single_process(mode):
     assert all(p.returncode == 0 for p in procs), [p.returncode for p in procs]
 
 
+def test_step_logits_every_position_matches_single_process():
+    """The golden check's all-position logits go through the plan, so the worker projects
+    the same rows as the driver (calling the model directly on the driver hung on the GPU:
+    an all-gather of [n, vocab/2] against the worker's [1, vocab/2])."""
+    ids = prompts(1, seed=5)[0]
+    single = LLMEngine(full_model(), CFG, ecfg(1), tokenizer=None)
+    single.add_request("r", ids, SamplingParams.greedy(1))
+    so = single.scheduler.schedule()
+    with torch.inference_mode():
+        ref = single.step_logits(so, all_positions=True)
+    assert ref.shape == (len(ids), CFG.vocab_size)
+    eng = LLMEngine.launch_tp(WorkerSpec(ecfg(2), tiny=True, tiny_seed=0))
+    try:
+        eng.add_request("r", ids, SamplingParams.greedy(1))
+        so = eng.scheduler.schedule()
+        with torch.inference_mode():
+            got = eng.step_logits(so, all_positions=True)
+            last = eng.step_logits(so)
+        assert got.shape == ref.shape and torch.allclose(got, ref, atol=1e-4), (got - ref).abs().max()
+        assert last.shape == (1, CFG.vocab_size) and torch.allclose(last[0], ref[-1], atol=1e-4)
+    finally:
+        eng.shutdown()
+
+
 def test_driver_failure_mid_step_does_not_hang_shutdown():
     """A step that raises on the driver after the plan went out leaves the worker waiting
     on collectives; `shutdown()` must kill it and return instead of blocking forever in a
