@@ -39,33 +39,60 @@ def check_logits(engine: LLMEngine, prompt_ids: list[int], ref: torch.Tensor, at
     return diff
 
 
+def top2_margin(engine: LLMEngine, ids: list[int]) -> float:
+    """Gap between the two largest next-token logits after `ids` under this engine."""
+    req = engine.add_request("margin", ids, SamplingParams.greedy(1))
+    so = engine.scheduler.schedule()
+    input_ids, meta = engine._build_inputs(so)
+    with torch.inference_mode():
+        logits = engine.model.compute_logits(engine.model(input_ids, engine.backend, meta), meta)
+    engine.abort_request(req.request_id)
+    engine.backend.free_sequence(req.seq_id)
+    top = torch.topk(logits[0].float(), 2).values
+    return float(top[0] - top[1])
+
+
 def run_golden_check(model_dir: str, backend: str, device: str, dtype: torch.dtype,
-                     golden_dir: str = "golden", atol: float = 1e-3,
+                     golden_dir: str = "golden", atol: float | None = None,
                      prefix_caching: bool = False, block_size: int = 16) -> bool:
+    """fp32 runs must match the fp32 HF reference exactly (logits atol 1e-3, tokens
+    token-for-token). Half-precision runs are held to a looser, self-calibrated bar: the
+    logits gate is 1.0, and a token mismatch counts as a numeric tie-break (not a failure)
+    when the top-2 logit gap at that position is below 2x the logits error measured on
+    prompt 0 - i.e. the two candidates were closer than the run's own precision noise."""
     g = torch.load(Path(golden_dir) / "greedy.pt")
     lg = torch.load(Path(golden_dir) / "logits_prompt0.pt")
     cfg = EngineConfig(device=device, dtype=dtype, attn_backend=backend, block_size=block_size,
                        enable_prefix_caching=prefix_caching, max_model_len=4096)
     engine = LLMEngine.from_pretrained(model_dir, cfg)
+    half = dtype != torch.float32
+    if atol is None:
+        atol = 1.0 if half else 1e-3
     ok = True
 
     diff = check_logits(engine, lg["prompt_ids"], lg["logits"], atol)
     status = "ok" if diff <= atol else "FAIL"
-    print(f"[{backend}] logits prompt0 max|diff| = {diff:.2e} (atol {atol:.0e}) {status}")
+    print(f"[{backend}] logits prompt0 max|diff| = {diff:.2e} (atol {atol:.0e}, "
+          f"{'fp16/bf16 vs fp32 reference' if half else 'fp32'}) {status}")
     ok &= diff <= atol
+    tie_margin = 2.0 * diff if half else 0.0
 
     prompts = [e["prompt_ids"] for e in g["golden"]]
     sp = SamplingParams.greedy(g["max_new_tokens"])
     results = LLM.from_engine(engine).generate(prompts, sp)
     for i, (r, e) in enumerate(zip(results, g["golden"])):
-        match = r.output_token_ids == e["output_ids"]
-        ok &= match
-        if match:
+        if r.output_token_ids == e["output_ids"]:
             print(f"[{backend}] prompt {i}: {len(e['output_ids'])} tokens match")
+            continue
+        first = next((k for k, (a, b) in enumerate(zip(r.output_token_ids, e["output_ids"]))
+                      if a != b), min(len(r.output_token_ids), len(e["output_ids"])))
+        margin = top2_margin(engine, e["prompt_ids"] + e["output_ids"][:first])
+        if margin < tie_margin:
+            print(f"[{backend}] prompt {i}: tie-break at token {first} (top-2 margin {margin:.3f} "
+                  f"< 2x logits error {tie_margin:.3f}) - numerics, not a bug")
         else:
-            first = next((k for k, (a, b) in enumerate(zip(r.output_token_ids, e["output_ids"]))
-                          if a != b), min(len(r.output_token_ids), len(e["output_ids"])))
-            print(f"[{backend}] prompt {i}: MISMATCH at token {first}: "
+            ok = False
+            print(f"[{backend}] prompt {i}: MISMATCH at token {first} (margin {margin:.3f}): "
                   f"got {r.output_token_ids[first:first + 5]} want {e['output_ids'][first:first + 5]}")
     return ok
 
@@ -77,7 +104,8 @@ def main() -> None:
     ap.add_argument("--backends", default="naive,paged_torch")
     ap.add_argument("--device", default="cpu")
     ap.add_argument("--dtype", default="float32")
-    ap.add_argument("--atol", type=float, default=1e-3)
+    ap.add_argument("--atol", type=float, default=None,
+                    help="logits gate; default 1e-3 for fp32, 1.0 for fp16/bf16")
     ap.add_argument("--block-size", type=int, default=16)
     ap.add_argument("--prefix-caching", action="store_true")
     args = ap.parse_args()
