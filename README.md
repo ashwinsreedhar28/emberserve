@@ -280,6 +280,8 @@ either a better kernel or a dequantize-then-cuBLAS step. `PAGEDSERVE_INT8_KERNEL
 routes through the torch reference, `PAGEDSERVE_INT8_AUTOTUNE=0` and
 `PAGEDSERVE_INT8_SPLITK=0` pin the kernel for A/B.
 
+![7B int8 vs fp16 vs vLLM: TPOT vs offered load](results/plots/7b_int8/tpot_vs_rate.png)
+
 ### Tensor parallelism
 
 `--tensor-parallel-size 2` (`dist.py`) splits the dense model across two GPUs the Megatron
@@ -589,6 +591,8 @@ top of the ~10 ms weight read), and async scheduling is off. The exact-verificat
 machinery is fine; the fix is a fixed-`k` draft step captured as a CUDA-graph bucket with
 async kept on (verify on the device), and a proposer better than n-gram lookup for chat
 text (a draft model reaches 60–80% acceptance where lookup gets 16%). Neither is done.
+
+![7B on ShareGPT text: TPOT vs offered load](results/plots/text_7b/tpot_vs_rate.png)
 
 **Moonlight-16B-A3B** on the same text (`results/vllm_moonlight_text.json`,
 `results/pagedserve_moonlight_text.json`; bf16, `mla_triton` block 16, CUDA defaults):

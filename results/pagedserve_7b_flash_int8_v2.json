@@ -1,6 +1,6 @@
 {
  "kind": "sweep",
- "system": "e2e",
+ "system": "pagedserve_7b_flash_int8_v2",
  "server": "pagedserve",
  "base_url": "http://127.0.0.1:8000",
  "model": "models/Qwen2.5-7B-Instruct",

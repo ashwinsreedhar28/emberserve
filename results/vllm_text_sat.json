@@ -1,6 +1,6 @@
 {
  "kind": "sweep",
- "system": "e2e",
+ "system": "vllm_text_sat",
  "server": "vllm",
  "base_url": "http://127.0.0.1:8000",
  "model": "models/Qwen2.5-0.5B-Instruct",
