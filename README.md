@@ -379,6 +379,8 @@ The first run, prefill-priority and synchronous, was 2,457 (76%) with 26.3 ms TP
 with concurrency (18.8 vs 13.4 ms at 8 req/s) and is the per-sequence slope of the step,
 0.11 ms per sequence, most of it the grouped GEMM streaming more experts as the batch grows.
 
+![Moonlight TPOT vs offered load](results/plots/moonlight/tpot_vs_rate.png)
+
 ### What the numbers taught us
 
 * **Launch overhead dominates a 0.5B model, then kernel count does.** The 4090 decode step
@@ -441,6 +443,8 @@ residual at 16 req/s is that a mixed step runs eagerly, outside CUDA graphs; vLL
 piecewise graphs keep everything but attention captured. Any `model_type: qwen2 | llama | mistral | deepseek_v2 | deepseek_v3` snapshot loads with
 `scripts/download_model.py --repo <hf repo>`; DeepSeek-R1-Distill-Qwen, Mistral-7B and
 DeepSeek-V2-Lite are the same code paths as the rows above.
+
+![7B TPOT vs offered load](results/plots/7b/tpot_vs_rate.png)
 
 ## Run it
 
@@ -512,20 +516,24 @@ OpenAI-compatible endpoint, which is how a hosted-API row gets added.
 
 ```
 pagedserve/
-  config.py            ModelConfig (mirrors HF config.json) / EngineConfig (block_size, backend, knobs)
-  model/               qwen2.py (from scratch), rope.py, weights.py (safetensors -> our modules)
+  config.py            ModelConfig (mirrors HF config.json; MLA / MoE geometry) / EngineConfig (knobs)
+  model/               qwen2.py (dense block, from scratch), deepseek.py (MLA + MoE block), moe.py,
+                       moe_triton.py (router / alignment / grouped-GEMM kernels), ops.py + ops_triton.py
+                       (fused RMSNorm, RoPE, SiLU-mul), rope.py, weights.py (safetensors -> our modules)
   attn/                base.py (AttnMetadata + backend contract, packed token layout)
-                       naive.py | paged_torch.py | paged_flash.py | paged_triton.py | cuda_graphs.py
-  kv/                  block_manager.py, cache.py (paged K/V tensors), prefix_cache.py
-  sched/               request.py, scheduler.py (prefill-priority, preemption, chunked prefill)
+                       naive.py | paged_torch.py | paged_flash.py | paged_triton.py (Triton decode kernel)
+                       mla_torch.py | mla_triton.py (latent attention) | cuda_graphs.py
+  kv/                  block_manager.py, cache.py (paged K/V and latent tensors), prefix_cache.py
+  sched/               request.py, scheduler.py (prefill-priority, preemption, chunked prefill, async lookahead)
   sampling.py          per-request temperature / top-k / top-p / repetition penalty / seeds / stop
   engine.py            LLMEngine.step(): schedule -> build inputs -> forward -> sample -> postprocess
+                       (async scheduling: launch N+1, then resolve N)
   llm.py               offline LLM.generate()
   tokenizer.py         HF tokenizer wrapper + incremental detokenizer (stop strings)
-  server/              AsyncLLMEngine (worker thread), OpenAI types, FastAPI app
-  bench/               trace, load, metrics, offline, ablation, run_vllm_baseline, plot
-scripts/               download_model, dump_golden, check_golden, gpu_smoke, bench_kernels,
-                       gpu_debug_capture, pod_setup.sh
+  server/              engine_core.py (engine in its own process), AsyncLLMEngine, OpenAI types, FastAPI app
+  bench/               trace, load, metrics, offline, ablation, run_vllm_baseline (--hosted for APIs), plot
+scripts/               download_model, dump_golden, check_golden, profile_step (--kernels), bench_kernels,
+                       bench_moe, merge_sweeps, gpu_smoke, gpu_debug_capture, pod_setup.sh
 tests/                 one file per component; *_gpu.py need CUDA; test_engine.py holds the end-to-end gates
 results/               every JSON the tables above were built from
 deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes

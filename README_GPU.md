@@ -79,7 +79,12 @@ kernel (this is what found the split-K bug under graphs, README "Moonlight"):
 ```bash
 python scripts/profile_step.py --model models/Moonlight-16B-A3B-Instruct --device cuda --dtype bfloat16 \
   --attn-backend mla_triton --block-size 16 --enable-cuda-graphs --batches 1,128 --kernels 1,128 --top 30
+python scripts/bench_moe.py      # the MoE layer alone: ms and effective weight GB/s per grouped-GEMM tile config
 ```
+
+Reading `bench_moe` at M=1: the ~0.28 ms per layer it reports is Python launch overhead
+(5 Triton/torch launches), not GPU time; inside a CUDA graph the same layer is ~73 us
+(the profile's `_grouped_gemm_kernel` row), 71% of HBM bandwidth for the six experts read.
 
 ## vLLM goes in its own venv
 
@@ -128,7 +133,10 @@ to 16 for `tl.dot`), so each K/V element is read from HBM once per KV head inste
 per query head. The program walks the sequence's block-table pages in tiles with an online
 softmax (running max / sum / fp32 accumulator, rescaled per tile). `num_splits > 1` is
 flash-decoding: contiguous tile ranges go to separate programs and a tiny reduce kernel
-merges the partials. Splits are chosen from shapes only (occupancy target 2x SMs, only past
+merges the partials. Each split's tile range is computed inside the kernel from the
+sequence's real context length (under CUDA graphs the block table is padded to
+`max_model_len`; a host-side partition of that width gave split 0 every real tile, which
+the Moonlight per-kernel profile caught). Splits are chosen from shapes only (occupancy target 2x SMs, only past
 1k keys, max 16) so CUDA-graph replay is stable. It needs only `block_size % 16 == 0`.
 
 Why that matters: `paged_flash` forces block 256, and in the ablation a **64-token shared
