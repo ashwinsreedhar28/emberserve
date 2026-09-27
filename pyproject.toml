@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pagedserve"
+version = "0.1.0"
+description = "A from-scratch LLM inference engine: continuous batching, paged KV cache, OpenAI-compatible API. Benchmarked against vLLM."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Ashwin Sreedhar" }]
+dependencies = [
+    "torch>=2.2",
+    "safetensors>=0.4",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# Tokenizer + golden-reference generation (HF model code is used ONLY as an oracle).
+hf = ["transformers>=4.44", "huggingface_hub>=0.24", "accelerate>=0.33"]
+# OpenAI-compatible server (Fri).
+server = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "sse-starlette>=2.0", "openai>=1.30"]
+# GPU path: flash-attn paged decode + varlen prefill (Wed). Install on the Runpod pod only.
+gpu = ["flash-attn>=2.6"]
+# Benchmark tooling (Sat). vllm is the baseline, never a dependency of the engine.
+bench = ["matplotlib>=3.8", "vllm>=0.6"]
+dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.5"]
+
+[project.scripts]
+pagedserve = "pagedserve.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["pagedserve*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "gpu: needs a CUDA device (run on the Runpod pod)",
+    "hf: needs the HF model + tokenizer downloaded (run scripts/download_model.py first)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,162 @@
+"""Qwen2 decoder written from scratch against the `AttentionBackend` interface.
+
+Module attribute names mirror HF's `Qwen2ForCausalLM` so safetensors weight names map
+one-to-one (see `model/weights.py`). Every activation uses the packed layout
+`[num_tokens, hidden]`; per-sequence boundaries and RoPE positions come from
+`AttnMetadata`. The attention scale (1/sqrt(head_dim)) is applied inside the backend.
+"""
+
+from __future__ import annotations
+
+import torch
+import torch.nn.functional as F
+from torch import nn
+
+from pagedserve.attn.base import AttentionBackend, AttnMetadata
+from pagedserve.config import ModelConfig
+from pagedserve.model.rope import RotaryEmbedding
+
+
+class RMSNorm(nn.Module):
+    """HF `Qwen2RMSNorm`: normalize in float32, cast back, then scale by `weight`."""
+
+    def __init__(self, hidden_size: int, eps: float) -> None:
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        input_dtype = x.dtype
+        xf = x.float()
+        variance = xf.pow(2).mean(-1, keepdim=True)
+        xf = xf * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * xf.to(input_dtype)
+
+
+class Qwen2MLP(nn.Module):
+    """SwiGLU feed-forward: `down(silu(gate(x)) * up(x))`, no biases."""
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        hidden, inter = config.hidden_size, config.intermediate_size
+        self.gate_proj = nn.Linear(hidden, inter, bias=False)
+        self.up_proj = nn.Linear(hidden, inter, bias=False)
+        self.down_proj = nn.Linear(inter, hidden, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+
+
+class Qwen2Attention(nn.Module):
+    """QKV projections + RoPE; the attention itself is delegated to the backend."""
+
+    def __init__(self, config: ModelConfig, layer_idx: int, rotary_emb: RotaryEmbedding) -> None:
+        super().__init__()
+        self.layer_idx = layer_idx
+        self.num_heads = config.num_attention_heads
+        self.num_kv_heads = config.num_key_value_heads
+        self.head_dim = config.head_dim
+        hidden = config.hidden_size
+        self.q_proj = nn.Linear(hidden, self.num_heads * self.head_dim, bias=config.attention_bias)
+        self.k_proj = nn.Linear(hidden, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
+        self.v_proj = nn.Linear(hidden, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
+        self.o_proj = nn.Linear(self.num_heads * self.head_dim, hidden, bias=False)
+        # Shared with every other layer; it holds no parameters, only cached cos/sin tables.
+        self.rotary_emb = rotary_emb
+
+    def forward(self, hidden: torch.Tensor, backend: AttentionBackend,
+                meta: AttnMetadata) -> torch.Tensor:
+        n = hidden.shape[0]
+        q = self.q_proj(hidden).view(n, self.num_heads, self.head_dim)
+        k = self.k_proj(hidden).view(n, self.num_kv_heads, self.head_dim)
+        v = self.v_proj(hidden).view(n, self.num_kv_heads, self.head_dim)
+        q, k = self.rotary_emb(q, k, meta.positions)
+        out = backend.forward(self.layer_idx, q, k, v, meta)  # [n, H, D]
+        return self.o_proj(out.reshape(n, self.num_heads * self.head_dim))
+
+
+class Qwen2DecoderLayer(nn.Module):
+    """Pre-norm transformer block: `x + attn(norm(x))`, then `x + mlp(norm(x))`."""
+
+    def __init__(self, config: ModelConfig, layer_idx: int, rotary_emb: RotaryEmbedding) -> None:
+        super().__init__()
+        self.self_attn = Qwen2Attention(config, layer_idx, rotary_emb)
+        self.mlp = Qwen2MLP(config)
+        self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+
+    def forward(self, hidden: torch.Tensor, backend: AttentionBackend,
+                meta: AttnMetadata) -> torch.Tensor:
+        hidden = hidden + self.self_attn(self.input_layernorm(hidden), backend, meta)
+        return hidden + self.mlp(self.post_attention_layernorm(hidden))
+
+
+class Qwen2Model(nn.Module):
+    """Embedding -> decoder layers -> final norm. Returns hidden states, not logits."""
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.rotary_emb = RotaryEmbedding(
+            config.head_dim, config.max_position_embeddings, config.rope_theta)
+        self.layers = nn.ModuleList(
+            Qwen2DecoderLayer(config, i, self.rotary_emb) for i in range(config.num_hidden_layers))
+        self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+
+    def forward(self, input_ids: torch.Tensor, backend: AttentionBackend,
+                meta: AttnMetadata) -> torch.Tensor:
+        hidden = self.embed_tokens(input_ids)
+        for layer in self.layers:
+            hidden = layer(hidden, backend, meta)
+        return self.norm(hidden)
+
+
+class Qwen2ForCausalLM(nn.Module):
+    """Qwen2 with an LM head. Parameters are created in the default dtype on CPU;
+    the caller moves them with `.to(device, dtype)` before or after loading weights."""
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.model = Qwen2Model(config)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        if config.tie_word_embeddings:
+            self.lm_head.weight = self.model.embed_tokens.weight
+
+    def forward(self, input_ids: torch.Tensor, backend: AttentionBackend,
+                meta: AttnMetadata) -> torch.Tensor:
+        """`input_ids: [N] int64` -> final-normed hidden states `[N, hidden]`."""
+        return self.model(input_ids, backend, meta)
+
+    def compute_logits(self, hidden: torch.Tensor,
+                       meta: AttnMetadata | None = None) -> torch.Tensor:
+        """Project to the vocabulary. With `meta`, only the last token of each sequence
+        is projected -> `[num_seqs, vocab]`; without it every token -> `[N, vocab]`."""
+        if meta is not None:
+            last = (meta.cu_seqlens_q[1:] - 1).to(torch.long)
+            hidden = hidden.index_select(0, last)
+        return self.lm_head(hidden)
+
+    def forward_logits_all(self, input_ids: torch.Tensor, backend: AttentionBackend,
+                           meta: AttnMetadata) -> torch.Tensor:
+        """Logits for every token in the step, `[N, vocab]` (golden-logit comparisons)."""
+        return self.compute_logits(self.forward(input_ids, backend, meta))
+
+
+def reset_parameters_deterministic(model: nn.Module, seed: int) -> None:
+    """Re-initialize every parameter from a fixed generator so tests get reproducible
+    random models: linear/embedding weights ~ N(0, 0.02), biases ~ N(0, 0.01), norms = 1.
+    Tied parameters are initialized once."""
+    gen = torch.Generator().manual_seed(seed)
+    seen: set[int] = set()
+    with torch.no_grad():
+        for module in model.modules():
+            for pname, param in module.named_parameters(recurse=False):
+                if id(param) in seen:
+                    continue
+                seen.add(id(param))
+                if isinstance(module, RMSNorm):
+                    param.fill_(1.0)
+                    continue
+                std = 0.01 if pname == "bias" else 0.02
+                param.copy_(torch.randn(param.shape, generator=gen, dtype=torch.float32) * std)
