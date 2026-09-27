@@ -19,11 +19,11 @@ dependencies = [
 [project.optional-dependencies]
 # Tokenizer + golden-reference generation (HF model code is used ONLY as an oracle).
 hf = ["transformers>=4.44", "huggingface_hub>=0.24", "accelerate>=0.33"]
-# OpenAI-compatible server (Fri).
+# OpenAI-compatible server.
 server = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "sse-starlette>=2.0", "openai>=1.30"]
-# GPU path: flash-attn paged decode + varlen prefill (Wed). Install on the Runpod pod only.
+# GPU path: flash-attn paged decode + varlen prefill (triton ships with torch). Install on the GPU pod only.
 gpu = ["flash-attn>=2.6"]
-# Benchmark tooling (Sat). vllm is the baseline, never a dependency of the engine.
+# Benchmark tooling. vllm is the baseline, never a dependency of the engine; install it in its own venv (README_GPU.md).
 bench = ["matplotlib>=3.8", "vllm>=0.6"]
 dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.5", "matplotlib>=3.8", "httpx>=0.27"]
 

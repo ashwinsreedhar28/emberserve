@@ -1,4 +1,4 @@
-"""Wed gate: every backend produces the same greedy tokens; then decode throughput.
+"""GPU gate: every backend produces the same greedy tokens; then decode throughput.
 
     python scripts/gpu_smoke.py [--model models/Qwen2.5-0.5B-Instruct] [--batches 1,8,32,128]
 
