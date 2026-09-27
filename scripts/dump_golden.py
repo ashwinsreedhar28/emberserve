@@ -44,7 +44,7 @@ def main() -> None:
 
     torch.manual_seed(0)
     tok = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(args.model, torch_dtype=torch.float32).eval()
+    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float32).eval()
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
 
@@ -61,7 +61,11 @@ def main() -> None:
     with torch.inference_mode():
         for i, e in enumerate(entries):
             ids = torch.tensor([e["prompt_ids"]])
+            # Pure greedy. Qwen2.5's generation_config.json sets repetition_penalty=1.05,
+            # top_k=20, top_p=0.8, temperature=0.7 and do_sample=False does NOT clear the
+            # penalty, so override every sampling knob explicitly.
             gen = model.generate(ids, max_new_tokens=args.max_new_tokens, do_sample=False,
+                                 repetition_penalty=1.0, temperature=None, top_k=None, top_p=None,
                                  eos_token_id=tok.eos_token_id, pad_token_id=tok.eos_token_id)
             out_ids = gen[0, ids.shape[1]:].tolist()
             golden.append({"prompt_ids": e["prompt_ids"], "output_ids": out_ids})
