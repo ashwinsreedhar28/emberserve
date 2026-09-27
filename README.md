@@ -531,9 +531,19 @@ out shorter in prompt and longer in output than the synthetic one (mean 102 / 25
 
 The shape is the synthetic result again: parity to 16 req/s with lower TPOT and TTFT at
 every rate, a lower TPOT at saturation, and a saturation throughput gap (82% here, 92% on
-the synthetic trace) that sits in the same place, the first burst's prefill admission
-(TTFT 630 vs 433 ms at t=0). Longer outputs make the gap slightly wider because more of
-the run is the decode steady state where vLLM's per-step overhead is lowest.
+the synthetic trace; a repeat of this saturation point gave 20,469 vs 23,085, so the
+run-to-run spread is ±5%).
+
+The saturation TTFT column (630 vs 433 ms) turned out to be the load generator, not the
+server. Both engines' `/metrics` now carry latency sums measured from the request's
+arrival at the API process, and at this saturation point pagedserve's server-side mean
+TTFT is **122 ms against vLLM's 162** while the client-side p50 reads 488 vs 337
+(`results/*_text_sat*.log`): a single-process client sending 200 requests and parsing
+200 SSE streams queues for hundreds of milliseconds, and it queues more behind the server
+that streams faster. The budget hypothesis was wrong the other way: an 8,192-token prefill
+budget gives 243 ms server-side and 17.7k tok/s, because bigger prefill steps hold every
+first token longer, so 2,048 stays. `run_vllm_baseline --client-procs 4` runs the load
+generator from four processes for saturation points (README_GPU).
 
 **n-gram speculation at 0.5B loses at every rate** (third column): TPOT 2.14 vs 1.84 ms at
 1 req/s and 10.1 vs 2.2 at 16, throughput a fifth of the baseline at saturation. The mode
@@ -762,7 +772,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 
 ## Roadmap
 
-* Close the last 8% at 0.5B saturation: TTFT there is 543 vs 421 ms, a matter of how many prompt pieces are admitted per step at the very start of a burst (a smaller first chunk, or vLLM-style prefill token budgeting).
+* Close the last 8% at 0.5B saturation. (The TTFT-at-saturation gap that used to be listed here was the single-process load generator: server-side, pagedserve's is lower than vLLM's.)
 * Finer token buckets for piecewise graphs (`--piecewise-bucket-step 256` is implemented; 7B A/B pending) so the padded chunk stops costing compute at 7B and the mode can be the default at every size.
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
