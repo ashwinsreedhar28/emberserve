@@ -16,6 +16,15 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, PlainTextResponse
 from sse_starlette.sse import EventSourceResponse
 
+try:  # ~5x faster than json.dumps for the small per-token SSE bodies; optional
+    import orjson
+
+    def _dumps(obj: Any) -> str:
+        return orjson.dumps(obj).decode()
+except ImportError:  # pragma: no cover - depends on the environment
+    def _dumps(obj: Any) -> str:
+        return json.dumps(obj, separators=(",", ":"))
+
 from pagedserve.config import EngineConfig
 from pagedserve.engine import LLMEngine
 from pagedserve.sched.request import RequestOutput
@@ -107,20 +116,23 @@ def create_app(async_engine: AsyncLLMEngine, model_name: str,
     async def stream(request: Request, request_id: str, prompt_ids: list[int],
                      req: CompletionRequest | ChatCompletionRequest, chunk: Chunk,
                      first: dict[str, Any] | None = None) -> AsyncIterator[dict[str, str]]:
-        """SSE body: an optional leading chunk, one chunk per output, a `[DONE]` sentinel."""
+        """SSE body: an optional leading chunk, one chunk per output, a `[DONE]` sentinel.
+
+        Client disconnects are detected by sse-starlette (it watches the ASGI receive channel
+        and cancels this generator), so the `finally` below aborts the engine request; no
+        per-token `request.is_disconnected()` poll, which cost a cancel scope and a receive
+        await per token per stream."""
         if first is not None:
-            yield {"data": json.dumps(first)}
+            yield {"data": _dumps(first)}
         n_out = 0
         gen = async_engine.generate(request_id, prompt_ids, to_sampling_params(req))
         try:
             async for out in gen:
-                if await request.is_disconnected():
-                    return
                 n_out = len(out.output_token_ids)
                 body = chunk(out)
                 if out.finished:
                     body["usage"] = Usage.of(len(prompt_ids), n_out).model_dump()
-                yield {"data": json.dumps(body)}
+                yield {"data": _dumps(body)}
         finally:
             await gen.aclose()
         yield {"data": "[DONE]"}

@@ -20,7 +20,7 @@ dependencies = [
 # Tokenizer + golden-reference generation (HF model code is used ONLY as an oracle).
 hf = ["transformers>=4.44", "huggingface_hub>=0.24", "accelerate>=0.33"]
 # OpenAI-compatible server.
-server = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "sse-starlette>=2.0", "openai>=1.30"]
+server = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "sse-starlette>=2.0", "openai>=1.30", "orjson>=3.9"]
 # GPU path: flash-attn paged decode + varlen prefill (triton ships with torch). Install on the GPU pod only.
 gpu = ["flash-attn>=2.6"]
 # Benchmark tooling. vllm is the baseline, never a dependency of the engine; install it in its own venv (README_GPU.md).
