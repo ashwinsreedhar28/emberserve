@@ -554,9 +554,17 @@ whose one Python event loop encoded and wrote one SSE event per token for 200 st
 0.5B the saturation number is a comparison of the two API servers, not the engines. v9
 sends every output queued for a request in one write when the route wakes up
 (`generate_batches`, a raw `StreamingResponse` instead of sse-starlette) and drops the
-per-token list copies in the reader thread; on a 2-core box with a clock instead of a
-model (`scripts/bench_api_layer.py`) user CPU per delivered token went from 34–42 to
-18–24 µs. The A100 A/B is the first item of the next pod session.
+per-token list copies in the reader thread. Measured on the A100
+(`results/pagedserve_flash_text_sat_v9*.json`, six runs, GC default and tuned):
+**21,948–23,782 tok/s, mean 22,964, against vLLM's 22,908–23,339 (mean 23,111): 99%**,
+up from 81%. Server-side mean TTFT 102–192 ms vs vLLM's 98–162; the GC tuning no longer
+moves throughput but keeps TPOT p99 under 11.3 ms (9.3–14.9 without), so it is on by
+default (`PAGEDSERVE_GC=off`). With a clock instead of a model
+(`scripts/bench_api_layer.py`) the pod's API process delivers 26–29k tok/s at 22–25 µs of
+user CPU per token, so at 23k it is running at ~80% of its ceiling and the engine core
+still waits on the pipe a quarter of the time; the next step there is a second API worker
+or the per-token path inside the core's process, but at this point the two engines are
+delivering the same tokens per second through the same kind of bottleneck.
 
 The saturation TTFT column (630 vs 433 ms) turned out to be the load generator, not the
 server. Both engines' `/metrics` now carry latency sums measured from the request's
@@ -800,7 +808,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 
 ## Roadmap
 
-* 0.5B saturation: measure v9 (batched SSE writes; GC tuned) on the A100 — the API process was the limit (the core is idle 35% of the time waiting on the pipe), and its per-token CPU is down ~40% on a CPU box. If the API layer still caps below vLLM's 23k, the next steps are a second API worker process sharing one engine core, or moving the per-token path (detokenize + encode) into the core's process.
+* 0.5B saturation is at parity (v9, 99% of vLLM on real text). The API process still caps at 26–29k tok/s on the pod's CPU and the core waits on the pipe a quarter of the time: a second API worker sharing the engine core, or the per-token path (detokenize + encode) inside the core's process, would lift the ceiling for both engines' comparison.
 * Piecewise graphs at 7B: `--piecewise-bucket-step 256` recovers the 1% saturation loss (3,168 vs v7's 3,166 tok/s) but not the tail (TPOT 18.3 vs 16.5 ms at 16 req/s; `results/pagedserve_7b_flash_v8b.json`), so the mode stays off above 4 GB; the remaining cost is the static-buffer copies and the eager attention launches, which a full-step graph does not pay.
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
