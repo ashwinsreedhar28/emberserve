@@ -30,6 +30,42 @@ def draw(sampler: Sampler, logits: torch.Tensor, req: Request, n: int) -> list[i
     return [sampler.sample(logits, [req])[0] for _ in range(n)]
 
 
+# ---- batched filters == per-row reference ---------------------------------------
+
+
+def _reference_filter(row: torch.Tensor, k: int, p: float) -> torch.Tensor:
+    from pagedserve.sampling import _apply_top_k, _apply_top_p
+
+    return _apply_top_p(_apply_top_k(row, k), p)
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_batched_filter_matches_per_row_reference(seed):
+    from pagedserve.sampling import _filter_rows
+
+    logits = random_logits(6, seed=seed)
+    logits[0, :4] = logits[0, 0]  # ties at the k-th value must survive top-k
+    ks = [-1, 1, 3, 3, VOCAB, 5]
+    ps = [1.0, 1.0, 0.5, 0.9, 0.3, 1.0]
+    got = _filter_rows(logits.clone(), ks, ps)
+    for i in range(6):
+        want = _reference_filter(logits[i].clone(), ks[i], ps[i])
+        assert torch.equal(got[i], want), (i, ks[i], ps[i])
+
+
+def test_batched_step_matches_row_by_row_sampling():
+    """One sample() call over a mixed batch == sampling each row alone with the same seeds."""
+    logits = random_logits(5, seed=7)
+    specs = [SamplingParams(temperature=0.0), SamplingParams(temperature=0.8, seed=1),
+             SamplingParams(temperature=1.0, top_k=4, seed=2),
+             SamplingParams(temperature=1.2, top_p=0.7, seed=3),
+             SamplingParams(temperature=0.5, top_k=6, top_p=0.9, repetition_penalty=1.3, seed=4)]
+    batched = Sampler("cpu").sample(logits, [make_request(sp, rid=f"b{i}") for i, sp in enumerate(specs)])
+    single = [Sampler("cpu").sample(logits[i:i + 1], [make_request(sp, rid=f"s{i}")])[0]
+              for i, sp in enumerate(specs)]
+    assert batched == single
+
+
 # ---- greedy / temperature / top-k / top-p ---------------------------------------
 
 def test_greedy_is_argmax():

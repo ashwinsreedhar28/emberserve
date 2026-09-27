@@ -3,6 +3,11 @@
 The Sampler consumes the logits of the LAST position of every sequence in a step:
 `logits[i]` belongs to `requests[i]`. Stop STRINGS are checked by the engine on decoded
 text; this module only knows token ids.
+
+The batch is sampled with ONE device->host transfer per step. The first version looped
+over rows and called `.item()` on each, i.e. one CUDA sync per running sequence per step;
+on an A100 that alone made TPOT grow linearly with concurrency (4.5 ms at batch ~1 to
+32 ms at batch ~200) while vLLM's stayed flat.
 """
 
 from __future__ import annotations
@@ -66,6 +71,30 @@ def _apply_top_p(logits: torch.Tensor, p: float) -> torch.Tensor:
     return torch.empty_like(logits).scatter_(0, sorted_idx, sorted_logits)
 
 
+def _filter_rows(logits: torch.Tensor, top_k: list[int], top_p: list[float]) -> torch.Tensor:
+    """Batched top-k then top-p over [n, vocab] with per-row k and p, matching the per-row
+    `_apply_top_k` / `_apply_top_p` semantics exactly (value threshold for k, so ties at the
+    k-th value survive; nucleus keeps every token whose preceding mass is < p)."""
+    n, vocab = logits.shape
+    need_k = any(0 < k < vocab for k in top_k)
+    need_p = any(p < 1.0 for p in top_p)
+    if not need_k and not need_p:
+        return logits
+    sorted_logits, sorted_idx = torch.sort(logits, dim=-1, descending=True)
+    if need_k:
+        k_idx = torch.tensor([min(k, vocab) - 1 if k > 0 else vocab - 1 for k in top_k],
+                             device=logits.device).unsqueeze(1)
+        threshold = sorted_logits.gather(1, k_idx)  # k-th largest per row
+        sorted_logits = sorted_logits.masked_fill(sorted_logits < threshold, float("-inf"))
+    if need_p:
+        probs = torch.softmax(sorted_logits, dim=-1)
+        mass_before = probs.cumsum(dim=-1) - probs
+        p_col = torch.tensor([p if p < 1.0 else 2.0 for p in top_p],
+                             device=logits.device).unsqueeze(1)
+        sorted_logits = sorted_logits.masked_fill(mass_before >= p_col, float("-inf"))
+    return torch.empty_like(logits).scatter_(1, sorted_idx, sorted_logits)
+
+
 class Sampler:
     """Turns a [num_seqs, vocab] logits tensor into one token id per sequence."""
 
@@ -76,25 +105,37 @@ class Sampler:
     def sample(self, logits: torch.Tensor, requests: list[Request]) -> list[int]:
         assert logits.dim() == 2 and logits.shape[0] == len(requests), \
             f"logits {tuple(logits.shape)} vs {len(requests)} requests"
-        logits = logits.to(self.device)
-        # TODO(perf): group rows by identical SamplingParams and run the filters batched;
-        # a per-row loop is correct but costs O(num_seqs) small kernel launches per step.
-        return [self._sample_row(logits[i], req) for i, req in enumerate(requests)]
+        logits = logits.to(self.device).float()
+        params = [r.sampling_params for r in requests]
+        # Repetition penalty is per row by construction (each row's own token set); it is
+        # off by default and stays a launch per penalized row, still with no sync.
+        for i, (req, p) in enumerate(zip(requests, params, strict=True)):
+            if p.repetition_penalty != 1.0:
+                logits[i] = apply_repetition_penalty(logits[i], req.all_token_ids,
+                                                     p.repetition_penalty)
+        if all(p.is_greedy for p in params):
+            return torch.argmax(logits, dim=-1).tolist()  # the whole step: one transfer
 
-    def _sample_row(self, logits: torch.Tensor, request: Request) -> int:
-        params = request.sampling_params
-        logits = logits.float()
-        if params.repetition_penalty != 1.0:
-            logits = apply_repetition_penalty(logits, request.all_token_ids,
-                                              params.repetition_penalty)
-        if params.is_greedy:
-            return int(torch.argmax(logits).item())
-        logits = logits / params.temperature
-        logits = _apply_top_k(logits, params.top_k)
-        logits = _apply_top_p(logits, params.top_p)
-        probs = torch.softmax(logits, dim=-1)
-        gen = get_generator(request, self.device)
-        return int(torch.multinomial(probs, 1, generator=gen).item())
+        n = len(requests)
+        tokens = torch.empty(n, dtype=torch.long, device=logits.device)
+        greedy = [i for i, p in enumerate(params) if p.is_greedy]
+        rand = [i for i, p in enumerate(params) if not p.is_greedy]
+        if greedy:
+            g_idx = torch.tensor(greedy, device=logits.device)
+            tokens[g_idx] = torch.argmax(logits[g_idx], dim=-1)
+        r_idx = torch.tensor(rand, device=logits.device)
+        sub = logits[r_idx]
+        temps = torch.tensor([params[i].temperature for i in rand],
+                             device=logits.device).unsqueeze(1)
+        sub = _filter_rows(sub / temps, [params[i].top_k for i in rand],
+                           [params[i].top_p for i in rand])
+        probs = torch.softmax(sub, dim=-1)
+        # Per-request generators keep seeds reproducible; multinomial is a launch per row
+        # but the results stay on device until the single `.tolist()` below.
+        draws = [torch.multinomial(probs[j], 1, generator=get_generator(requests[i], self.device))
+                 for j, i in enumerate(rand)]
+        tokens[r_idx] = torch.cat(draws)
+        return tokens.tolist()
 
 
 def check_stop(request: Request, token_id: int, eos_token_id: int,
