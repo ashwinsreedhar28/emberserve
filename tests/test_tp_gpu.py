@@ -7,6 +7,7 @@ Needs two CUDA devices; skips otherwise. Run: `python -m pytest tests/test_tp_gp
 
 from __future__ import annotations
 
+import gc
 from pathlib import Path
 
 import pytest
@@ -84,7 +85,11 @@ def test_qwen_0p5b_tp2_greedy_text(backend, block):
     texts = ["The capital of France is", "def fibonacci(n):", "In 1969, humans first",
              "List three primary colors:"]
     sp = SamplingParams.greedy(32)
-    ref = LLM(MODEL, ecfg(1, backend, block, num_blocks=None)).generate(texts, sp)
+    single = LLM(MODEL, ecfg(1, backend, block, num_blocks=None))
+    ref = single.generate(texts, sp)
+    del single  # it reserved 90% of cuda:0; the TP driver needs that memory
+    gc.collect()
+    torch.cuda.empty_cache()
     llm = LLM(MODEL, ecfg(2, backend, block, num_blocks=None, async_scheduling=True))
     try:
         got = llm.generate(texts, sp)
