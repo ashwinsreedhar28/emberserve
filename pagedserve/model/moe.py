@@ -93,8 +93,20 @@ class DeepseekMoE(nn.Module):
                         self.experts_down[e])
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        n, h = x.shape
         idx, w = self.gate(x)  # [N, k]
+        from pagedserve.model.moe_triton import fused_moe_enabled, fused_moe_forward
+
+        if fused_moe_enabled(x):
+            out = fused_moe_forward(x, idx, w, self.experts_gate_up, self.experts_down)
+        else:
+            out = self.forward_loop(x, idx, w)
+        if self.shared_experts is not None:
+            out = out + self.shared_experts(x)
+        return out
+
+    def forward_loop(self, x: torch.Tensor, idx: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        """Routed experts by a per-expert Python loop (the reference; CPU path)."""
+        n, h = x.shape
         k = idx.shape[1]
         out = torch.zeros_like(x)
         flat_idx = idx.reshape(-1)  # token t's j-th choice is at position t*k + j
@@ -111,8 +123,6 @@ class DeepseekMoE(nn.Module):
             tokens = pos // k
             y = self.expert(e, x.index_select(0, tokens))
             out.index_add_(0, tokens, y * flat_w[pos].to(y.dtype)[:, None])
-        if self.shared_experts is not None:
-            out = out + self.shared_experts(x)
         return out
 
 
