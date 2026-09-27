@@ -14,6 +14,7 @@ pagedserve must reproduce output_ids token-for-token and logits within atol.
 from __future__ import annotations
 
 import argparse
+import sys
 import json
 from pathlib import Path
 
@@ -46,12 +47,23 @@ def main() -> None:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     torch.manual_seed(0)
-    tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=args.trust_remote_code)
-    # device_map places shards straight on the target device; a 16B model in fp32 is 64 GB
-    # and would otherwise be materialized on the host first.
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model, dtype=torch.float32, trust_remote_code=args.trust_remote_code,
-        device_map=args.device if args.device != "cpu" else None).eval()
+    # The tokenizer may live in the repo's own code (Moonlight's tiktoken tokenizer); loading
+    # it with remote code is harmless for the others. The MODEL is tried natively first
+    # (transformers ships DeepSeek-V3), and only falls back to the repo's modeling code,
+    # which often targets an older transformers.
+    tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
+    device_map = args.device if args.device != "cpu" else None
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=torch.float32, trust_remote_code=False, device_map=device_map)
+    except Exception as exc:  # noqa: BLE001
+        if not args.trust_remote_code:
+            raise
+        print(f"native load failed ({type(exc).__name__}: {str(exc)[:200]}); "
+              f"retrying with the checkpoint's own modeling code", file=sys.stderr)
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model, dtype=torch.float32, trust_remote_code=True, device_map=device_map)
+    model = model.eval()
     if args.device == "cpu":
         model = model.to(args.device)
     out_dir = Path(args.out)
