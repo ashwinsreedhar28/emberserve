@@ -208,7 +208,6 @@ def build_app_from_args(model_dir: str, engine_config: EngineConfig,
     the engine runs in its own process (`server/engine_core.py`) and this process keeps
     only the tokenizer."""
     if engine_process:
-        from pathlib import Path
 
         from pagedserve.server.async_engine import AsyncEngineCoreClient
         from pagedserve.server.engine_core import EngineSpec

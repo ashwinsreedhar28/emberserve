@@ -42,7 +42,6 @@ class MoEGate(nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """`x: [N, H]` -> `(topk_idx [N, k] int64, topk_weight [N, k] float32)`."""
         c = self.config
-        n = x.shape[0]
         logits = F.linear(x.float(), self._weight_f32())  # [N, E]
         if c.n_group == 1:
             from pagedserve.model.moe_triton import fused_moe_enabled, topk_gate

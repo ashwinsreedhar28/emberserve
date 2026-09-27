@@ -27,7 +27,7 @@ class Tokenizer:
             raise ImportError("pip install 'pagedserve[hf]' to load a tokenizer") from e
         try:
             self._tok = AutoTokenizer.from_pretrained(str(model_dir))
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             # A snapshot that ships its own tokenizer code (Moonlight's tiktoken-based
             # `tokenization_moonshot.py`): the code is already on disk, downloaded with the
             # weights, so run it rather than refuse text prompts.
