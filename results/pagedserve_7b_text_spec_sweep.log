@@ -1,0 +1,24 @@
+[baseline] synthetic prompt ids drawn from [2, 152064)
+[baseline] launching: /usr/local/bin/python -m pagedserve.cli serve --model models/Qwen2.5-7B-Instruct --port 8000 --host 127.0.0.1 --dtype float16 --max-model-len 4096 --device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --speculative-ngram 3 --num-speculative-tokens 5
+[baseline] waiting for http://127.0.0.1:8000/health ...
+[baseline] pagedserve_7b_text_spec @ rate=1 req/s, n=200
+[load] 10/200 done     8.9s[load] 20/200 done    20.9s[load] 30/200 done    32.5s[load] 40/200 done    38.4s[load] 50/200 done    54.1s[load] 60/200 done    62.8s[load] 70/200 done    75.7s[load] 80/200 done    86.4s[load] 90/200 done    93.6s[load] 100/200 done   101.7s[load] 110/200 done   109.2s[load] 120/200 done   121.3s[load] 130/200 done   130.1s[load] 140/200 done   143.6s[load] 150/200 done   149.2s[load] 160/200 done   156.9s[load] 170/200 done   168.8s[load] 180/200 done   176.0s[load] 190/200 done   185.6s[load] 200/200 done   197.3s
+pagedserve_7b_text_spec@1 tok/s=   263.0 req/s=  1.01 ttft p50/p99=   33.4/   76.0ms tpot p50/p99=  14.8/  19.8ms ok=200/200
+[baseline] speculation: 14719/90695 drafts accepted (16.2%)
+[baseline] pagedserve_7b_text_spec @ rate=2 req/s, n=200
+[load] 10/200 done     6.1s[load] 20/200 done    12.6s[load] 30/200 done    17.4s[load] 40/200 done    22.5s[load] 50/200 done    29.1s[load] 60/200 done    33.2s[load] 70/200 done    41.7s[load] 80/200 done    45.3s[load] 90/200 done    49.7s[load] 100/200 done    52.1s[load] 110/200 done    57.3s[load] 120/200 done    61.6s[load] 130/200 done    67.3s[load] 140/200 done    72.7s[load] 150/200 done    77.4s[load] 160/200 done    82.0s[load] 170/200 done    85.7s[load] 180/200 done    90.7s[load] 190/200 done    95.4s[load] 200/200 done   102.4s
+pagedserve_7b_text_spec@2 tok/s=   506.8 req/s=  1.95 ttft p50/p99=   38.4/   75.8ms tpot p50/p99=  17.0/  22.3ms ok=200/200
+[baseline] speculation: 14677/90708 drafts accepted (16.2%)
+[baseline] pagedserve_7b_text_spec @ rate=4 req/s, n=200
+[load] 10/200 done     4.1s[load] 20/200 done     7.8s[load] 30/200 done    12.0s[load] 40/200 done    14.8s[load] 50/200 done    17.0s[load] 60/200 done    20.3s[load] 70/200 done    23.6s[load] 80/200 done    25.2s[load] 90/200 done    27.2s[load] 100/200 done    29.3s[load] 110/200 done    31.9s[load] 120/200 done    34.1s[load] 130/200 done    37.0s[load] 140/200 done    39.3s[load] 150/200 done    42.5s[load] 160/200 done    44.3s[load] 170/200 done    46.8s[load] 180/200 done    48.8s[load] 190/200 done    50.6s[load] 200/200 done    56.0s
+pagedserve_7b_text_spec@4 tok/s=   927.2 req/s=  3.58 ttft p50/p99=   48.6/  137.4ms tpot p50/p99=  20.6/  28.6ms ok=200/200
+[baseline] speculation: 14691/90371 drafts accepted (16.3%)
+[baseline] pagedserve_7b_text_spec @ rate=8 req/s, n=200
+[load] 10/200 done     4.4s[load] 20/200 done     6.4s[load] 30/200 done     9.4s[load] 40/200 done    11.5s[load] 50/200 done    12.8s[load] 60/200 done    14.0s[load] 70/200 done    15.0s[load] 80/200 done    17.2s[load] 90/200 done    18.9s[load] 100/200 done    19.8s[load] 110/200 done    21.6s[load] 120/200 done    23.8s[load] 130/200 done    25.2s[load] 140/200 done    26.7s[load] 150/200 done    28.1s[load] 160/200 done    28.7s[load] 170/200 done    30.1s[load] 180/200 done    31.6s[load] 190/200 done    32.8s[load] 200/200 done    36.1s
+pagedserve_7b_text_spec@8 tok/s=  1439.7 req/s=  5.55 ttft p50/p99=   67.2/  134.5ms tpot p50/p99=  31.3/  50.0ms ok=200/200
+[baseline] speculation: 14675/90588 drafts accepted (16.2%)
+[baseline] pagedserve_7b_text_spec @ rate=inf req/s, n=200
+[load] 10/200 done     4.0s[load] 20/200 done     5.1s[load] 30/200 done     6.3s[load] 40/200 done     8.3s[load] 50/200 done     9.7s[load] 60/200 done    10.4s[load] 70/200 done    11.4s[load] 80/200 done    13.6s[load] 90/200 done    14.9s[load] 100/200 done    16.3s[load] 110/200 done    17.0s[load] 120/200 done    17.9s[load] 130/200 done    18.8s[load] 140/200 done    19.8s[load] 150/200 done    20.8s[load] 160/200 done    21.8s[load] 170/200 done    23.0s[load] 180/200 done    24.1s[load] 190/200 done    25.5s[load] 200/200 done    26.2s
+pagedserve_7b_text_spec@inf tok/s=  1983.3 req/s=  7.65 ttft p50/p99=  917.2/ 2224.2ms tpot p50/p99=  62.6/ 106.5ms ok=200/200
+[baseline] speculation: 14713/90506 drafts accepted (16.3%)
+[baseline] wrote results/pagedserve_7b_text_spec.json
