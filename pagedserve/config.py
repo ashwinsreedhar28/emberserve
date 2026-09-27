@@ -99,13 +99,20 @@ class EngineConfig:
     gpu_memory_utilization: float = 0.90
     # Scheduler limits.
     max_num_seqs: int = 256
-    max_num_batched_tokens: int = 8192  # token budget per prefill step
+    # Token budget per prefill step. With `enable_chunked_prefill` it is the cap on EVERY
+    # step (decode tokens + prefill chunk tokens); typical values are 512-2048.
+    max_num_batched_tokens: int = 8192
     max_model_len: int = 4096
     # Attention backend: "naive" (per-seq growing cache), "paged_torch" (gather), "paged_flash" (GPU).
     attn_backend: str = "paged_torch"
     # Feature flags (later phases).
     enable_prefix_caching: bool = False
     enable_cuda_graphs: bool = False
+    # Chunked prefill (Sarathi-Serve / vLLM): every step carries one token per decoding
+    # request plus as many prompt tokens as fit in the remaining `max_num_batched_tokens`,
+    # so a long prompt is split across steps instead of stalling every decode for one
+    # long prefill step. Prompts longer than the budget are accepted when this is on.
+    enable_chunked_prefill: bool = False
     seed: int = 0
     extra: dict = field(default_factory=dict)
 

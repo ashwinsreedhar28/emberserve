@@ -13,7 +13,7 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--model", required=True, help="HF snapshot directory")
     p.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float32")
     p.add_argument("--device", default="cpu")
-    p.add_argument("--attn-backend", choices=["naive", "paged_torch", "paged_flash"],
+    p.add_argument("--attn-backend", choices=["naive", "paged_torch", "paged_flash", "paged_triton"],
                    default="paged_torch")
     p.add_argument("--block-size", type=int, default=16)
     p.add_argument("--num-blocks", type=int, default=None)
@@ -22,6 +22,9 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--max-model-len", type=int, default=4096)
     p.add_argument("--enable-prefix-caching", action="store_true")
     p.add_argument("--enable-cuda-graphs", action="store_true")
+    p.add_argument("--enable-chunked-prefill", action="store_true",
+                   help="mix decode tokens and prompt chunks in every step; "
+                        "--max-num-batched-tokens becomes the per-step cap (try 512-2048)")
 
 
 def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
@@ -32,7 +35,8 @@ def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
                         max_num_batched_tokens=args.max_num_batched_tokens,
                         max_model_len=args.max_model_len, attn_backend=args.attn_backend,
                         enable_prefix_caching=args.enable_prefix_caching,
-                        enable_cuda_graphs=args.enable_cuda_graphs)
+                        enable_cuda_graphs=args.enable_cuda_graphs,
+                        enable_chunked_prefill=args.enable_chunked_prefill)
 
 
 def build_parser() -> argparse.ArgumentParser:

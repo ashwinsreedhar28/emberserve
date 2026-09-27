@@ -57,6 +57,15 @@ allocated, and when decode runs out of blocks the youngest running request is pr
 (blocks freed, `num_computed_tokens` reset, back to the front of the queue) and recomputed
 later. Outputs are identical either way — that is a test.
 
+With `--enable-chunked-prefill` (Sarathi-Serve / vLLM style) a step is instead **mixed**: one
+decode token for every running request whose prefill is done, plus as many prompt tokens as
+fit in the remaining `max_num_batched_tokens` (running requests still mid-prefill first,
+then new requests FIFO). A long prompt is split across steps, so it no longer stalls every
+decoder's TPOT for one long step; `max_num_batched_tokens` becomes the per-step cap (512–2048
+is typical) and prompts longer than it are accepted. A partial chunk writes K/V and emits
+nothing; the token is sampled only on the step that completes the prompt
+(`SchedulerOutput.prefill_complete`). Chunked outputs equal unchunked outputs — also a test.
+
 Attention backends share one contract (`attn/base.py`): tokens are packed
 `[num_tokens, heads, head_dim]`, `context_lens[i]` is the KV length after the step, and the
 backend writes this step's K/V then attends causally. `paged_torch` gathers blocks via block

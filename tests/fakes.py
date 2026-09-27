@@ -45,17 +45,25 @@ class StepRecord:
     query_lens: list[int]
     num_tokens_at_schedule: list[int]  # req.num_tokens when it was scheduled
     preempted: list[str] = field(default_factory=list)
+    prefill_complete: list[bool] = field(default_factory=list)
+    num_decode_tokens: int = 0
+
+    @property
+    def num_tokens(self) -> int:
+        return sum(self.query_lens)
 
 
 class FakeEngineLoop:
     """Continuous-batching loop: every request is handed to the scheduler on arrival."""
 
     def __init__(self, num_blocks: int, block_size: int = 4, max_num_seqs: int = 256,
-                 max_num_batched_tokens: int = 8192, max_model_len: int = 4096) -> None:
+                 max_num_batched_tokens: int = 8192, max_model_len: int = 4096,
+                 enable_chunked_prefill: bool = False) -> None:
         self.config = EngineConfig(block_size=block_size, num_gpu_blocks=num_blocks,
                                    max_num_seqs=max_num_seqs,
                                    max_num_batched_tokens=max_num_batched_tokens,
-                                   max_model_len=max_model_len)
+                                   max_model_len=max_model_len,
+                                   enable_chunked_prefill=enable_chunked_prefill)
         self.block_manager = BlockManager(num_blocks, block_size)
         self.scheduler = Scheduler(self.config, self.block_manager)
         self.requests: dict[str, Request] = {}  # every request ever submitted
@@ -107,9 +115,14 @@ class FakeEngineLoop:
             step=self.num_steps, is_prefill=out.is_prefill,
             scheduled=[r.request_id for r in out.scheduled], query_lens=list(out.query_lens),
             num_tokens_at_schedule=[r.num_tokens for r in out.scheduled],
-            preempted=[r.request_id for r in out.preempted]))
-        for req, query_len in zip(out.scheduled, out.query_lens):
+            preempted=[r.request_id for r in out.preempted],
+            prefill_complete=list(out.prefill_complete),
+            num_decode_tokens=out.num_decode_tokens))
+        for req, query_len, done in zip(out.scheduled, out.query_lens, out.prefill_complete,
+                                        strict=True):
             req.num_computed_tokens += query_len
+            if not done:
+                continue  # partial prefill chunk (chunked prefill): no token yet
             tok = next_token(req.all_token_ids[-1])
             req.append_output(tok)
             self.outputs[req.request_id] = req.output_token_ids

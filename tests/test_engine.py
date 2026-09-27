@@ -22,13 +22,15 @@ CFG = ModelConfig.tiny()
 
 def make_engine(backend: str = "paged_torch", num_blocks: int = 256, block_size: int = 4,
                 max_num_seqs: int = 64, max_batched: int = 512, seed: int = 0,
-                max_model_len: int = 256) -> LLMEngine:
+                max_model_len: int = 256, enable_chunked_prefill: bool = False,
+                enable_prefix_caching: bool = False) -> LLMEngine:
     model = Qwen2ForCausalLM(CFG)
     reset_parameters_deterministic(model, seed)
     ecfg = EngineConfig(device="cpu", dtype=torch.float32, block_size=block_size,
                         num_gpu_blocks=num_blocks, max_num_seqs=max_num_seqs,
                         max_num_batched_tokens=max_batched, max_model_len=max_model_len,
-                        attn_backend=backend)
+                        attn_backend=backend, enable_chunked_prefill=enable_chunked_prefill,
+                        enable_prefix_caching=enable_prefix_caching)
     return LLMEngine(model, CFG, ecfg, tokenizer=None)
 
 
@@ -152,3 +154,104 @@ def test_step_stats_recorded() -> None:
     LLM.from_engine(eng).generate(prompts(2), SamplingParams.greedy(4, ignore_eos=True))
     assert eng.stats[0].is_prefill and not eng.stats[1].is_prefill
     assert all(0.0 < s.kv_utilization <= 1.0 for s in eng.stats)
+
+
+# ---- chunked prefill ----------------------------------------------------------------
+
+def _check_token_split(eng: LLMEngine, budget: int | None = None) -> None:
+    assert eng.stats, "no steps recorded"
+    for s in eng.stats:
+        assert s.num_prefill_tokens + s.num_decode_tokens == s.num_tokens, s
+        if budget is not None:
+            assert s.num_tokens <= budget, s
+
+
+@pytest.mark.parametrize("backend", ["naive", "paged_torch"])
+def test_chunked_prefill_matches_unchunked(backend: str) -> None:
+    """6 prompts of 3-20 tokens through an 8-token budget: chunks straddle the budget,
+    several prompts share steps, and the outputs must equal the unchunked run."""
+    ps = prompts(6)
+    sp = SamplingParams.greedy(12, ignore_eos=True)
+    eng = make_engine(backend, max_batched=8, enable_chunked_prefill=True)
+    res = LLM.from_engine(eng).generate(ps, sp)
+    ref = LLM.from_engine(make_engine(backend)).generate(ps, sp)
+    assert [r.output_token_ids for r in res] == [r.output_token_ids for r in ref]
+    assert all(r.finish_reason == FinishReason.LENGTH for r in res)
+    assert any(s.num_prefill_tokens > 0 and s.num_decode_tokens > 0 for s in eng.stats), \
+        "expected at least one mixed prefill+decode step"
+    _check_token_split(eng, budget=8)
+    assert eng.block_manager.num_free_blocks == eng.block_manager.num_blocks
+
+
+@pytest.mark.parametrize("backend", ["naive", "paged_torch"])
+def test_chunked_prefill_mixed_with_decoding_requests(backend: str) -> None:
+    """4 short requests decoding, then a 40-token prompt with budget 8: no step exceeds
+    the budget, decodes keep flowing, every output equals `run_alone`."""
+    budget = 8
+    eng = make_engine(backend, max_batched=budget, enable_chunked_prefill=True)
+    shorts = [p[:2] for p in prompts(4, seed=5)]
+    g = torch.Generator().manual_seed(9)
+    long_p = torch.randint(2, CFG.vocab_size, (40,), generator=g).tolist()
+    sp = SamplingParams.greedy(20, ignore_eos=True)
+    for i, p in enumerate(shorts):
+        eng.add_request(f"s{i}", p, sp)
+    eng.step()  # prefill all four (8 tokens == budget)
+    assert eng.stats[-1].num_prefill_tokens == 8
+    eng.step()  # pure decode
+    assert eng.stats[-1].num_decode_tokens == 4 and not eng.stats[-1].is_prefill
+    eng.add_request("long", long_p, SamplingParams.greedy(6, ignore_eos=True))
+    long_req = eng.scheduler.get_request("long")
+    collected: dict[str, list[int]] = {}
+    chunk_steps = 0
+    while long_req.num_computed_tokens < len(long_p):
+        for o in eng.step():
+            if o.finished:
+                collected[o.request_id] = o.output_token_ids
+        st = eng.stats[-1]
+        chunk_steps += 1
+        assert st.num_decode_tokens == 4 and 1 <= st.num_prefill_tokens <= 4
+        assert st.is_prefill
+    assert chunk_steps == -(-len(long_p) // 4)
+    assert len(long_req.output_token_ids) == 1  # sampled once, at the last chunk
+    while eng.has_unfinished_requests():
+        for o in eng.step():
+            if o.finished:
+                collected[o.request_id] = o.output_token_ids
+    _check_token_split(eng, budget=budget)
+    for i, p in enumerate(shorts):
+        assert collected[f"s{i}"] == run_alone(backend, p, 20)
+    assert collected["long"] == run_alone(backend, long_p, 6)
+
+
+def test_chunked_prefill_with_prefix_caching() -> None:
+    """A shared 16-token prefix (4 blocks of 4) with chunking: the second request skips
+    the cached blocks and chunks only its tail; outputs equal the plain run."""
+    g = torch.Generator().manual_seed(21)
+    shared = torch.randint(2, CFG.vocab_size, (16,), generator=g).tolist()
+    tails = [torch.randint(2, CFG.vocab_size, (n,), generator=g).tolist() for n in (9, 13, 5)]
+    ps = [shared + t for t in tails]
+    sp = SamplingParams.greedy(8, ignore_eos=True)
+    ref = LLM.from_engine(make_engine("paged_torch")).generate(ps, sp)
+    eng = make_engine("paged_torch", max_batched=6, block_size=4, enable_chunked_prefill=True,
+                      enable_prefix_caching=True)
+    llm = LLM.from_engine(eng)
+    first = llm.generate([ps[0]], sp)
+    assert first[0].output_token_ids == ref[0].output_token_ids
+    prefill_before = sum(s.num_prefill_tokens for s in eng.stats)
+    assert prefill_before == len(ps[0])
+    rest = llm.generate(ps[1:], sp)
+    assert [r.output_token_ids for r in rest] == [r.output_token_ids for r in ref[1:]]
+    prefill_after = sum(s.num_prefill_tokens for s in eng.stats) - prefill_before
+    # Each later prompt hits the 4 shared blocks (16 tokens) and chunks only its tail.
+    assert prefill_after == sum(len(p) - 16 for p in ps[1:])
+    assert eng.block_manager.stats().prefix_cache.hits >= 8
+    _check_token_split(eng, budget=6)
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_step_stats_token_split(chunked: bool) -> None:
+    eng = make_engine("paged_torch", max_batched=16, enable_chunked_prefill=chunked)
+    LLM.from_engine(eng).generate(prompts(5, seed=13), SamplingParams.greedy(6, ignore_eos=True))
+    _check_token_split(eng, budget=16 if chunked else None)
+    assert sum(s.num_decode_tokens for s in eng.stats) == 5 * 5  # 5 reqs x (6 - 1) decodes
+    assert sum(s.num_prefill_tokens for s in eng.stats) == sum(len(p) for p in prompts(5, seed=13))

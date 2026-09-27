@@ -117,6 +117,39 @@ def test_kernel_matches_paged_flash_block256(batch):
     torch.testing.assert_close(out.float(), ref.float(), atol=ATOL, rtol=RTOL)
 
 
+@pytest.mark.parametrize("block", [16, 256])
+def test_kernel_is_deterministic_across_calls(block):
+    """Same inputs -> bit-identical output on every launch (single-pass AND split-K).
+
+    CUDA-graph replay re-runs the captured launch against the same scratch buffers; any
+    run-to-run nondeterminism (e.g. an uninitialised partial being read) would surface
+    here as a token divergence in the engine tests, so check it directly first.
+    """
+    cache, meta, q, k, v = _decode_case(32, block, seed=99 + block)
+    PagedTorchAttentionBackend(CFG, cache).forward(0, q, k, v, meta)  # writes k/v
+    bt = paged_flash.block_tables_nonneg(meta)
+    ctx = paged_flash.context_lens_tensor(meta, cache.device)
+    for splits in (1, 4):
+        outs = [paged_attention_decode(q, cache.k_cache[0], cache.v_cache[0], bt, ctx,
+                                       D ** -0.5, num_splits=splits) for _ in range(3)]
+        torch.cuda.synchronize()
+        for o in outs[1:]:
+            assert torch.equal(o, outs[0]), f"num_splits={splits} not deterministic"
+
+
+def test_kernel_writes_into_provided_out_buffer():
+    cache, meta, q, k, v = _decode_case(8, 16, seed=3)
+    ref = PagedTorchAttentionBackend(CFG, cache).forward(0, q, k, v, meta)
+    out = torch.full_like(q, float("nan"))
+    ret = paged_attention_decode(q, cache.k_cache[0], cache.v_cache[0],
+                                 paged_flash.block_tables_nonneg(meta),
+                                 paged_flash.context_lens_tensor(meta, cache.device),
+                                 D ** -0.5, num_splits=2, out=out)
+    torch.cuda.synchronize()
+    assert ret.data_ptr() == out.data_ptr()
+    torch.testing.assert_close(out.float(), ref.float(), atol=ATOL, rtol=RTOL)
+
+
 def test_backend_block16_matches_paged_torch_over_steps():
     """Backend-level: prefill (delegated) then 40 decode steps crossing block boundaries."""
     block = 16
@@ -189,17 +222,46 @@ def gen(eng: LLMEngine, ps, max_tokens=16):
 
 
 def test_engine_greedy_identical_across_backends():
+    """paged_torch == paged_triton == paged_triton+graphs, 8 prompts, block 16."""
     ps = prompts(8)
     ref = gen(make_engine("paged_torch", 16, False), ps)
     tri = make_engine("paged_triton", 16, False)
     assert tri.graph_runner is None and tri.block_manager.num_blocks == 64
+    assert tri.backend.prefill_backend_name == "PagedTorchAttentionBackend"  # block 16
     assert gen(tri, ps) == ref
     tri_g = make_engine("paged_triton", 16, True, num_blocks=64)
     assert tri_g.graph_runner is not None and tri_g.scratch_block == 63
+    assert tri_g.block_manager.num_blocks == 63
     assert gen(tri_g, ps) == ref
-    if paged_flash.is_available():
-        assert gen(make_engine("paged_flash", 256, False, num_blocks=16), ps) == ref
-        assert tri.backend.prefill_backend_name == "PagedTorchAttentionBackend"  # block 16
+
+
+@pytest.mark.skipif(not paged_flash.is_available(), reason="needs flash_attn")
+def test_engine_greedy_identical_vs_paged_flash():
+    """paged_flash (block 256) and paged_flash+graphs produce the same tokens as
+    paged_triton at block 16 with and without graphs."""
+    ps = prompts(8)
+    ref = gen(make_engine("paged_torch", 16, False), ps)
+    assert gen(make_engine("paged_flash", 256, False, num_blocks=16), ps) == ref
+    assert gen(make_engine("paged_flash", 256, True, num_blocks=16), ps) == ref
+    assert gen(make_engine("paged_triton", 16, False), ps) == ref
+    assert gen(make_engine("paged_triton", 16, True), ps) == ref
+
+
+def test_engine_scratch_block_never_in_block_tables():
+    """Graph padding rows write into the reserved scratch block only (block 16 here, so
+    the scratch block is one of many small blocks and any leak would be visible)."""
+    eng = make_engine("paged_triton", 16, True)
+    scratch = eng.scratch_block
+    ps = prompts(13, seed=4)
+    sp = SamplingParams.greedy(12, ignore_eos=True)
+    for i, p in enumerate(ps):
+        eng.add_request(str(i), p, sp)
+    while eng.has_unfinished_requests():
+        eng.step()
+        for sid in range(len(ps)):
+            if eng.block_manager.has_sequence(sid):
+                assert scratch not in eng.block_manager.get_block_table(sid)
+    assert eng.graph_runner.block_tables[:, 0].max().item() <= scratch
 
 
 @pytest.mark.parametrize("n", [5, 13])

@@ -2,10 +2,12 @@
 
     python scripts/gpu_smoke.py [--model models/Qwen2.5-0.5B-Instruct] [--batches 1,8,32,128]
 
-Runs naive / paged_torch / paged_flash / paged_flash+graphs on one real prompt and
-asserts identical tokens, then times batch decode (random ~256-token prompts, 128 output
-tokens) per backend. Skips (exit 0) without CUDA, flash-attn or the model directory.
-paged_flash uses block_size 256 (flash-attn constraint); the torch backends use 16.
+Runs naive / paged_torch / paged_flash / paged_flash+graphs / paged_triton /
+paged_triton+graphs on one real prompt and asserts identical tokens, then times batch
+decode (random ~256-token prompts, 128 output tokens) per backend. Skips (exit 0)
+without CUDA, flash-attn or the model directory; the paged_triton rows are dropped when
+triton is not importable. paged_flash uses block_size 256 (flash-attn constraint); the
+torch backends and paged_triton use 16.
 """
 
 from __future__ import annotations
@@ -25,7 +27,8 @@ from pagedserve.llm import LLM  # noqa: E402
 from pagedserve.sched.request import SamplingParams  # noqa: E402
 
 BACKENDS = [("naive", 16, False), ("paged_torch", 16, False),
-            ("paged_flash", 256, False), ("paged_flash+graphs", 256, True)]
+            ("paged_flash", 256, False), ("paged_flash+graphs", 256, True),
+            ("paged_triton", 16, False), ("paged_triton+graphs", 16, True)]
 
 
 def make(model_dir: str, name: str, block: int, graphs: bool, max_seqs: int) -> LLMEngine:
@@ -54,13 +57,19 @@ def main() -> int:
     if not Path(args.model, "config.json").exists():
         print(f"model {args.model} missing (python scripts/download_model.py): skipping")
         return 0
+    try:
+        import triton  # noqa: F401
+        backends = list(BACKENDS)
+    except ImportError:
+        print("triton not installed: skipping paged_triton rows", file=sys.stderr)
+        backends = [b for b in BACKENDS if not b[0].startswith("paged_triton")]
     batches = [int(b) for b in args.batches.split(",")]
     max_seqs = max(batches)
 
     prompt = "The three laws of thermodynamics, explained simply, are:"
     outputs: dict[str, list[int]] = {}
     engines: dict[str, LLMEngine] = {}
-    for name, block, graphs in BACKENDS:
+    for name, block, graphs in backends:
         eng = make(args.model, name, block, graphs, max_seqs)
         engines[name] = eng
         res = LLM.from_engine(eng).generate([prompt], SamplingParams.greedy(64))[0]
@@ -74,7 +83,7 @@ def main() -> int:
     g = torch.Generator().manual_seed(0)
     vocab = engines["naive"].model_config.vocab_size
     print(f"{'backend':20s} " + " ".join(f"B={b:>4d}" for b in batches) + "   (decode tok/s)")
-    for name, _, _ in BACKENDS:
+    for name, _, _ in backends:
         eng = engines[name]
         row = []
         for b in batches:

@@ -6,6 +6,9 @@
     paged_torch+prefix   + prefix caching
     paged_flash        flash-attn paged decode / varlen prefill (GPU)
     paged_flash+graphs   + CUDA graphs for decode steps
+    <any>+chunked        + chunked prefill (decode slots + prompt chunks in every step);
+                         max_num_batched_tokens defaults to 512 for such configs unless
+                         --max-num-batched-tokens is given explicitly
 
     python -m pagedserve.bench.ablation --model models/Qwen2.5-0.5B-Instruct --device cuda \
         --dtype float16 --trace-n 200 --request-rate 8 --out results/ablation.json
@@ -30,8 +33,10 @@ from pagedserve.bench.offline import run_offline_benchmark
 from pagedserve.bench.trace import TraceRequest, generate_trace, trace_summary, trace_to_json
 from pagedserve.config import EngineConfig, ModelConfig
 
-ALL_CONFIGS = ("naive", "static", "paged_torch", "paged_torch+prefix", "paged_flash",
-               "paged_flash+graphs")
+ALL_CONFIGS = ("naive", "static", "paged_torch", "paged_torch+prefix", "paged_torch+chunked",
+               "paged_flash", "paged_flash+graphs", "paged_flash+graphs+chunked")
+DEFAULT_BUDGET = 8192  # the engine default when --max-num-batched-tokens is omitted
+CHUNKED_DEFAULT_BUDGET = 512
 DEFAULT_CONFIGS = ("naive", "static", "paged_torch", "paged_torch+prefix")
 
 
@@ -41,6 +46,7 @@ class AblationConfig:
     attn_backend: str
     enable_prefix_caching: bool = False
     enable_cuda_graphs: bool = False
+    enable_chunked_prefill: bool = False
     static_batching: bool = False
 
     @classmethod
@@ -51,20 +57,30 @@ class AblationConfig:
         if base not in ("naive", "paged_torch", "paged_flash"):
             raise ValueError(f"unknown config {name!r}; choose from {ALL_CONFIGS}")
         opts = set(flags.split("+")) if flags else set()
-        unknown = opts - {"prefix", "graphs"}
+        unknown = opts - {"prefix", "graphs", "chunked"}
         if unknown:
             raise ValueError(f"unknown flags {unknown} in config {name!r}")
         return cls(name, base, enable_prefix_caching="prefix" in opts,
-                   enable_cuda_graphs="graphs" in opts)
+                   enable_cuda_graphs="graphs" in opts,
+                   enable_chunked_prefill="chunked" in opts)
+
+    def max_num_batched_tokens(self, args: argparse.Namespace) -> int:
+        """`--max-num-batched-tokens` when given; otherwise the parser default, except that
+        a chunked config takes the per-step cap chunked prefill is meant to run with."""
+        if args.max_num_batched_tokens is not None:
+            return args.max_num_batched_tokens
+        return CHUNKED_DEFAULT_BUDGET if self.enable_chunked_prefill else DEFAULT_BUDGET
 
     def engine_config(self, args: argparse.Namespace) -> EngineConfig:
         return EngineConfig(
             device=args.device, dtype=EngineConfig.dtype_from_str(args.dtype),
             block_size=args.block_size, num_gpu_blocks=args.num_blocks,
-            max_num_seqs=args.max_num_seqs, max_num_batched_tokens=args.max_num_batched_tokens,
+            max_num_seqs=args.max_num_seqs,
+            max_num_batched_tokens=self.max_num_batched_tokens(args),
             max_model_len=args.max_model_len, attn_backend=self.attn_backend,
             enable_prefix_caching=self.enable_prefix_caching,
-            enable_cuda_graphs=self.enable_cuda_graphs, seed=args.seed)
+            enable_cuda_graphs=self.enable_cuda_graphs,
+            enable_chunked_prefill=self.enable_chunked_prefill, seed=args.seed)
 
 
 def build_engine(cfg: AblationConfig, args: argparse.Namespace):
@@ -106,11 +122,16 @@ def run_config(cfg: AblationConfig, trace: list[TraceRequest], args: argparse.Na
         "config": cfg.name, "attn_backend": cfg.attn_backend,
         "enable_prefix_caching": cfg.enable_prefix_caching,
         "enable_cuda_graphs": cfg.enable_cuda_graphs, "static_batching": cfg.static_batching,
+        "enable_chunked_prefill": cfg.enable_chunked_prefill,
+        "max_num_batched_tokens": cfg.max_num_batched_tokens(args),
         "summary": summary.to_dict(),
         "kv_utilization_mean": kv_util,
         "num_steps": len(steps), "num_prefill_steps": len(prefill),
         "num_decode_steps": len(decode),
         "num_preempted": int(sum(s.num_preempted for s in steps)),
+        "num_mixed_steps": int(sum(1 for s in steps
+                                   if s.num_prefill_tokens > 0 and s.num_decode_tokens > 0)),
+        "max_step_tokens": int(max((s.num_tokens for s in steps), default=0)),
         "mean_decode_batch": float(np.mean([s.num_seqs for s in decode])) if decode else 0.0,
         "decode_forward_ms_mean": float(np.mean([s.forward_ms for s in decode])) if decode else 0.0,
         "prefill_forward_ms_mean": (float(np.mean([s.forward_ms for s in prefill]))
@@ -158,7 +179,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--block-size", type=int, default=16)
     p.add_argument("--num-blocks", type=int, default=None)
     p.add_argument("--max-num-seqs", type=int, default=256)
-    p.add_argument("--max-num-batched-tokens", type=int, default=8192)
+    p.add_argument("--max-num-batched-tokens", type=int, default=None,
+                   help=f"per-step token budget (default {DEFAULT_BUDGET}; "
+                        f"{CHUNKED_DEFAULT_BUDGET} for +chunked configs)")
     p.add_argument("--max-model-len", type=int, default=4096)
     p.add_argument("--slo-ttft-ms", type=float, default=None)
     p.add_argument("--slo-tpot-ms", type=float, default=None)

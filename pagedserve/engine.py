@@ -44,6 +44,11 @@ class StepStats:
     sample_ms: float
     kv_utilization: float
     num_free_blocks: int
+    # num_prefill_tokens + num_decode_tokens == num_tokens. A decode token is one new slot
+    # for a request whose prefill is done; everything else (prompt, recompute after
+    # preemption, chunked-prefill chunks) is a prefill token.
+    num_prefill_tokens: int = 0
+    num_decode_tokens: int = 0
 
 
 # Backends whose decode step reads only static device tensors (meta.context_lens_t /
@@ -199,7 +204,18 @@ class LLMEngine:
             hidden = self.model(input_ids, self.backend, meta)
             logits = self.model.compute_logits(hidden, meta)
         t1 = time.perf_counter()
-        sampled = self.sampler.sample(logits, sched_out.scheduled)
+        # Only rows whose prefill completes this step get a token; a partial prefill
+        # chunk's last-token logits are meaningless (its next chunk continues the prompt).
+        complete = sched_out.prefill_complete
+        if all(complete):
+            sampled = self.sampler.sample(logits, sched_out.scheduled)
+        else:
+            idx = [i for i, c in enumerate(complete) if c]
+            reqs = [sched_out.scheduled[i] for i in idx]
+            sampled_rows = self.sampler.sample(logits[idx], reqs) if idx else []
+            sampled = [None] * len(complete)
+            for i, tok in zip(idx, sampled_rows, strict=True):
+                sampled[i] = tok
         t2 = time.perf_counter()
 
         outputs = self._postprocess(sched_out, sampled)
@@ -210,7 +226,9 @@ class LLMEngine:
                 num_seqs=len(sched_out.scheduled), num_tokens=sched_out.num_tokens,
                 num_preempted=len(sched_out.preempted), forward_ms=(t1 - t0) * 1e3,
                 sample_ms=(t2 - t1) * 1e3, kv_utilization=st.utilization,
-                num_free_blocks=st.num_free))
+                num_free_blocks=st.num_free,
+                num_prefill_tokens=sched_out.num_prefill_tokens,
+                num_decode_tokens=sched_out.num_decode_tokens))
         return outputs
 
     def _build_inputs(self, so: SchedulerOutput) -> tuple[torch.Tensor, AttnMetadata]:
@@ -241,11 +259,18 @@ class LLMEngine:
             meta.block_size = self.config.block_size
         return input_ids, meta
 
-    def _postprocess(self, so: SchedulerOutput, sampled: list[int]) -> list[RequestOutput]:
+    def _postprocess(self, so: SchedulerOutput, sampled: list[int | None]) -> list[RequestOutput]:
+        """Advance every scheduled request; append/stop-check only the sampled rows.
+        `sampled[i]` is None exactly where `so.prefill_complete[i]` is False."""
         now = time.perf_counter()
         outputs: list[RequestOutput] = []
-        for req, qlen, tok in zip(so.scheduled, so.query_lens, sampled, strict=True):
+        for req, qlen, tok, done in zip(so.scheduled, so.query_lens, sampled,
+                                        so.prefill_complete, strict=True):
             req.num_computed_tokens += qlen
+            if not done:
+                assert tok is None
+                continue  # partial prefill chunk: K/V written, nothing to emit yet
+            assert tok is not None
             req.append_output(tok)
             if req.first_token_time is None:
                 req.first_token_time = now

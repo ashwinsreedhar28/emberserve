@@ -29,13 +29,34 @@ from pagedserve.sched.request import FinishReason, Request, RequestState
 @dataclass
 class SchedulerOutput:
     scheduled: list[Request]  # requests in this step, packed order
+    # Route through the prefill attention path (per-sequence causal attention over the
+    # gathered context). True iff some query_len > 1 or some scheduled request is still
+    # mid-prefill after this step. A step of pure decode slots is False, so CUDA graphs
+    # apply to it. Not "the engine samples for every row": that is `prefill_complete`.
     is_prefill: bool
     query_lens: list[int]  # per scheduled request: tokens computed this step
     preempted: list[Request] = field(default_factory=list)  # evicted during this call
+    # Per scheduled request: True when this step computes its last outstanding token
+    # (num_computed_tokens + query_len == num_tokens), i.e. the engine samples for it.
+    # False only for a partial prefill chunk (chunked prefill), which emits nothing.
+    # Defaults to all-True, which is what the non-chunked paths produce.
+    prefill_complete: list[bool] = field(default_factory=list)
+    # Rows that are decode slots (one new token for a request whose prefill is done).
+    # `num_tokens - num_decode_tokens` is the number of prompt/recompute tokens.
+    num_decode_tokens: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.prefill_complete:
+            self.prefill_complete = [True] * len(self.scheduled)
+        assert len(self.prefill_complete) == len(self.query_lens) == len(self.scheduled)
 
     @property
     def num_tokens(self) -> int:
         return sum(self.query_lens)
+
+    @property
+    def num_prefill_tokens(self) -> int:
+        return self.num_tokens - self.num_decode_tokens
 
     @property
     def is_empty(self) -> bool:
@@ -62,7 +83,8 @@ class Scheduler:
             raise ValueError("empty prompt")
         if n >= self.config.max_model_len:
             raise ValueError(f"prompt has {n} tokens, max_model_len is {self.config.max_model_len}")
-        if n > self.config.max_num_batched_tokens:
+        # With chunked prefill a prompt longer than the budget is simply split across steps.
+        if not self.config.enable_chunked_prefill and n > self.config.max_num_batched_tokens:
             raise ValueError(f"prompt has {n} tokens, exceeds max_num_batched_tokens "
                              f"{self.config.max_num_batched_tokens}")
         if req.request_id in self._by_id:
@@ -120,6 +142,8 @@ class Scheduler:
         if self.config.enable_prefix_caching:
             for req in self.running:
                 self._register_computed_blocks(req)
+        if self.config.enable_chunked_prefill:
+            return self._schedule_chunked()
         if self.waiting:
             out = self._schedule_prefill()
             if not out.is_empty:
@@ -185,7 +209,114 @@ class Scheduler:
             i += 1
         # Every request still in `running` has its slot; victims were removed.
         scheduled = list(self.running)
-        return SchedulerOutput(scheduled, False, [1] * len(scheduled), preempted)
+        return SchedulerOutput(scheduled, False, [1] * len(scheduled), preempted,
+                               num_decode_tokens=len(scheduled))
+
+    # ---- chunked prefill -------------------------------------------------------------
+    def _prefill_remaining(self, req: Request) -> int:
+        """Reserved-but-unwritten slots of a running request: > 0 while its prefill (or
+        re-prefill after preemption) is still in progress, 0 once every reserved slot
+        holds K/V and the request needs a fresh decode slot.
+
+        The block manager's reserved count is the reference, not `num_tokens`: after a
+        completed prefill the sampled token is in `output_token_ids` but not yet in the
+        cache, so `num_tokens - num_computed_tokens == 1` there as well as for a request
+        whose last outstanding prompt token happens to be its own one-token chunk.
+        """
+        return self.block_manager.get_num_tokens(req.seq_id) - req.num_computed_tokens
+
+    def _schedule_chunked(self) -> SchedulerOutput:
+        """One mixed step: a decode slot for every running request whose prefill is done,
+        then prefill chunks from the remaining token budget (running requests still
+        mid-prefill first, oldest first; then new requests FIFO, admitted with their
+        blocks for the full prompt and possibly a partial first chunk).
+
+        Every step obeys `num_tokens <= max_num_batched_tokens`. Decode slots are never
+        chunked away: if the running batch alone fills the budget, prefill waits.
+        """
+        cfg = self.config
+        bm = self.block_manager
+        budget = cfg.max_num_batched_tokens
+        preempted: list[Request] = []
+        # 1. Decode slots, youngest-first recompute-preemption on overflow (same as
+        # `_schedule_decode`); mid-prefill requests are skipped, they hold their blocks.
+        decode_rows: list[Request] = []
+        i = 0
+        while i < len(self.running):
+            req = self.running[i]
+            if self._prefill_remaining(req) > 0:
+                i += 1
+                continue
+            try:
+                bm.append_slots(req.seq_id, 1)
+            except OutOfBlocksError:
+                # The victim is the youngest running request, which sits at or after `i`
+                # (possibly a mid-prefill one), so `decode_rows` never loses a member.
+                victim = self._preempt_youngest()
+                preempted.append(victim)
+                if victim is req:
+                    break
+                continue
+            decode_rows.append(req)
+            i += 1
+        scheduled = list(decode_rows)
+        query_lens = [1] * len(decode_rows)
+        complete = [True] * len(decode_rows)
+        budget_left = budget - len(decode_rows)
+        # 2a. Running requests still mid-prefill, oldest first. (A decode row's slot was
+        # just reserved, so its `_prefill_remaining` reads 1 now; skip those by identity.)
+        decoding = {id(r) for r in decode_rows}
+        for req in self.running:
+            if budget_left <= 0:
+                break
+            if id(req) in decoding:
+                continue
+            remaining = self._prefill_remaining(req)
+            if remaining <= 0:
+                continue
+            chunk = min(remaining, budget_left)
+            scheduled.append(req)
+            query_lens.append(chunk)
+            complete.append(chunk == remaining)
+            budget_left -= chunk
+        # 2b. New / re-admitted requests, FIFO. Admission reserves blocks for the whole
+        # prompt (plus kept outputs for a preempted request) exactly as `_schedule_prefill`
+        # does; only the number of tokens computed this step is capped.
+        now = time.perf_counter()
+        while self.waiting and budget_left > 0:
+            req = self.waiting[0]
+            if len(self.running) >= cfg.max_num_seqs:
+                break
+            match = bm.match_prefix(req.all_token_ids) if cfg.enable_prefix_caching else None
+            if match is None:
+                if not bm.can_allocate(req.num_tokens):
+                    break
+            elif not bm.can_allocate_with_prefix(req.all_token_ids, match):
+                break
+            self.waiting.popleft()
+            if match is None:
+                bm.allocate(req.seq_id, req.num_tokens)
+            else:
+                _, req.num_computed_tokens = bm.allocate_with_prefix(
+                    req.seq_id, req.all_token_ids, match)
+            req.state = RequestState.RUNNING
+            if req.first_scheduled_time is None:
+                req.first_scheduled_time = now
+            self.running.append(req)
+            remaining = self._prefill_remaining(req)  # >= 1: match_prefix leaves one token
+            chunk = min(remaining, budget_left)
+            scheduled.append(req)
+            query_lens.append(chunk)
+            complete.append(chunk == remaining)
+            budget_left -= chunk
+        # Prefill routing is needed for multi-token rows and for rows that stay mid-prefill
+        # (their next chunk must find this one's K/V in the cache). A completing 1-token
+        # chunk is indistinguishable from a decode slot to every backend, so a step made
+        # only of those keeps the decode path (and CUDA graphs).
+        is_prefill = any(q > 1 for q in query_lens) or not all(complete)
+        return SchedulerOutput(scheduled, is_prefill=is_prefill, query_lens=query_lens,
+                               preempted=preempted, prefill_complete=complete,
+                               num_decode_tokens=len(decode_rows))
 
     def _register_computed_blocks(self, req: Request) -> None:
         """Publish hashes for the full blocks whose K/V `req` has already written."""

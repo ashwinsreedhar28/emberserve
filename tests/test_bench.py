@@ -185,6 +185,28 @@ def test_ablation_tiny(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
         ablation.AblationConfig.parse("bogus")
 
 
+def test_ablation_chunked_config(tmp_path: Path) -> None:
+    cfg = ablation.AblationConfig.parse("paged_flash+graphs+chunked")
+    assert cfg.enable_cuda_graphs and cfg.enable_chunked_prefill and not cfg.enable_prefix_caching
+    args = ablation.build_parser().parse_args(["--tiny"])
+    assert cfg.max_num_batched_tokens(args) == ablation.CHUNKED_DEFAULT_BUDGET
+    assert ablation.AblationConfig.parse("paged_torch").max_num_batched_tokens(args) == \
+        ablation.DEFAULT_BUDGET
+    args = ablation.build_parser().parse_args(["--tiny", "--max-num-batched-tokens", "24"])
+    assert cfg.max_num_batched_tokens(args) == 24
+
+    out = tmp_path / "abl.json"
+    rc = ablation.main(["--tiny", "--configs", "paged_torch,paged_torch+chunked", "--trace-n",
+                        "8", "--out", str(out), "--block-size", "4", "--no-warmup",
+                        "--max-num-batched-tokens", "64"])
+    assert rc == 0
+    data = json.loads(out.read_text())
+    plain, chunked = data["results"]
+    assert chunked["enable_chunked_prefill"] and chunked["max_num_batched_tokens"] == 64
+    assert chunked["max_step_tokens"] <= 64
+    assert chunked["summary"]["completed"] == plain["summary"]["completed"] == 8
+
+
 # ---- HTTP load generator -------------------------------------------------------------
 def _fake_app(n_chunks: int = 5, delay_s: float = 0.01) -> Starlette:
     async def completions(request: Request):
