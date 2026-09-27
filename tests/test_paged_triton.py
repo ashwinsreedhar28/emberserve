@@ -13,11 +13,26 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
+# The interpreter flag is process-global and is read when the kernels are first JIT-ed, so
+# setting it here would leak into tests/test_paged_triton_gpu.py collected in the same
+# process and make every "GPU" test run the kernel on the CPU (and break CUDA-graph capture
+# with host-side copies). On a CUDA machine the GPU tests cover the kernel; this module is
+# for machines without one.
+try:
+    import torch as _torch_probe
+    _HAS_CUDA = _torch_probe.cuda.is_available()
+except Exception:  # noqa: BLE001
+    _HAS_CUDA = False
+if _HAS_CUDA and os.environ.get("PAGEDSERVE_FORCE_INTERPRETER") != "1":
+    pytest.skip("CUDA present: interpreter tests skipped so TRITON_INTERPRET does not leak "
+                "into the GPU tests (set PAGEDSERVE_FORCE_INTERPRETER=1 to run them alone)",
+                allow_module_level=True)
 os.environ["TRITON_INTERPRET"] = "1"  # noqa: E402  (must precede the triton import)
 
 from collections import defaultdict  # noqa: E402
 
-import pytest  # noqa: E402
 import torch  # noqa: E402
 
 pytest.importorskip("triton")

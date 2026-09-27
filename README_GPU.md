@@ -98,6 +98,18 @@ PAGEDSERVE_TRITON_VARIANT=dot PAGEDSERVE_TRITON_SPLITS=1 python scripts/gpu_smok
 
 Each run prints a triton/flash ratio table; 1.0x is parity.
 
+## The CUDA-graph "capture failure" that wasn't
+
+`pytest -m gpu` failed every Triton engine-level test with `operation failed due to a
+previous error during capture` on two different GPUs, while the same engine captured fine
+from a standalone script. Root cause: `tests/test_paged_triton.py` sets `TRITON_INTERPRET=1`
+at import so the kernel can run on CPU; pytest imported it into the same process as the GPU
+tests, the kernel cache was built in interpreter mode, and every "GPU" kernel test silently
+ran on the CPU (10-minute runs at 0% GPU). Inside a graph capture the interpreter's host
+copies are illegal, hence the error. Fixed by skipping the interpreter module when CUDA is
+present and by making the backend refuse `TRITON_INTERPRET=1` with a CUDA cache. Lesson:
+process-global env flags in a test module are shared state.
+
 ## If CUDA-graph capture fails
 
 `CUDAGraphRunner.capture()` now re-runs the failing bucket eagerly, layer by layer, and

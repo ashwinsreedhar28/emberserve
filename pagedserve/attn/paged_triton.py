@@ -388,6 +388,11 @@ class PagedTritonAttentionBackend(AttentionBackend):
         if cache.device.type != "cuda" and not interpreter_enabled():
             raise RuntimeError(f"paged_triton needs a CUDA cache (or TRITON_INTERPRET=1), "
                                f"got device {cache.device}")
+        if cache.device.type == "cuda" and interpreter_enabled():
+            # The interpreter runs the kernel on the CPU with host copies: silently 100x
+            # slower, and illegal inside a CUDA-graph capture. Refuse rather than "work".
+            raise RuntimeError("TRITON_INTERPRET=1 is set but the KV cache is on CUDA; unset it "
+                               "(the interpreter is for CPU-only test runs)")
         if cache.dtype not in SUPPORTED_DTYPES:
             raise RuntimeError(f"paged_triton needs an fp16/bf16/fp32 KV cache, got {cache.dtype}")
         if cache.block_size % BLOCK_MULTIPLE != 0:
