@@ -46,6 +46,11 @@ class StepStats:
     num_free_blocks: int
 
 
+# Backends whose decode step reads only static device tensors (meta.context_lens_t /
+# meta.block_tables_nonneg) and can therefore be captured into a CUDA graph.
+GRAPH_CAPABLE_BACKENDS = ("paged_flash", "paged_triton")
+
+
 def default_num_blocks(model_config: ModelConfig, engine_config: EngineConfig,
                        model_bytes: int) -> int:
     """How many KV blocks to allocate when the user did not say.
@@ -84,10 +89,10 @@ class LLMEngine:
         # CUDA graphs need one scratch KV block the BlockManager never hands out
         # (padding rows of a graph bucket write their k/v there). See attn/cuda_graphs.py.
         use_graphs = (engine_config.enable_cuda_graphs and self.device.type == "cuda"
-                      and engine_config.attn_backend == "paged_flash")
+                      and engine_config.attn_backend in GRAPH_CAPABLE_BACKENDS)
         if engine_config.enable_cuda_graphs and not use_graphs:
-            warnings.warn("enable_cuda_graphs ignored: needs device=cuda and "
-                          "attn_backend='paged_flash'", stacklevel=2)
+            warnings.warn("enable_cuda_graphs ignored: needs device=cuda and attn_backend in "
+                          f"{GRAPH_CAPABLE_BACKENDS}", stacklevel=2)
         self.scratch_block: int | None = num_blocks - 1 if use_graphs else None
         self.block_manager = BlockManager(num_blocks - 1 if use_graphs else num_blocks,
                                           engine_config.block_size)
@@ -123,6 +128,11 @@ class LLMEngine:
             cache = PagedKVCache(self.model_config, num_blocks, self.config.block_size,
                                  self.device, self.dtype)
             return PagedFlashAttentionBackend(self.model_config, cache)
+        if name == "paged_triton":
+            from pagedserve.attn.paged_triton import PagedTritonAttentionBackend
+            cache = PagedKVCache(self.model_config, num_blocks, self.config.block_size,
+                                 self.device, self.dtype)
+            return PagedTritonAttentionBackend(self.model_config, cache)
         raise ValueError(f"unknown attn_backend {name!r}")
 
     @classmethod

@@ -192,6 +192,65 @@ def test_kernel_fp16_cache_and_padded_groups():
         torch.testing.assert_close(out[b:b + 1].float(), ref, atol=2e-3, rtol=0)
 
 
+def test_kernel_real_config_groups7_d64():
+    """Qwen2.5-0.5B geometry: 14 q heads / 2 kv heads -> 7 groups padded to 8, D=64, fp16
+    cache, block 16, contexts straddling tile and block boundaries, single and split-K."""
+    from pagedserve.attn.paged_triton import _tile_for
+    Hq, Hk = 14, 2
+    assert _tile_for(BLOCK, D, 8) == 16
+    gen = torch.Generator().manual_seed(11)
+    kc = torch.randn(6, BLOCK, Hk, D, generator=gen).half()
+    vc = torch.randn(6, BLOCK, Hk, D, generator=gen).half()
+    q = torch.randn(3, Hq, D, generator=gen).half()
+    bt = torch.tensor([[5, 2, 0, 0], [1, 4, 3, 0], [2, 0, 0, 0]], dtype=torch.int32)
+    ctx = torch.tensor([17, 49, 1], dtype=torch.int32)
+    for splits in (1, 2):
+        out = paged_attention_decode(q, kc, vc, bt, ctx, D ** -0.5, num_splits=splits)
+        assert out.shape == (3, Hq, D) and out.dtype == torch.float16
+        for b in range(3):
+            n = int(ctx[b])
+            nb = -(-n // BLOCK)
+            k = kc[bt[b, :nb].long()].reshape(-1, Hk, D)[:n]
+            v = vc[bt[b, :nb].long()].reshape(-1, Hk, D)[:n]
+            ref = causal_softmax_attention(q[b:b + 1].float(), k.float(), v.float(), 1)
+            torch.testing.assert_close(out[b:b + 1].float(), ref, atol=2e-3, rtol=0)
+
+
+def test_backend_real_config_groups7_matches_paged_torch():
+    cfg = ModelConfig.tiny(num_hidden_layers=1, num_attention_heads=14, num_key_value_heads=2,
+                           hidden_size=14 * D)
+    bm = BlockManager(6, BLOCK)
+    caches = [PagedKVCache(cfg, 6, BLOCK, device=DEV, dtype=torch.float32) for _ in range(2)]
+    bt_backend = PagedTritonAttentionBackend(cfg, caches[0])
+    ref_backend = PagedTorchAttentionBackend(cfg, caches[1])
+    gen = torch.Generator().manual_seed(3)
+    seqs, lens = [0, 1], [30, 7]
+    for sid, n in zip(seqs, lens):
+        bm.allocate(sid, n)
+    starts = [0, 0]
+    for step in range(3):
+        is_prefill = step == 0
+        qlens = lens if is_prefill else [1, 1]
+        if not is_prefill:
+            starts = [bm.get_num_tokens(s) for s in seqs]
+            for sid in seqs:
+                bm.append_slots(sid, 1)
+        meta = AttnMetadata(
+            is_prefill=is_prefill, seq_ids=seqs, query_lens=qlens,
+            context_lens=[bm.get_num_tokens(s) for s in seqs],
+            positions=torch.cat([torch.arange(s, s + n) for s, n in zip(starts, qlens)]),
+            slot_mapping=build_slot_mapping(bm, seqs, starts, qlens, DEV),
+            block_tables=build_block_tables_tensor([bm.get_block_table(s) for s in seqs], DEV),
+            block_size=BLOCK, num_cached_tokens=starts if is_prefill else [])
+        n_tok = sum(qlens)
+        q = torch.randn(n_tok, 14, D, generator=gen)
+        k = torch.randn(n_tok, 2, D, generator=gen)
+        v = torch.randn(n_tok, 2, D, generator=gen)
+        a = bt_backend.forward(0, q, k, v, meta)
+        b = ref_backend.forward(0, q, k, v, meta)
+        torch.testing.assert_close(a, b, atol=ATOL, rtol=0)
+
+
 def test_kernel_rejects_bad_shapes():
     kc = torch.randn(2, 8, 1, D)  # block_size 8 is not a multiple of 16
     with pytest.raises(AssertionError, match="block_size"):

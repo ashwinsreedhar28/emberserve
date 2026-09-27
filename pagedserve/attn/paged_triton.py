@@ -197,9 +197,20 @@ def _next_pow2(n: int) -> int:
     return 1 << max(0, (n - 1).bit_length())
 
 
-def _tile_for(block_size: int, head_dim: int) -> int:
-    """Positions per inner tile: keeps the [G, TILE, D] fp32 broadcast register-sized."""
-    return min(block_size, 32 if head_dim <= 64 else 16)
+TILE_BUDGET = 8192  # fp32 elements of the [GROUPS_PAD, TILE, D] broadcast temporary
+
+
+def _tile_for(block_size: int, head_dim: int, groups_pad: int) -> int:
+    """Positions per inner tile.
+
+    The score/PV products materialise a `[GROUPS_PAD, TILE, D]` fp32 temporary that lives
+    in registers, so TILE shrinks as the group count or head_dim grows: 16 for the real
+    config (groups 7 -> 8, D=64), 32 for 4-or-fewer groups at D=64. Always a multiple of
+    16 that divides `block_size` (a tile never straddles two physical blocks).
+    """
+    tile = max(16, min(32, TILE_BUDGET // (groups_pad * head_dim)))
+    tile = 1 << (tile.bit_length() - 1)  # round down to a power of two
+    return min(block_size, tile)
 
 
 _SM_COUNT: dict[int, int] = {}
@@ -270,7 +281,7 @@ def paged_attention_decode(q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ta
     assert block_tables.stride(1) == 1 and context_lens.stride(0) == 1
     groups = H // Hkv
     groups_pad = _next_pow2(groups)
-    tile = _tile_for(block_size, D)
+    tile = _tile_for(block_size, D, groups_pad)
     max_blocks = block_tables.shape[1]
     max_context = max_blocks * block_size
     num_tiles_max = max(1, -(-max_context // tile))
