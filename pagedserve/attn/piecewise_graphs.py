@@ -155,6 +155,14 @@ class PiecewiseGraphRunner:
         return None
 
     @torch.inference_mode()
+    def release(self) -> None:
+        """Destroy the captured graphs; see `CUDAGraphRunner.release`."""
+        for g in list(self.graphs_pre.values()) + list(self.graphs_post.values()):
+            if hasattr(g, "reset"):
+                g.reset()
+        self.graphs_pre.clear()
+        self.graphs_post.clear()
+
     def run(self, input_ids: Tensor, meta: AttnMetadata) -> Tensor:
         """Logits `[num_seqs, vocab]` for any step (prefill, mixed, or decode). Steps larger
         than the largest bucket fall back to the eager forward."""

@@ -15,6 +15,7 @@ the engine, and the GPU never waits for the scheduler.
 
 from __future__ import annotations
 
+import gc
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -316,25 +317,40 @@ class LLMEngine:
         return engine
 
     def shutdown(self) -> None:
-        """Stop the tensor-parallel workers (rank 0) and leave the group. Idempotent."""
-        if self.tp.size > 1 and self.tp.is_driver and tpdist.is_initialized():
+        """Leave the tensor-parallel group (any rank; the driver stops its workers first).
+        Idempotent."""
+        driver = self.tp.size > 1 and self.tp.is_driver and tpdist.is_initialized()
+        failed = False
+        if driver:
             if self._tp_step_open:
                 # A step raised after its plan went out: the workers are (or will be) blocked
                 # in collectives nothing pairs with, so a "stop" broadcast would hang here
                 # and hide the exception. Kill them and tear the group down with a timeout.
+                failed = True
                 for p in self._tp_workers:
                     p.kill()
-                tpdist.destroy_tp(timeout_s=15.0)
             else:
                 tpdist.broadcast_object(("stop",))
-                # Every rank leaves the group at the same time, *before* the driver waits
-                # for the worker processes (`destroy_tp`: NCCL is aborted, not destroyed).
-                tpdist.destroy_tp(timeout_s=60.0)
+        if tpdist.is_initialized():
+            # NCCL will neither destroy nor abort a communicator while a CUDA graph that
+            # captured its collectives exists: drop the graphs first, on every rank, then
+            # leave the group *before* the driver waits for the worker processes.
+            self.release_graphs()
+            tpdist.destroy_tp(timeout_s=15.0 if failed else 60.0)
+        if driver:
             tpdist.stop_workers(self._tp_workers)
             self._tp_workers = []
-        if tpdist.is_initialized():
-            tpdist.destroy_tp()
         self.tp = tpdist.get_tp()
+
+    def release_graphs(self) -> None:
+        """Destroy the captured CUDA graphs (the engine falls back to eager steps)."""
+        for runner in (self.graph_runner, self.piecewise_runner):
+            if runner is not None:
+                runner.release()
+        self.graph_runner = self.piecewise_runner = None
+        if self.device.type == "cuda":
+            gc.collect()
+            torch.cuda.synchronize(self.device)
 
     def __del__(self) -> None:
         try:

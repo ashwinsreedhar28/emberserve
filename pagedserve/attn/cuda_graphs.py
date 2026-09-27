@@ -172,6 +172,14 @@ class CUDAGraphRunner:
         return None
 
     @torch.inference_mode()
+    def release(self) -> None:
+        """Destroy the captured graphs (`cudaGraphExecDestroy`). Under tensor parallelism
+        this must happen before the process group goes: NCCL will not destroy or abort a
+        communicator while a graph that captured its collectives still exists."""
+        for g in self.graphs.values():
+            g.reset()
+        self.graphs.clear()
+
     def run(self, input_ids: Tensor, meta: AttnMetadata) -> Tensor:
         """Replay the decode graph for `meta`; returns logits `[B, vocab]` (a fresh copy).
 

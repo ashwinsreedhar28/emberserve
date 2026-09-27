@@ -329,6 +329,7 @@ def worker_main(argv: list[str] | None = None) -> None:
     ecfg = spec.engine_config
     ecfg.device = rank_device(ecfg.device, args.rank)
     init_tp(args.rank, args.world_size, args.init_method, ecfg.device)
+    engine = None
     try:
         model, full_cfg = build_tp_model(spec, ecfg.device, ecfg.dtype)
         engine = LLMEngine(model, full_cfg, ecfg, tokenizer=None)
@@ -338,7 +339,10 @@ def worker_main(argv: list[str] | None = None) -> None:
         sys.stderr.flush()
         raise
     finally:
-        destroy_tp()
+        if engine is not None:
+            engine.shutdown()  # graphs released before the group goes, as on the driver
+        else:
+            destroy_tp(timeout_s=15.0)
 
 
 if __name__ == "__main__":
