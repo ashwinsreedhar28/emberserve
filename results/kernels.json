@@ -1,0 +1,496 @@
+{
+ "timestamp": "2026-09-27T05:23:13",
+ "gpu": "NVIDIA GeForce RTX 4090",
+ "torch": "2.8.0+cu128",
+ "python": "3.12.3",
+ "geometry": {
+  "H": 14,
+  "Hkv": 2,
+  "D": 64,
+  "dtype": "torch.float16"
+ },
+ "iters": 20,
+ "warmup": 5,
+ "results": [
+  {
+   "backend": "paged_torch",
+   "block_size": 256,
+   "batch": 1,
+   "ctx": 128,
+   "ms": 0.17576000094413757,
+   "gbps": 0.3728720963129122,
+   "kv_bytes": 65536,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_flash",
+   "block_size": 256,
+   "batch": 1,
+   "ctx": 128,
+   "ms": 0.015152000356465578,
+   "gbps": 4.325237490641613,
+   "kv_bytes": 65536,
+   "max_abs_err_vs_paged_torch": 0.000244140625
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 256,
+   "batch": 1,
+   "ctx": 128,
+   "ms": 0.058320000767707825,
+   "gbps": 1.1237311237534777,
+   "kv_bytes": 65536,
+   "max_abs_err_vs_paged_torch": 1.52587890625e-05
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 16,
+   "batch": 1,
+   "ctx": 128,
+   "ms": 0.05719999969005585,
+   "gbps": 1.145734271942546,
+   "kv_bytes": 65536,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_torch",
+   "block_size": 256,
+   "batch": 1,
+   "ctx": 512,
+   "ms": 0.18119999766349792,
+   "gbps": 1.446710835431804,
+   "kv_bytes": 262144,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_flash",
+   "block_size": 256,
+   "batch": 1,
+   "ctx": 512,
+   "ms": 0.01913600042462349,
+   "gbps": 13.698996351540782,
+   "kv_bytes": 262144,
+   "max_abs_err_vs_paged_torch": 0.0001220703125
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 256,
+   "batch": 1,
+   "ctx": 512,
+   "ms": 0.14847999811172485,
+   "gbps": 1.7655172638320473,
+   "kv_bytes": 262144,
+   "max_abs_err_vs_paged_torch": 3.814697265625e-06
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 16,
+   "batch": 1,
+   "ctx": 512,
+   "ms": 0.1443839967250824,
+   "gbps": 1.8156028780609337,
+   "kv_bytes": 262144,
+   "max_abs_err_vs_paged_torch": 1.9073486328125e-06
+  },
+  {
+   "backend": "paged_torch",
+   "block_size": 256,
+   "batch": 1,
+   "ctx": 2048,
+   "ms": 0.17814400047063828,
+   "gbps": 5.88611458836542,
+   "kv_bytes": 1048576,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_flash",
+   "block_size": 256,
+   "batch": 1,
+   "ctx": 2048,
+   "ms": 0.01982400007545948,
+   "gbps": 52.894269370895174,
+   "kv_bytes": 1048576,
+   "max_abs_err_vs_paged_torch": 6.103515625e-05
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 256,
+   "batch": 1,
+   "ctx": 2048,
+   "ms": 0.14828799664974213,
+   "gbps": 7.071212934899566,
+   "kv_bytes": 1048576,
+   "max_abs_err_vs_paged_torch": 3.814697265625e-06
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 16,
+   "batch": 1,
+   "ctx": 2048,
+   "ms": 0.14745600521564484,
+   "gbps": 7.111110859585038,
+   "kv_bytes": 1048576,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_torch",
+   "block_size": 256,
+   "batch": 8,
+   "ctx": 128,
+   "ms": 0.1838880032300949,
+   "gbps": 2.8511267227366117,
+   "kv_bytes": 524288,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_flash",
+   "block_size": 256,
+   "batch": 8,
+   "ctx": 128,
+   "ms": 0.015359999611973763,
+   "gbps": 34.133334195613884,
+   "kv_bytes": 524288,
+   "max_abs_err_vs_paged_torch": 0.000244140625
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 256,
+   "batch": 8,
+   "ctx": 128,
+   "ms": 0.05737600103020668,
+   "gbps": 9.137757783502176,
+   "kv_bytes": 524288,
+   "max_abs_err_vs_paged_torch": 6.103515625e-05
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 16,
+   "batch": 8,
+   "ctx": 128,
+   "ms": 0.05632000043988228,
+   "gbps": 9.309090836383096,
+   "kv_bytes": 524288,
+   "max_abs_err_vs_paged_torch": 0.000244140625
+  },
+  {
+   "backend": "paged_torch",
+   "block_size": 256,
+   "batch": 8,
+   "ctx": 512,
+   "ms": 0.18380799889564514,
+   "gbps": 11.409470820639497,
+   "kv_bytes": 2097152,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_flash",
+   "block_size": 256,
+   "batch": 8,
+   "ctx": 512,
+   "ms": 0.01913600042462349,
+   "gbps": 109.59197081232625,
+   "kv_bytes": 2097152,
+   "max_abs_err_vs_paged_torch": 0.0001220703125
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 256,
+   "batch": 8,
+   "ctx": 512,
+   "ms": 0.1443680003285408,
+   "gbps": 14.526432417346465,
+   "kv_bytes": 2097152,
+   "max_abs_err_vs_paged_torch": 3.0517578125e-05
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 16,
+   "batch": 8,
+   "ctx": 512,
+   "ms": 0.14336000382900238,
+   "gbps": 14.62857103785691,
+   "kv_bytes": 2097152,
+   "max_abs_err_vs_paged_torch": 3.0517578125e-05
+  },
+  {
+   "backend": "paged_torch",
+   "block_size": 256,
+   "batch": 8,
+   "ctx": 2048,
+   "ms": 0.6164479851722717,
+   "gbps": 13.607973749246224,
+   "kv_bytes": 8388608,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_flash",
+   "block_size": 256,
+   "batch": 8,
+   "ctx": 2048,
+   "ms": 0.020479999482631683,
+   "gbps": 409.60001034736655,
+   "kv_bytes": 8388608,
+   "max_abs_err_vs_paged_torch": 6.103515625e-05
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 256,
+   "batch": 8,
+   "ctx": 2048,
+   "ms": 0.14745600521564484,
+   "gbps": 56.8888868766803,
+   "kv_bytes": 8388608,
+   "max_abs_err_vs_paged_torch": 6.103515625e-05
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 16,
+   "batch": 8,
+   "ctx": 2048,
+   "ms": 0.14745600521564484,
+   "gbps": 56.8888868766803,
+   "kv_bytes": 8388608,
+   "max_abs_err_vs_paged_torch": 1.52587890625e-05
+  },
+  {
+   "backend": "paged_torch",
+   "block_size": 256,
+   "batch": 32,
+   "ctx": 128,
+   "ms": 0.18595200031995773,
+   "gbps": 11.277921164556131,
+   "kv_bytes": 2097152,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_flash",
+   "block_size": 256,
+   "batch": 32,
+   "ctx": 128,
+   "ms": 0.015664000064134598,
+   "gbps": 133.88355409942747,
+   "kv_bytes": 2097152,
+   "max_abs_err_vs_paged_torch": 0.00048828125
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 256,
+   "batch": 32,
+   "ctx": 128,
+   "ms": 0.05787200108170509,
+   "gbps": 36.23776542717419,
+   "kv_bytes": 2097152,
+   "max_abs_err_vs_paged_torch": 0.000244140625
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 16,
+   "batch": 32,
+   "ctx": 128,
+   "ms": 0.05681600049138069,
+   "gbps": 36.9112922744034,
+   "kv_bytes": 2097152,
+   "max_abs_err_vs_paged_torch": 0.0001220703125
+  },
+  {
+   "backend": "paged_torch",
+   "block_size": 256,
+   "batch": 32,
+   "ctx": 512,
+   "ms": 0.5877119898796082,
+   "gbps": 14.273331401182393,
+   "kv_bytes": 8388608,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_flash",
+   "block_size": 256,
+   "batch": 32,
+   "ctx": 512,
+   "ms": 0.019759999588131905,
+   "gbps": 424.5247052048675,
+   "kv_bytes": 8388608,
+   "max_abs_err_vs_paged_torch": 0.0001220703125
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 256,
+   "batch": 32,
+   "ctx": 512,
+   "ms": 0.1454080045223236,
+   "gbps": 57.69013905085361,
+   "kv_bytes": 8388608,
+   "max_abs_err_vs_paged_torch": 0.0001220703125
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 16,
+   "batch": 32,
+   "ctx": 512,
+   "ms": 0.14431999623775482,
+   "gbps": 58.12505694762137,
+   "kv_bytes": 8388608,
+   "max_abs_err_vs_paged_torch": 6.103515625e-05
+  },
+  {
+   "backend": "paged_torch",
+   "block_size": 256,
+   "batch": 32,
+   "ctx": 2048,
+   "ms": 2.6659839153289795,
+   "gbps": 12.58613445004953,
+   "kv_bytes": 33554432,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_flash",
+   "block_size": 256,
+   "batch": 32,
+   "ctx": 2048,
+   "ms": 0.034703999757766724,
+   "gbps": 966.8750643790144,
+   "kv_bytes": 33554432,
+   "max_abs_err_vs_paged_torch": 0.0001220703125
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 256,
+   "batch": 32,
+   "ctx": 2048,
+   "ms": 0.21401600539684296,
+   "gbps": 156.7846850415748,
+   "kv_bytes": 33554432,
+   "max_abs_err_vs_paged_torch": 3.0517578125e-05
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 16,
+   "batch": 32,
+   "ctx": 2048,
+   "ms": 0.21196800470352173,
+   "gbps": 158.29951339558232,
+   "kv_bytes": 33554432,
+   "max_abs_err_vs_paged_torch": 3.0517578125e-05
+  },
+  {
+   "backend": "paged_torch",
+   "block_size": 256,
+   "batch": 128,
+   "ctx": 128,
+   "ms": 0.576304018497467,
+   "gbps": 14.555872821901675,
+   "kv_bytes": 8388608,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_flash",
+   "block_size": 256,
+   "batch": 128,
+   "ctx": 128,
+   "ms": 0.02307199966162443,
+   "gbps": 363.5839165667439,
+   "kv_bytes": 8388608,
+   "max_abs_err_vs_paged_torch": 0.00048828125
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 256,
+   "batch": 128,
+   "ctx": 128,
+   "ms": 0.08139200136065483,
+   "gbps": 103.06427977891059,
+   "kv_bytes": 8388608,
+   "max_abs_err_vs_paged_torch": 0.000244140625
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 16,
+   "batch": 128,
+   "ctx": 128,
+   "ms": 0.08078399673104286,
+   "gbps": 103.83997251248292,
+   "kv_bytes": 8388608,
+   "max_abs_err_vs_paged_torch": 0.0001220703125
+  },
+  {
+   "backend": "paged_torch",
+   "block_size": 256,
+   "batch": 128,
+   "ctx": 512,
+   "ms": 2.5102239847183228,
+   "gbps": 13.367106761895277,
+   "kv_bytes": 33554432,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_flash",
+   "block_size": 256,
+   "batch": 128,
+   "ctx": 512,
+   "ms": 0.02969600073993206,
+   "gbps": 1129.9310063283883,
+   "kv_bytes": 33554432,
+   "max_abs_err_vs_paged_torch": 0.000244140625
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 256,
+   "batch": 128,
+   "ctx": 512,
+   "ms": 0.21248000115156174,
+   "gbps": 157.9180714333,
+   "kv_bytes": 33554432,
+   "max_abs_err_vs_paged_torch": 0.000244140625
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 16,
+   "batch": 128,
+   "ctx": 512,
+   "ms": 0.21350400149822235,
+   "gbps": 157.16067035998563,
+   "kv_bytes": 33554432,
+   "max_abs_err_vs_paged_torch": 0.0001220703125
+  },
+  {
+   "backend": "paged_torch",
+   "block_size": 256,
+   "batch": 128,
+   "ctx": 2048,
+   "ms": 10.4519681930542,
+   "gbps": 12.841383127169644,
+   "kv_bytes": 134217728,
+   "max_abs_err_vs_paged_torch": 0.0
+  },
+  {
+   "backend": "paged_flash",
+   "block_size": 256,
+   "batch": 128,
+   "ctx": 2048,
+   "ms": 0.1700960025191307,
+   "gbps": 789.0704426454967,
+   "kv_bytes": 134217728,
+   "max_abs_err_vs_paged_torch": 0.0001220703125
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 256,
+   "batch": 128,
+   "ctx": 2048,
+   "ms": 0.7079520225524902,
+   "gbps": 189.5859093898536,
+   "kv_bytes": 134217728,
+   "max_abs_err_vs_paged_torch": 6.103515625e-05
+  },
+  {
+   "backend": "paged_triton",
+   "block_size": 16,
+   "batch": 128,
+   "ctx": 2048,
+   "ms": 0.6998560130596161,
+   "gbps": 191.7790595428761,
+   "kv_bytes": 134217728,
+   "max_abs_err_vs_paged_torch": 6.103515625e-05
+  }
+ ]
+}

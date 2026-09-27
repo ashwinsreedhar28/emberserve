@@ -9,13 +9,13 @@
  "trace": {
   "n": 200,
   "seed": 0,
-  "request_rate": 8.0,
-  "shared_prefix_len": 64,
-  "prompt_mean": 268.255,
+  "request_rate": Infinity,
+  "shared_prefix_len": 0,
+  "prompt_mean": 267.02,
   "prompt_p50": 208.0,
   "output_mean": 184.8,
   "output_p50": 131.0,
-  "span_s": 24.30855464273
+  "span_s": 0.0
  },
  "trace_requests": [
   {
@@ -24,1599 +24,1599 @@
    "output_len": 94,
    "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00001",
    "prompt_len": 180,
    "output_len": 98,
-   "arrival_s": 0.012103407956369527,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00002",
    "prompt_len": 334,
    "output_len": 49,
-   "arrival_s": 0.11691443782726221,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00003",
    "prompt_len": 218,
    "output_len": 250,
-   "arrival_s": 0.43310419492215335,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00004",
    "prompt_len": 130,
    "output_len": 264,
-   "arrival_s": 0.5296996574060299,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00005",
    "prompt_len": 267,
    "output_len": 107,
-   "arrival_s": 0.5574663986414586,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00006",
    "prompt_len": 568,
    "output_len": 168,
-   "arrival_s": 1.0666298410892092,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00007",
    "prompt_len": 427,
    "output_len": 61,
-   "arrival_s": 1.2661925760256583,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00008",
    "prompt_len": 114,
    "output_len": 108,
-   "arrival_s": 1.502653409865838,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00009",
    "prompt_len": 73,
    "output_len": 394,
-   "arrival_s": 1.838491203836562,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00010",
    "prompt_len": 121,
    "output_len": 165,
-   "arrival_s": 2.0613860257833356,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00011",
    "prompt_len": 207,
    "output_len": 756,
-   "arrival_s": 2.1926045475447995,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00012",
-   "prompt_len": 65,
+   "prompt_len": 31,
    "output_len": 86,
-   "arrival_s": 2.2878579677872675,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00013",
    "prompt_len": 168,
    "output_len": 225,
-   "arrival_s": 2.3144497461752143,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00014",
    "prompt_len": 74,
    "output_len": 131,
-   "arrival_s": 3.062555803641166,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00015",
    "prompt_len": 111,
    "output_len": 223,
-   "arrival_s": 3.0829780373721394,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00016",
    "prompt_len": 129,
    "output_len": 149,
-   "arrival_s": 3.237586024967192,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00017",
    "prompt_len": 155,
    "output_len": 101,
-   "arrival_s": 3.2750387006300286,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00018",
    "prompt_len": 278,
    "output_len": 82,
-   "arrival_s": 3.3819917049744936,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00019",
    "prompt_len": 461,
    "output_len": 1283,
-   "arrival_s": 3.5268930066037423,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00020",
    "prompt_len": 180,
    "output_len": 142,
-   "arrival_s": 3.5600115618893584,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00021",
    "prompt_len": 597,
    "output_len": 37,
-   "arrival_s": 3.7068486116458392,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00022",
    "prompt_len": 117,
    "output_len": 95,
-   "arrival_s": 3.826196586997733,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00023",
    "prompt_len": 265,
    "output_len": 241,
-   "arrival_s": 3.9694605711094044,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00024",
    "prompt_len": 412,
    "output_len": 106,
-   "arrival_s": 4.073279561061738,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00025",
    "prompt_len": 216,
    "output_len": 389,
-   "arrival_s": 4.227833477481927,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00026",
    "prompt_len": 110,
    "output_len": 303,
-   "arrival_s": 4.277928084516718,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00027",
    "prompt_len": 96,
    "output_len": 135,
-   "arrival_s": 4.634333285617243,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00028",
    "prompt_len": 139,
    "output_len": 108,
-   "arrival_s": 4.720482115282926,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00029",
    "prompt_len": 239,
    "output_len": 74,
-   "arrival_s": 4.767320812879807,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00030",
    "prompt_len": 89,
    "output_len": 92,
-   "arrival_s": 4.797897128217884,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00031",
    "prompt_len": 169,
    "output_len": 53,
-   "arrival_s": 4.867345308593003,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00032",
    "prompt_len": 176,
    "output_len": 349,
-   "arrival_s": 4.918073772614183,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00033",
    "prompt_len": 308,
    "output_len": 457,
-   "arrival_s": 4.976578978869823,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00034",
    "prompt_len": 237,
    "output_len": 62,
-   "arrival_s": 5.19511080723264,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00035",
    "prompt_len": 266,
    "output_len": 66,
-   "arrival_s": 5.448797203436463,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00036",
    "prompt_len": 119,
    "output_len": 43,
-   "arrival_s": 5.590053392150122,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00037",
    "prompt_len": 180,
    "output_len": 76,
-   "arrival_s": 5.706804126206321,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00038",
    "prompt_len": 374,
    "output_len": 17,
-   "arrival_s": 5.798068802222849,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00039",
    "prompt_len": 661,
    "output_len": 67,
-   "arrival_s": 5.984576060670782,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00040",
    "prompt_len": 73,
    "output_len": 372,
-   "arrival_s": 6.005683696788014,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00041",
    "prompt_len": 671,
    "output_len": 118,
-   "arrival_s": 6.05535208411412,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00042",
    "prompt_len": 587,
    "output_len": 273,
-   "arrival_s": 6.076148348975592,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00043",
    "prompt_len": 374,
    "output_len": 107,
-   "arrival_s": 6.191041343985307,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00044",
    "prompt_len": 247,
    "output_len": 514,
-   "arrival_s": 6.290599874636821,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00045",
    "prompt_len": 156,
    "output_len": 172,
-   "arrival_s": 6.346779376256255,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00046",
    "prompt_len": 642,
    "output_len": 115,
-   "arrival_s": 6.430565264518201,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00047",
    "prompt_len": 960,
    "output_len": 895,
-   "arrival_s": 6.469940795007655,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00048",
    "prompt_len": 845,
    "output_len": 120,
-   "arrival_s": 6.550492635046754,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00049",
    "prompt_len": 573,
    "output_len": 64,
-   "arrival_s": 6.561821952707117,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00050",
    "prompt_len": 266,
    "output_len": 173,
-   "arrival_s": 6.570953545395412,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00051",
    "prompt_len": 76,
    "output_len": 146,
-   "arrival_s": 6.816413956938143,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00052",
    "prompt_len": 199,
    "output_len": 316,
-   "arrival_s": 7.036029840746747,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00053",
    "prompt_len": 338,
    "output_len": 79,
-   "arrival_s": 7.046724478069811,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00054",
    "prompt_len": 71,
    "output_len": 263,
-   "arrival_s": 7.07397083169543,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00055",
    "prompt_len": 274,
    "output_len": 272,
-   "arrival_s": 7.184148004569732,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00056",
    "prompt_len": 282,
    "output_len": 94,
-   "arrival_s": 7.404951965760603,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00057",
    "prompt_len": 349,
    "output_len": 168,
-   "arrival_s": 7.69869865027408,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00058",
    "prompt_len": 78,
    "output_len": 84,
-   "arrival_s": 7.734638201248422,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00059",
    "prompt_len": 118,
    "output_len": 775,
-   "arrival_s": 7.761091626578739,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00060",
    "prompt_len": 141,
    "output_len": 92,
-   "arrival_s": 7.915995081012319,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00061",
    "prompt_len": 78,
    "output_len": 109,
-   "arrival_s": 8.106214873995123,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00062",
    "prompt_len": 804,
    "output_len": 71,
-   "arrival_s": 8.147574336651727,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00063",
    "prompt_len": 135,
    "output_len": 118,
-   "arrival_s": 8.15639512464959,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00064",
    "prompt_len": 260,
    "output_len": 149,
-   "arrival_s": 8.337250780459156,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00065",
    "prompt_len": 163,
    "output_len": 257,
-   "arrival_s": 8.3664686847746,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00066",
    "prompt_len": 710,
    "output_len": 98,
-   "arrival_s": 8.383138969588959,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00067",
    "prompt_len": 575,
    "output_len": 132,
-   "arrival_s": 8.570199484503082,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00068",
    "prompt_len": 332,
    "output_len": 56,
-   "arrival_s": 9.008246116926797,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00069",
-   "prompt_len": 65,
+   "prompt_len": 34,
    "output_len": 84,
-   "arrival_s": 9.192038194488562,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00070",
    "prompt_len": 209,
    "output_len": 1032,
-   "arrival_s": 9.215647231380817,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00071",
    "prompt_len": 346,
    "output_len": 311,
-   "arrival_s": 9.242947999101991,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00072",
    "prompt_len": 447,
    "output_len": 87,
-   "arrival_s": 9.556137349841844,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00073",
    "prompt_len": 122,
    "output_len": 59,
-   "arrival_s": 9.660158271235552,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00074",
    "prompt_len": 859,
    "output_len": 76,
-   "arrival_s": 9.803623002020172,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00075",
    "prompt_len": 70,
    "output_len": 148,
-   "arrival_s": 9.945485408991459,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00076",
    "prompt_len": 118,
    "output_len": 154,
-   "arrival_s": 10.096351174674862,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00077",
    "prompt_len": 423,
    "output_len": 89,
-   "arrival_s": 10.145625409207524,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00078",
    "prompt_len": 208,
    "output_len": 61,
-   "arrival_s": 10.239147641235792,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00079",
    "prompt_len": 993,
    "output_len": 406,
-   "arrival_s": 10.36625972171586,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00080",
    "prompt_len": 233,
    "output_len": 206,
-   "arrival_s": 10.44034156196751,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00081",
    "prompt_len": 121,
    "output_len": 115,
-   "arrival_s": 10.614851893850881,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00082",
    "prompt_len": 148,
    "output_len": 129,
-   "arrival_s": 10.802254956440194,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00083",
    "prompt_len": 84,
    "output_len": 104,
-   "arrival_s": 10.910170297465347,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00084",
    "prompt_len": 72,
    "output_len": 19,
-   "arrival_s": 11.037467555648655,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00085",
    "prompt_len": 331,
    "output_len": 163,
-   "arrival_s": 11.074468419403052,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00086",
    "prompt_len": 318,
    "output_len": 71,
-   "arrival_s": 11.174231702033328,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00087",
    "prompt_len": 563,
    "output_len": 74,
-   "arrival_s": 11.192018937138464,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00088",
    "prompt_len": 109,
    "output_len": 96,
-   "arrival_s": 11.243855331598152,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00089",
    "prompt_len": 772,
    "output_len": 250,
-   "arrival_s": 11.528063420207594,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00090",
    "prompt_len": 159,
    "output_len": 66,
-   "arrival_s": 11.776557970890153,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00091",
    "prompt_len": 705,
    "output_len": 55,
-   "arrival_s": 11.999095577509628,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00092",
    "prompt_len": 141,
    "output_len": 235,
-   "arrival_s": 12.011372099211346,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00093",
    "prompt_len": 111,
    "output_len": 254,
-   "arrival_s": 12.330887989415753,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00094",
    "prompt_len": 244,
    "output_len": 77,
-   "arrival_s": 12.421076378334002,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00095",
    "prompt_len": 456,
    "output_len": 222,
-   "arrival_s": 12.48215679923194,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00096",
    "prompt_len": 227,
    "output_len": 122,
-   "arrival_s": 12.48727877702819,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00097",
    "prompt_len": 125,
    "output_len": 185,
-   "arrival_s": 12.712754886532295,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00098",
    "prompt_len": 68,
    "output_len": 62,
-   "arrival_s": 12.741336042360974,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00099",
    "prompt_len": 65,
    "output_len": 269,
-   "arrival_s": 12.851506648344575,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00100",
    "prompt_len": 299,
    "output_len": 348,
-   "arrival_s": 12.929983723952862,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00101",
    "prompt_len": 441,
    "output_len": 234,
-   "arrival_s": 13.269065442149936,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00102",
    "prompt_len": 175,
    "output_len": 222,
-   "arrival_s": 13.381457497200913,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00103",
    "prompt_len": 85,
    "output_len": 11,
-   "arrival_s": 13.516461080540859,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00104",
    "prompt_len": 402,
    "output_len": 180,
-   "arrival_s": 13.566778211855468,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00105",
    "prompt_len": 72,
    "output_len": 147,
-   "arrival_s": 13.60725549036478,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00106",
    "prompt_len": 113,
    "output_len": 135,
-   "arrival_s": 13.754378114898481,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00107",
    "prompt_len": 329,
    "output_len": 96,
-   "arrival_s": 13.926902050507739,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00108",
-   "prompt_len": 65,
+   "prompt_len": 33,
    "output_len": 156,
-   "arrival_s": 13.995079970490597,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00109",
    "prompt_len": 272,
    "output_len": 200,
-   "arrival_s": 14.292742494067337,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00110",
    "prompt_len": 126,
    "output_len": 125,
-   "arrival_s": 14.381625455081126,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00111",
    "prompt_len": 218,
    "output_len": 108,
-   "arrival_s": 14.385979219040419,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00112",
    "prompt_len": 188,
    "output_len": 355,
-   "arrival_s": 14.507556775469398,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00113",
    "prompt_len": 235,
    "output_len": 69,
-   "arrival_s": 14.557771943024692,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00114",
    "prompt_len": 349,
    "output_len": 309,
-   "arrival_s": 14.585658788120256,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00115",
    "prompt_len": 109,
    "output_len": 170,
-   "arrival_s": 14.58749186704625,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00116",
    "prompt_len": 623,
    "output_len": 85,
-   "arrival_s": 14.625422772445036,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00117",
    "prompt_len": 358,
    "output_len": 122,
-   "arrival_s": 14.845172492484311,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00118",
    "prompt_len": 393,
    "output_len": 79,
-   "arrival_s": 14.928766203788083,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00119",
    "prompt_len": 508,
    "output_len": 241,
-   "arrival_s": 14.960699721797344,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00120",
    "prompt_len": 376,
    "output_len": 191,
-   "arrival_s": 15.273850491836946,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00121",
    "prompt_len": 393,
    "output_len": 102,
-   "arrival_s": 15.347652559729516,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00122",
    "prompt_len": 212,
    "output_len": 69,
-   "arrival_s": 15.442948328167509,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00123",
-   "prompt_len": 65,
+   "prompt_len": 64,
    "output_len": 185,
-   "arrival_s": 15.492787475428878,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00124",
    "prompt_len": 180,
    "output_len": 293,
-   "arrival_s": 15.528570924441096,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00125",
    "prompt_len": 108,
    "output_len": 139,
-   "arrival_s": 15.585607763749886,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00126",
-   "prompt_len": 65,
+   "prompt_len": 64,
    "output_len": 201,
-   "arrival_s": 15.666060800339235,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00127",
    "prompt_len": 246,
    "output_len": 115,
-   "arrival_s": 15.832834026854778,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00128",
    "prompt_len": 127,
    "output_len": 157,
-   "arrival_s": 15.859061800895242,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00129",
    "prompt_len": 88,
    "output_len": 122,
-   "arrival_s": 16.107170678092075,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00130",
    "prompt_len": 87,
    "output_len": 184,
-   "arrival_s": 16.158216982656064,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00131",
    "prompt_len": 248,
    "output_len": 52,
-   "arrival_s": 16.160739182920704,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00132",
    "prompt_len": 266,
    "output_len": 235,
-   "arrival_s": 16.248849615272544,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00133",
    "prompt_len": 576,
    "output_len": 128,
-   "arrival_s": 16.33751856110606,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00134",
    "prompt_len": 198,
    "output_len": 193,
-   "arrival_s": 16.359780816527003,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00135",
    "prompt_len": 460,
    "output_len": 118,
-   "arrival_s": 16.440758993026822,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00136",
    "prompt_len": 614,
    "output_len": 188,
-   "arrival_s": 16.552061335269233,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00137",
    "prompt_len": 502,
    "output_len": 71,
-   "arrival_s": 16.68459357951361,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00138",
-   "prompt_len": 65,
+   "prompt_len": 30,
    "output_len": 345,
-   "arrival_s": 17.120326821852125,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00139",
    "prompt_len": 534,
    "output_len": 46,
-   "arrival_s": 17.172307658532887,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00140",
    "prompt_len": 262,
    "output_len": 72,
-   "arrival_s": 17.190422248593894,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00141",
    "prompt_len": 281,
    "output_len": 177,
-   "arrival_s": 17.22558687080186,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00142",
    "prompt_len": 269,
    "output_len": 418,
-   "arrival_s": 17.25026613978402,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00143",
    "prompt_len": 272,
    "output_len": 182,
-   "arrival_s": 17.592188022202542,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00144",
    "prompt_len": 258,
    "output_len": 126,
-   "arrival_s": 17.66005359278896,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00145",
    "prompt_len": 150,
    "output_len": 55,
-   "arrival_s": 17.698467941393194,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00146",
-   "prompt_len": 65,
+   "prompt_len": 44,
    "output_len": 131,
-   "arrival_s": 17.76346566587697,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00147",
    "prompt_len": 183,
    "output_len": 148,
-   "arrival_s": 18.042829738510925,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00148",
    "prompt_len": 105,
    "output_len": 490,
-   "arrival_s": 18.15620570227941,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00149",
    "prompt_len": 475,
    "output_len": 232,
-   "arrival_s": 18.3257792747855,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00150",
    "prompt_len": 159,
    "output_len": 51,
-   "arrival_s": 18.435687996341766,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00151",
    "prompt_len": 214,
    "output_len": 620,
-   "arrival_s": 18.46227880356338,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00152",
    "prompt_len": 101,
    "output_len": 114,
-   "arrival_s": 18.49379437751086,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00153",
    "prompt_len": 133,
    "output_len": 81,
-   "arrival_s": 18.520017709122943,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00154",
    "prompt_len": 198,
    "output_len": 421,
-   "arrival_s": 18.556128180928514,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00155",
-   "prompt_len": 65,
+   "prompt_len": 61,
    "output_len": 145,
-   "arrival_s": 18.576684920237884,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00156",
    "prompt_len": 254,
    "output_len": 116,
-   "arrival_s": 18.61422665750125,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00157",
    "prompt_len": 184,
    "output_len": 175,
-   "arrival_s": 18.78024469899889,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00158",
    "prompt_len": 77,
    "output_len": 271,
-   "arrival_s": 18.78311059964079,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00159",
-   "prompt_len": 65,
+   "prompt_len": 29,
    "output_len": 301,
-   "arrival_s": 18.81098550637451,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00160",
    "prompt_len": 301,
    "output_len": 57,
-   "arrival_s": 18.959213738050256,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00161",
    "prompt_len": 158,
    "output_len": 608,
-   "arrival_s": 18.994279336069486,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00162",
    "prompt_len": 131,
    "output_len": 291,
-   "arrival_s": 19.108378604791717,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00163",
    "prompt_len": 166,
    "output_len": 115,
-   "arrival_s": 19.1584765110026,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00164",
    "prompt_len": 855,
    "output_len": 85,
-   "arrival_s": 19.18468905132219,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00165",
    "prompt_len": 192,
    "output_len": 76,
-   "arrival_s": 19.801416369250052,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00166",
    "prompt_len": 214,
    "output_len": 164,
-   "arrival_s": 20.00867983697529,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00167",
-   "prompt_len": 65,
+   "prompt_len": 61,
    "output_len": 95,
-   "arrival_s": 20.100006937447027,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00168",
    "prompt_len": 747,
    "output_len": 88,
-   "arrival_s": 20.339506254947572,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00169",
    "prompt_len": 417,
    "output_len": 265,
-   "arrival_s": 20.64245419063204,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00170",
    "prompt_len": 470,
    "output_len": 194,
-   "arrival_s": 20.901195015353984,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00171",
    "prompt_len": 208,
    "output_len": 114,
-   "arrival_s": 20.913990121968283,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00172",
    "prompt_len": 416,
    "output_len": 251,
-   "arrival_s": 21.11437549040081,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00173",
    "prompt_len": 269,
    "output_len": 391,
-   "arrival_s": 21.278646142664392,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00174",
    "prompt_len": 327,
    "output_len": 70,
-   "arrival_s": 21.690585561977592,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00175",
    "prompt_len": 177,
    "output_len": 98,
-   "arrival_s": 21.70778477535985,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00176",
-   "prompt_len": 65,
+   "prompt_len": 62,
    "output_len": 290,
-   "arrival_s": 21.719565894229373,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00177",
    "prompt_len": 456,
    "output_len": 248,
-   "arrival_s": 21.723765625124738,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00178",
-   "prompt_len": 65,
+   "prompt_len": 43,
    "output_len": 176,
-   "arrival_s": 21.82192138454043,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00179",
    "prompt_len": 165,
    "output_len": 338,
-   "arrival_s": 22.108062152386687,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00180",
    "prompt_len": 170,
    "output_len": 70,
-   "arrival_s": 22.219921987072514,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00181",
    "prompt_len": 87,
    "output_len": 53,
-   "arrival_s": 22.298204593755763,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00182",
    "prompt_len": 327,
    "output_len": 82,
-   "arrival_s": 22.333091407231407,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00183",
    "prompt_len": 170,
    "output_len": 163,
-   "arrival_s": 22.518439175776944,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00184",
    "prompt_len": 141,
    "output_len": 86,
-   "arrival_s": 22.744904357639054,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00185",
    "prompt_len": 303,
    "output_len": 107,
-   "arrival_s": 22.85092509496737,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00186",
    "prompt_len": 137,
    "output_len": 76,
-   "arrival_s": 23.084136879884362,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00187",
    "prompt_len": 608,
    "output_len": 97,
-   "arrival_s": 23.16442609567289,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00188",
    "prompt_len": 265,
    "output_len": 74,
-   "arrival_s": 23.206721314687982,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00189",
    "prompt_len": 137,
    "output_len": 194,
-   "arrival_s": 23.207944474284176,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00190",
-   "prompt_len": 65,
+   "prompt_len": 42,
    "output_len": 262,
-   "arrival_s": 23.268946406859936,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00191",
    "prompt_len": 70,
    "output_len": 107,
-   "arrival_s": 23.40293024726539,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00192",
    "prompt_len": 477,
    "output_len": 130,
-   "arrival_s": 23.496756485397793,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00193",
    "prompt_len": 192,
    "output_len": 100,
-   "arrival_s": 23.954153019438692,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00194",
    "prompt_len": 159,
    "output_len": 218,
-   "arrival_s": 24.027679750565966,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00195",
    "prompt_len": 745,
    "output_len": 160,
-   "arrival_s": 24.062442072938055,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00196",
    "prompt_len": 72,
    "output_len": 458,
-   "arrival_s": 24.18601628381319,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00197",
    "prompt_len": 125,
    "output_len": 70,
-   "arrival_s": 24.186817415733064,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00198",
    "prompt_len": 137,
    "output_len": 193,
-   "arrival_s": 24.24730343912429,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   },
   {
    "request_id": "req-00199",
    "prompt_len": 320,
    "output_len": 205,
-   "arrival_s": 24.30855464273,
+   "arrival_s": 0.0,
    "prompt_ids": null,
-   "shared_prefix_len": 64
+   "shared_prefix_len": 0
   }
  ],
  "args": {
@@ -1624,11 +1624,11 @@
   "tiny": false,
   "device": "cuda",
   "dtype": "float16",
-  "configs": "paged_torch,paged_torch+prefix,paged_flash,paged_flash+graphs",
+  "configs": "paged_torch,paged_flash,paged_flash+graphs",
   "trace_n": 200,
-  "request_rate": 8.0,
+  "request_rate": Infinity,
   "seed": 0,
-  "shared_prefix_len": 64,
+  "shared_prefix_len": 0,
   "max_prompt_len": null,
   "max_output_len": null,
   "block_size": 256,
@@ -1641,7 +1641,7 @@
   "warmup": true,
   "save_records": false,
   "progress": false,
-  "out": "results/ablation.json"
+  "out": "results/ablation_sat.json"
  },
  "results": [
   {
@@ -1654,91 +1654,43 @@
     "num_requests": 200,
     "completed": 200,
     "failed": 0,
-    "duration_s": 52.79110903805122,
-    "requests_per_s": 3.7885167340553942,
-    "throughput_tok_s": 700.1178924534369,
-    "total_throughput_tok_s": 1716.4064489474665,
+    "duration_s": 50.05688247503713,
+    "requests_per_s": 3.9954545730996736,
+    "throughput_tok_s": 738.3600051088197,
+    "total_throughput_tok_s": 1805.2262852178944,
     "ttft_ms": {
-     "mean": 14.638159768655896,
-     "p50": 12.217670329846442,
-     "p90": 20.554384915158153,
-     "p99": 27.906734962016344
+     "mean": 744.138407278806,
+     "p50": 774.4095651432872,
+     "p90": 1150.9707239456475,
+     "p99": 1260.413431096822
     },
     "tpot_ms": {
-     "mean": 80.71601630407555,
-     "p50": 86.20619900423624,
-     "p90": 130.54572517812792,
-     "p99": 141.23450411541532
+     "mean": 168.09631370332448,
+     "p50": 179.79617016208596,
+     "p90": 211.6407666973933,
+     "p99": 247.76270913984612
     },
     "e2e_ms": {
-     "mean": 13859.665337192127,
-     "p50": 12670.411239610985,
-     "p90": 27360.46135071665,
-     "p99": 43542.6225066022
+     "mean": 25172.587013492594,
+     "p50": 24082.272682106122,
+     "p90": 37603.610036172904,
+     "p99": 45625.68234112345
     },
     "goodput_rps": null,
     "slo_ttft_ms": null,
     "slo_tpot_ms": null,
-    "prompt_tokens": 53651,
+    "prompt_tokens": 53404,
     "output_tokens": 36960
    },
-   "kv_utilization_mean": 0.7928761554859403,
-   "num_steps": 1760,
-   "num_prefill_steps": 166,
-   "num_decode_steps": 1594,
+   "kv_utilization_mean": 0.8637091618444017,
+   "num_steps": 1289,
+   "num_prefill_steps": 7,
+   "num_decode_steps": 1282,
    "num_preempted": 0,
-   "mean_decode_batch": 23.061480552070265,
-   "decode_forward_ms_mean": 29.100992388782586,
-   "prefill_forward_ms_mean": 12.895065105901695,
-   "build_s": 4.319463467923924
-  },
-  {
-   "config": "paged_torch+prefix",
-   "attn_backend": "paged_torch",
-   "enable_prefix_caching": true,
-   "enable_cuda_graphs": false,
-   "static_batching": false,
-   "summary": {
-    "num_requests": 200,
-    "completed": 200,
-    "failed": 0,
-    "duration_s": 52.81112985103391,
-    "requests_per_s": 3.7870804992081513,
-    "throughput_tok_s": 699.8524762536664,
-    "total_throughput_tok_s": 1715.755755568749,
-    "ttft_ms": {
-     "mean": 14.749370036879554,
-     "p50": 12.424620101228356,
-     "p90": 20.178055088035762,
-     "p99": 27.970143128186464
-    },
-    "tpot_ms": {
-     "mean": 80.53657023848668,
-     "p50": 86.36512166359813,
-     "p90": 130.30274890460075,
-     "p99": 140.5783070087782
-    },
-    "e2e_ms": {
-     "mean": 13840.564439510927,
-     "p50": 12703.28885607887,
-     "p90": 27345.943699916825,
-     "p99": 43561.432029737625
-    },
-    "goodput_rps": null,
-    "slo_ttft_ms": null,
-    "slo_tpot_ms": null,
-    "prompt_tokens": 53651,
-    "output_tokens": 36960
-   },
-   "kv_utilization_mean": 0.7929070406226727,
-   "num_steps": 1755,
-   "num_prefill_steps": 163,
-   "num_decode_steps": 1592,
-   "num_preempted": 0,
-   "mean_decode_batch": 23.09045226130653,
-   "decode_forward_ms_mean": 29.17360761624073,
-   "prefill_forward_ms_mean": 12.962562894802883,
-   "build_s": 2.601029417011887
+   "mean_decode_batch": 28.673946957878314,
+   "decode_forward_ms_mean": 34.98579577347424,
+   "prefill_forward_ms_mean": 172.96730088336128,
+   "build_s": 4.16067521693185
   },
   {
    "config": "paged_flash",
@@ -1750,43 +1702,43 @@
     "num_requests": 200,
     "completed": 200,
     "failed": 0,
-    "duration_s": 27.81068599713035,
-    "requests_per_s": 7.191480282817801,
-    "throughput_tok_s": 1328.9855562647294,
-    "total_throughput_tok_s": 3258.1360995320183,
+    "duration_s": 12.145146226976067,
+    "requests_per_s": 16.467483903633212,
+    "throughput_tok_s": 3043.1910253914175,
+    "total_throughput_tok_s": 7440.338577339558,
     "ttft_ms": {
-     "mean": 8.88682747958228,
-     "p50": 8.725347463041544,
-     "p90": 8.93766451627016,
-     "p99": 10.027589474339036
+     "mean": 273.3110324642621,
+     "p50": 286.0375950112939,
+     "p90": 415.9159769769758,
+     "p99": 452.3942081723362
     },
     "tpot_ms": {
-     "mean": 9.092855912075601,
-     "p50": 9.116980045183475,
-     "p90": 9.58425916429413,
-     "p99": 9.906766815149345
+     "mean": 15.659353702343186,
+     "p50": 15.211089881329347,
+     "p90": 18.781141326142624,
+     "p99": 27.343007555929912
     },
     "e2e_ms": {
-     "mean": 1681.316275615245,
-     "p50": 1206.0754800913855,
-     "p90": 3226.2526774778958,
-     "p99": 8353.547990964713
+     "mean": 2812.2310458298307,
+     "p50": 2325.1750441268086,
+     "p90": 4667.989621520974,
+     "p99": 9225.928873957591
     },
     "goodput_rps": null,
     "slo_ttft_ms": null,
     "slo_tpot_ms": null,
-    "prompt_tokens": 53651,
+    "prompt_tokens": 53404,
     "output_tokens": 36960
    },
-   "kv_utilization_mean": 0.7641648581114905,
-   "num_steps": 3328,
-   "num_prefill_steps": 194,
-   "num_decode_steps": 3134,
+   "kv_utilization_mean": 0.8637091618444017,
+   "num_steps": 1289,
+   "num_prefill_steps": 7,
+   "num_decode_steps": 1282,
    "num_preempted": 0,
-   "mean_decode_batch": 11.729419272495214,
-   "decode_forward_ms_mean": 7.270902243173006,
-   "prefill_forward_ms_mean": 8.254655514430908,
-   "build_s": 2.617700522998348
+   "mean_decode_batch": 28.673946957878314,
+   "decode_forward_ms_mean": 7.213499354904695,
+   "prefill_forward_ms_mean": 8.114905861605491,
+   "build_s": 2.5990297091193497
   },
   {
    "config": "paged_flash+graphs",
@@ -1798,43 +1750,43 @@
     "num_requests": 200,
     "completed": 200,
     "failed": 0,
-    "duration_s": 25.645538852084428,
-    "requests_per_s": 7.79862732280801,
-    "throughput_tok_s": 1441.1863292549203,
-    "total_throughput_tok_s": 3533.207101734783,
+    "duration_s": 6.7699832851067185,
+    "requests_per_s": 29.542170427507532,
+    "throughput_tok_s": 5459.393095003392,
+    "total_throughput_tok_s": 13347.743442556453,
     "ttft_ms": {
-     "mean": 9.024444338865578,
-     "p50": 8.73523554764688,
-     "p90": 9.983695344999433,
-     "p99": 10.597360350657254
+     "mean": 266.83641995768994,
+     "p50": 278.50444009527564,
+     "p90": 408.20234711281955,
+     "p99": 444.4310141261667
     },
     "tpot_ms": {
-     "mean": 3.866232374290961,
-     "p50": 3.827934950877364,
-     "p90": 4.2717831851885455,
-     "p99": 4.836936754747556
+     "mean": 12.6475030975196,
+     "p50": 12.42588291254349,
+     "p90": 16.109905609837135,
+     "p99": 24.709516806527937
     },
     "e2e_ms": {
-     "mean": 721.0946217540186,
-     "p50": 517.5478183664382,
-     "p90": 1341.5133658563718,
-     "p99": 3625.1879103248907
+     "mean": 2191.1809451074805,
+     "p50": 1950.3067729528993,
+     "p90": 3388.615897926502,
+     "p99": 5559.529505684036
     },
     "goodput_rps": null,
     "slo_ttft_ms": null,
     "slo_tpot_ms": null,
-    "prompt_tokens": 53651,
+    "prompt_tokens": 53404,
     "output_tokens": 36960
    },
-   "kv_utilization_mean": 0.7618901484225714,
-   "num_steps": 7006,
-   "num_prefill_steps": 198,
-   "num_decode_steps": 6808,
+   "kv_utilization_mean": 0.8637091618444017,
+   "num_steps": 1289,
+   "num_prefill_steps": 7,
+   "num_decode_steps": 1282,
    "num_preempted": 0,
-   "mean_decode_batch": 5.399529964747356,
-   "decode_forward_ms_mean": 0.10505473562275507,
-   "prefill_forward_ms_mean": 8.404227311139682,
-   "build_s": 3.638259202009067
+   "mean_decode_batch": 28.673946957878314,
+   "decode_forward_ms_mean": 0.10599061216891695,
+   "prefill_forward_ms_mean": 8.096719193937522,
+   "build_s": 3.4627148781437427
   }
  ]
 }
