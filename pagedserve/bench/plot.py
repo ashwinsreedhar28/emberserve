@@ -40,6 +40,38 @@ def _rate_label(rate: float | None) -> str:
     return "inf" if rate is None else f"{rate:g}"
 
 
+def collapse_repeats(data: dict) -> dict:
+    """A sweep that ran a rate several times (`--rates inf,inf,inf`) becomes one run per
+    rate with the summary's numbers averaged (throughput, and the mean/p50/p90/p99 of each
+    latency), so the figures show the mean of the repeats rather than three points."""
+    groups: dict = {}
+    order: list = []
+    for r in data["runs"]:
+        key = r["request_rate"]
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(r)
+    if all(len(g) == 1 for g in groups.values()):
+        return data
+    runs = []
+    for key in order:
+        g = groups[key]
+        base = json.loads(json.dumps(g[0]))
+        s = base["summary"]
+        n = len(g)
+        s["throughput_tok_s"] = sum(r["summary"]["throughput_tok_s"] for r in g) / n
+        for metric in ("ttft_ms", "tpot_ms", "e2e_ms"):
+            if isinstance(s.get(metric), dict):
+                for q in s[metric]:
+                    s[metric][q] = sum(r["summary"][metric][q] for r in g) / n
+        base["repeats"] = n
+        runs.append(base)
+    out = dict(data)
+    out["runs"] = runs
+    return out
+
+
 def _rates_x(runs: list[dict]) -> tuple[list[float], list[str]]:
     """X positions for a rate sweep: finite rates keep their value; 'inf' sits one step
     beyond the largest finite rate so it stays on a log axis."""
@@ -243,10 +275,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--labels must have one entry per sweep file")
     sweeps: dict[str, Any] = {}
     for f, label in zip(args.sweeps, labels):
-        data = json.loads(Path(f).read_text())
+        data = collapse_repeats(json.loads(Path(f).read_text()))
         sweeps[label or data.get("system") or Path(f).stem] = data
     if args.progression:
-        baseline = json.loads(Path(args.progression).read_text())
+        baseline = collapse_repeats(json.loads(Path(args.progression).read_text()))
         for path in plot_progression(baseline, sweeps, Path(args.out_dir)):
             print(f"wrote {path}", file=sys.stderr)
         return 0

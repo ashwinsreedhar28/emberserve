@@ -23,7 +23,7 @@ to measure how far a one-person implementation lands from it on the same GPU and
 
 Correctness gate: greedy output is token-for-token identical to Hugging Face on 7 prompts x
 64 tokens, and prompt logits match within 1e-3, on every backend (fp32 exact; fp16 held to a
-self-calibrated tie-break rule described below). 176 CPU tests on a 2-layer random-weight model (no download, no GPU) and 31 GPU tests.
+self-calibrated tie-break rule described below). 343 CPU tests on a 2-layer random-weight model (no download, no GPU) and ~90 GPU tests.
 
 ## Headline numbers
 
@@ -34,22 +34,23 @@ output median 131), seed 0, same trace for every row. Raw files in `results/`.
 |---|---:|---:|
 | naive per-sequence cache, 8 req/s | 343 tok/s | |
 | paged_flash + CUDA graphs, 8 req/s | 1,441 tok/s, TPOT p50 3.8 ms | 1,381 tok/s, TPOT p50 2.0 ms (HTTP) |
-| paged_flash + CUDA graphs, all 200 at t=0 | 5,459 tok/s (in-process) | **14,904 tok/s** (HTTP, engine process, async scheduling, chunked prefill on piecewise graphs) |
+| paged_flash + CUDA graphs, all 200 at t=0 | 5,459 tok/s (in-process) | **16,635 tok/s** (HTTP, mean of 3; engine process, async scheduling, chunked prefill on piecewise graphs, batched SSE writes) |
 | vLLM, same trace, same GPU, 8 req/s | | 1,377 tok/s, TPOT p50 2.1 ms |
-| vLLM, all 200 at t=0 | | 16,269 tok/s |
+| vLLM, all 200 at t=0 | | 16,269 tok/s (one run; ±1% over repeats on real text) |
 | Triton decode kernel vs flash-attn, B=128 / ctx 2048 | 4.2x slower (first version) | **1.16x** slower (835 vs 972 GB/s) |
 | KV-cache slot utilization, block 16 vs 256 | | **98% vs 76%** |
 
 Against vLLM on the A100 with Qwen2.5-0.5B: throughput parity to 16 req/s (100%), lower
 latency than vLLM at every offered rate (TPOT 1.8 vs 2.0 ms and TTFT 9.4 vs 12.9 ms at
-1 req/s; TPOT 6.0 vs 8.1 ms at saturation), 92% of its saturation throughput on the
-synthetic trace (a single run; eight repeats on real text put the same point at 81 ± 6%,
-see [Real text](#real-text-sharegpt-conversations-results_textjson)), up from 23% at the
-first measurement the same night. At 7B (Qwen2.5-7B-Instruct) both engines sit on the
+1 req/s; TPOT 5.7 vs 8.1 ms at saturation), and parity at saturation too: 16,635 vs
+16,269 tok/s on the synthetic trace (mean of three) and 22,964 vs 23,111 on real text
+(mean of six, see [Real text](#real-text-sharegpt-conversations-results_textjson)), up
+from 23% at the first measurement. Nine profile-driven fixes; the last one was not in the
+engine at all but in the API process that streams the tokens. At 7B (Qwen2.5-7B-Instruct) both engines sit on the
 weight-read floor and pagedserve reaches 99% of vLLM at saturation with chunked prefill and
 async scheduling; DeepSeek-R1-Distill-Llama-8B (llama path) is also at 99%, and Moonlight-16B-A3B (DeepSeek-V3's
 latent attention + MoE) reaches 84% on the synthetic trace and 89% on real text with a
-batch-1 step of 6.2 ms against vLLM's 7.1 ms TPOT. The [gap analysis](#the-gap-against-vllm) has the per-phase profile and the eight
+batch-1 step of 6.2 ms against vLLM's 7.1 ms TPOT. The [gap analysis](#the-gap-against-vllm) has the per-phase profile and the nine
 fixes it drove, in order; [Models](#models) has the per-model table.
 
 ## How it works
@@ -404,20 +405,27 @@ the kernel. Chunked prefill changes nothing at 0.5B, where a prefill is ~8 ms; a
 Same load generator, same trace, same GPU, both servers fp16 with `max_model_len 4096`.
 pagedserve with its CUDA defaults: `paged_flash`, block 256, CUDA graphs (full-step for
 decode, piecewise for prefill and mixed steps), chunked prefill, engine in its own process,
-async scheduling (`results/pagedserve_flash_v8.json`). vLLM from its own venv, defaults.
+async scheduling, batched SSE writes (`results/pagedserve_flash_v9.json`; the saturation
+row is the mean of three repeats). vLLM from its own venv, defaults.
 
-| req/s offered | vLLM tok/s | pagedserve tok/s | vLLM TTFT p50 | pagedserve TTFT p50 | vLLM TPOT p50/p99 | pagedserve TPOT p50/p99 |
+| req/s offered | vLLM tok/s | pagedserve tok/s | vLLM TTFT p50 | pagedserve TTFT p50 ¹ | vLLM TPOT p50/p99 | pagedserve TPOT p50/p99 |
 |---:|---:|---:|---:|---:|---:|---:|
-| 1 | 177 | 177 | 12.9 ms | **9.4** ms | 2.0 / 2.3 | **1.8** / 2.1 |
-| 2 | 354 | 354 | 11.9 | **10.0** | 2.0 / 2.2 | **1.8** / 2.1 |
-| 4 | 701 | 702 | 11.6 | **11.0** | 2.1 / 2.2 | **1.9** / 2.1 |
-| 8 | 1,377 | 1,381 | 12.0 | **11.5** | 2.1 / 2.3 | **2.0** / 2.2 |
-| 16 | 2,659 | 2,673 | 12.0 | 12.4 | 2.2 / 2.4 | **2.1** / 2.5 |
-| all at t=0 | **16,269** | **14,904** | 421 | 543 | 8.1 / 12.8 | **6.0** / **8.7** |
+| 1 | 177 | 178 | 12.9 ms | **8.7** ms | 2.0 / 2.3 | **1.8** / 2.1 |
+| 2 | 354 | 354 | 11.9 | **8.7** | 2.0 / 2.2 | **1.8** / 2.1 |
+| 4 | 701 | 703 | 11.6 | **9.2** | 2.1 / 2.2 | **1.9** / 2.2 |
+| 8 | 1,377 | 1,383 | 12.0 | **9.7** | 2.1 / 2.3 | **2.0** / 2.3 |
+| 16 | 2,659 | 2,679 | 12.0 | **10.3** | 2.2 / 2.4 | **2.2** / 2.5 |
+| all at t=0 | 16,269 | **16,635** | 421 | 228 | 8.1 / 12.8 | **5.7** / **13.0** |
+
+¹ pagedserve's TTFT column is the server-side mean (from the request's arrival at the API
+process, `server_latency` in the JSON); the v9 sweep ran the load generator from four
+processes, whose client-side TTFT is not comparable with vLLM's single-process column
+(v8's client-side numbers on the same points were 9.4 / 10.0 / 11.0 / 11.5 / 12.4 ms).
 
 Every version of the engine on the same sweep, one line per fix (the fix table is in the
 [gap analysis](#the-gap-against-vllm)); v3, v5 and v6's low rates were not re-run on
-their commits, so those lines start at 8 req/s. Figures:
+their commits, so those lines start at 8 req/s; v9's saturation point is the mean of three
+repeats. Figures:
 `python -m pagedserve.bench.plot --progression results/vllm.json results/pagedserve_flash*.json ...`
 (`results/plots/progression/`).
 
@@ -461,14 +469,16 @@ The same night, in order, each fix chosen from the profile and re-measured over 
 | `3805000` | **per-step host->device traffic and per-request decode calls**: six small `torch.tensor(..., device=cuda)` copies plus a per-row block-table build became two pinned copies; two `tokenizer.decode` calls per request became two Rust `decode_batch` calls per step | 10,584 | 3.9 |
 | `94bdca3` | **the server and the engine shared one GIL**: at 200 streams the in-process step was 6.1 ms but 10.2 ms seen through the server, because SSE delivery and the step loop serialized on the interpreter lock. The engine core now runs in its own process (`--engine-process`, default on CUDA): token ids cross a pipe, the API process keeps the tokenizer, batched detokenization and stop strings, and the two overlap | 13,945 | 3.1 |
 | `02d44f5` | **the GPU idled while Python built the next step**: the remaining per-sequence CPU in the core (0.5 ms of input building and 1.2 ms of postprocessing at batch 200) sat on the critical path. Async scheduling (vLLM v1's trick, `--async-scheduling`, default on CUDA): step N+1 is scheduled, packed and launched before step N's tokens are read back; decode rows gather their token from the previous step's sampled tensor on the device; the read-back goes through a pinned buffer whose copy was enqueued before the next launch; length limits are anticipated so no token is wasted | 14,394 | 2.5 |
-| `1942991` | **prefill and mixed steps ran eagerly**: the full-step graph needs fixed shapes, so chunked prefill (the scheduling that closed the 7B gap) *cost* 11% here (12,786 tok/s), ~20 Python launches per layer on every step that carried a prompt. Piecewise CUDA graphs (`--piecewise-cuda-graphs`, default on): every layer's projections, norms and MLP replay from per-layer graphs on token buckets, attention runs eagerly on the real rows between them, so a chunked step is two replays plus the attention launches per layer. Chunked prefill is now the default at every size, and the prefill step itself got cheaper: TTFT at 1 req/s 20 → 9 ms | **14,904** | 2.1 |
+| `1942991` | **prefill and mixed steps ran eagerly**: the full-step graph needs fixed shapes, so chunked prefill (the scheduling that closed the 7B gap) *cost* 11% here (12,786 tok/s), ~20 Python launches per layer on every step that carried a prompt. Piecewise CUDA graphs (`--piecewise-cuda-graphs`, default on): every layer's projections, norms and MLP replay from per-layer graphs on token buckets, attention runs eagerly on the real rows between them, so a chunked step is two replays plus the attention launches per layer. Chunked prefill is now the default at every size, and the prefill step itself got cheaper: TTFT at 1 req/s 20 → 9 ms | 14,904 | 2.1 |
+| `5335d1e` | **the engine waited for the API process**: a per-step log of the core showed a 2.5 ms step at 200 sequences and the core inside `step()` only ~65% of its active time, the rest blocked in the pipe to the API process, whose one event loop encoded and wrote one SSE event per token for 200 streams (and whose GC walked the heap every few thousand allocations: the p99 tail). Every wake-up of a request's route now sends everything queued for it in one write (`generate_batches`, raw `StreamingResponse`), the reader thread stopped copying the output list per token, and the collector is frozen after startup. Measured with a four-process load generator (the single-process one had capped both engines' client-side numbers) | **16,635** (mean of 3) | 2.2 |
 
-What is left: 92% of vLLM's saturation throughput, with lower TPOT (6.0 vs 8.1 ms p50,
-8.7 vs 12.8 p99) and a higher TTFT there (543 vs 421 ms): with all 200 prompts arriving at
-once, vLLM's scheduler admits them in more, smaller pieces than the 2048-token cap here and
-starts more streams earlier. Below saturation pagedserve is now ahead on every metric. The
-batch-1 forward at 1.9 ms sits within ~2x of the weight-read floor (~1 GB of fp16 weights
-plus the 272 MB `lm_head` per step on a 1.5 TB/s part); at 7B the forward *is* the floor.
+What is left at 0.5B is not in the engine: at saturation both servers deliver ~23k tok/s
+on real text and ~16.5k on the synthetic trace, and both are limited by their API process
+(ours delivers 26–29k tok/s with a clock in place of the model, so it runs at ~80% of its
+ceiling while the core still waits on the pipe a quarter of the time). Below saturation
+pagedserve is ahead on every metric. The batch-1 forward at 1.9 ms sits within ~2x of the
+weight-read floor (~1 GB of fp16 weights plus the 272 MB `lm_head` per step on a 1.5 TB/s
+part); at 7B the forward *is* the floor.
 
 ### Moonlight: MLA + MoE on the A100
 
@@ -538,10 +548,10 @@ every rate, a lower TPOT at saturation, and a saturation throughput gap. The sat
 point was then repeated eight times (`results/pagedserve_flash_text_sat_*.json`), with the
 load generator in one process and in four: **18,716 ± 1,080 tok/s** (17,036–20,765)
 against vLLM's 22,908–23,339 over three runs, i.e. **81% with a ±6% spread**, and the
-client's process count makes no systematic difference. So the number to quote at 0.5B
-saturation is ~80%, not the 92% a single synthetic run gave, and the spread is itself a
-finding: vLLM's runs land within 1% of each other while ours vary by 20% end to end, with
-TPOT p99 doubling (10 → 24 ms) in the slow runs.
+client's process count makes no systematic difference. So at v8 the number to quote at
+0.5B saturation was ~80%, not the 92% a single synthetic run had given, and the spread
+was itself a finding: vLLM's runs land within 1% of each other while ours varied by 20%
+end to end, with TPOT p99 doubling (10 → 24 ms) in the slow runs. That led to v9 (below).
 
 The stall hunt (`PAGEDSERVE_STEP_LOG`, `scripts/stall_report.py`, README_GPU) found two
 things. Python's garbage collector is the tail: `gc.freeze()` after startup plus raised
@@ -670,11 +680,12 @@ prompt ids drawn from each model's own vocabulary.
 
 | model | arch | golden vs HF | batch-1 forward | weight-read floor | saturation tok/s, pagedserve / vLLM | TPOT p50 @ 8 req/s |
 |---|---|---|---:|---:|---:|---:|
-| Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **14,904 / 16,269 (92%)** | **2.0** / 2.1 ms |
+| Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **16,635 / 16,269 (102%)** ⁰ | **2.0** / 2.1 ms |
 | Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | **3,166 / 3,188 (99%)** | 12.6 / 10.6 ms |
 | DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | **2,797 / 2,823 (99%)** ¹ | 14.9 / 12.2 ms |
 | Moonshot Moonlight-16B-A3B-Instruct | deepseek_v3, 27L, MLA (kv_lora 512 + rope 64), 64 experts top-6 + 2 shared, 3B active | all tokens (bf16; 2–3 tie-breaks inside noise, both paths) | 6.2 ms ² | ~3 ms (3B active + 0.7 GB lm_head) | **2,697 / 3,223 (84%)** ³ | 18.8 / 13.4 ms ³ |
 
+⁰ v9, mean of three saturation repeats against vLLM's single run; on real text (six repeats) 22,964 vs 23,111 (99%). Both servers are limited by their API process at this size.
 ¹ `results/pagedserve_r1_8b_flash_v7.json` (CUDA defaults: engine process, chunked prefill, async scheduling); the first measurement, prefill-priority and in-process, was 2,519 (89%) with 19.0 ms TPOT at 8 req/s. TPOT at 1 req/s 11.1 vs 10.8 ms, 20.6 vs 14.0 at 16 req/s: the same chunked-prefill tail as at 7B.
 ² whole decode step at batch 1 (`mla_triton` + fused MoE + CUDA graphs): 63.6 ms with the per-expert loop, 9.4 with the grouped GEMM, 7.2 after the routing/alignment kernels, 6.2 after the split-K fix; vLLM's TPOT at 1 req/s is 7.1 ms, ours over HTTP 7.6. See [Moonlight](#moonlight-mla--moe-on-the-a100).
 ³ chunked prefill (2048-token cap) + async scheduling (`results/pagedserve_moonlight_v3.json`); the first run, prefill-priority and synchronous, was 2,457 (76%) and 26.3 ms.
