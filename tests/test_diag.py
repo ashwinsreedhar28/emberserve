@@ -25,7 +25,7 @@ TINY = dict(num_hidden_layers=CFG.num_hidden_layers, num_attention_heads=CFG.num
 def test_step_log_and_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     log = tmp_path / "steps.tsv"
     monkeypatch.setenv("PAGEDSERVE_STEP_LOG", str(log))
-    monkeypatch.setenv("PAGEDSERVE_GC", "tune")
+    monkeypatch.setenv("PAGEDSERVE_GC", "tune")  # (the default; explicit here)
     ecfg = EngineConfig(device="cpu", dtype=torch.float32, block_size=4, num_gpu_blocks=256,
                         max_num_seqs=64, max_num_batched_tokens=512, max_model_len=256)
     spec = EngineSpec(ecfg, tiny=True, tiny_seed=0, tiny_overrides=TINY)
