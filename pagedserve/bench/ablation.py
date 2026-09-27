@@ -34,7 +34,11 @@ from pagedserve.bench.trace import TraceRequest, generate_trace, trace_summary, 
 from pagedserve.config import EngineConfig, ModelConfig
 
 ALL_CONFIGS = ("naive", "static", "paged_torch", "paged_torch+prefix", "paged_torch+chunked",
-               "paged_flash", "paged_flash+graphs", "paged_flash+graphs+chunked")
+               "paged_flash", "paged_flash+graphs", "paged_flash+graphs+chunked",
+               "paged_triton", "paged_triton+graphs", "paged_triton+graphs+prefix",
+               "paged_triton+graphs+chunked")
+# flash-attn's paged decode needs 256-token blocks; the others take --block-size as given.
+MIN_BLOCK = {"paged_flash": 256}
 DEFAULT_BUDGET = 8192  # the engine default when --max-num-batched-tokens is omitted
 CHUNKED_DEFAULT_BUDGET = 512
 DEFAULT_CONFIGS = ("naive", "static", "paged_torch", "paged_torch+prefix")
@@ -54,7 +58,7 @@ class AblationConfig:
         if name == "static":
             return cls(name, "paged_torch", static_batching=True)
         base, _, flags = name.partition("+")
-        if base not in ("naive", "paged_torch", "paged_flash"):
+        if base not in ("naive", "paged_torch", "paged_flash", "paged_triton"):
             raise ValueError(f"unknown config {name!r}; choose from {ALL_CONFIGS}")
         opts = set(flags.split("+")) if flags else set()
         unknown = opts - {"prefix", "graphs", "chunked"}
@@ -71,10 +75,15 @@ class AblationConfig:
             return args.max_num_batched_tokens
         return CHUNKED_DEFAULT_BUDGET if self.enable_chunked_prefill else DEFAULT_BUDGET
 
+    def block_size(self, args: argparse.Namespace) -> int:
+        """`--block-size`, raised to the backend's minimum (flash-attn: 256) so one command
+        can compare backends with different block-size constraints."""
+        return max(args.block_size, MIN_BLOCK.get(self.attn_backend, 0))
+
     def engine_config(self, args: argparse.Namespace) -> EngineConfig:
         return EngineConfig(
             device=args.device, dtype=EngineConfig.dtype_from_str(args.dtype),
-            block_size=args.block_size, num_gpu_blocks=args.num_blocks,
+            block_size=self.block_size(args), num_gpu_blocks=args.num_blocks,
             max_num_seqs=args.max_num_seqs,
             max_num_batched_tokens=self.max_num_batched_tokens(args),
             max_model_len=args.max_model_len, attn_backend=self.attn_backend,
@@ -122,7 +131,7 @@ def run_config(cfg: AblationConfig, trace: list[TraceRequest], args: argparse.Na
         "config": cfg.name, "attn_backend": cfg.attn_backend,
         "enable_prefix_caching": cfg.enable_prefix_caching,
         "enable_cuda_graphs": cfg.enable_cuda_graphs, "static_batching": cfg.static_batching,
-        "enable_chunked_prefill": cfg.enable_chunked_prefill,
+        "enable_chunked_prefill": cfg.enable_chunked_prefill, "block_size": cfg.block_size(args),
         "max_num_batched_tokens": cfg.max_num_batched_tokens(args),
         "summary": summary.to_dict(),
         "kv_utilization_mean": kv_util,
