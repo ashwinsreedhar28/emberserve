@@ -1,0 +1,13 @@
+[baseline] synthetic prompt ids drawn from [2, 152064)
+[baseline] launching: /usr/local/bin/python -m pagedserve.cli serve --model models/Qwen2.5-7B-Instruct --port 8000 --host 127.0.0.1 --dtype float16 --max-model-len 4096 --device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs
+[baseline] waiting for http://127.0.0.1:8000/health ...
+[baseline] pagedserve_7b_flash_v6 @ rate=8 req/s, n=200
+[load] 10/200 done     3.9s[load] 20/200 done     5.6s[load] 30/200 done     6.9s[load] 40/200 done     8.5s[load] 50/200 done     9.9s[load] 60/200 done    10.7s[load] 70/200 done    12.1s[load] 80/200 done    12.7s[load] 90/200 done    14.3s[load] 100/200 done    16.0s[load] 110/200 done    16.9s[load] 120/200 done    17.8s[load] 130/200 done    18.5s[load] 140/200 done    19.7s[load] 150/200 done    20.3s[load] 160/200 done    22.3s[load] 170/200 done    23.5s[load] 180/200 done    24.8s[load] 190/200 done    25.8s[load] 200/200 done    29.3s
+pagedserve_7b_flash_v6@8 tok/s=  1182.1 req/s=  6.84 ttft p50/p99=   30.3/   95.1ms tpot p50/p99=  15.6/  19.7ms ok=200/200
+[baseline] pagedserve_7b_flash_v6 @ rate=16 req/s, n=200
+[load] 10/200 done     3.7s[load] 20/200 done     4.6s[load] 30/200 done     5.4s[load] 40/200 done     6.1s[load] 50/200 done     6.8s[load] 60/200 done     7.4s[load] 70/200 done     8.3s[load] 80/200 done    10.0s[load] 90/200 done    10.7s[load] 100/200 done    11.1s[load] 110/200 done    12.0s[load] 120/200 done    12.5s[load] 130/200 done    12.9s[load] 140/200 done    13.1s[load] 150/200 done    13.3s[load] 160/200 done    13.7s[load] 170/200 done    14.4s[load] 180/200 done    15.1s[load] 190/200 done    15.6s[load] 200/200 done    18.0s
+pagedserve_7b_flash_v6@16 tok/s=  1929.0 req/s= 11.16 ttft p50/p99=   35.5/  164.7ms tpot p50/p99=  24.8/  32.4ms ok=200/200
+[baseline] pagedserve_7b_flash_v6 @ rate=inf req/s, n=200
+[load] 10/200 done     5.0s[load] 20/200 done     5.3s[load] 30/200 done     5.5s[load] 40/200 done     5.7s[load] 50/200 done     5.9s[load] 60/200 done     6.2s[load] 70/200 done     6.3s[load] 80/200 done     6.5s[load] 90/200 done     6.7s[load] 100/200 done     6.9s[load] 110/200 done     7.3s[load] 120/200 done     7.6s[load] 130/200 done     7.9s[load] 140/200 done     8.1s[load] 150/200 done     8.7s[load] 160/200 done     9.0s[load] 170/200 done     9.4s[load] 180/200 done    10.2s[load] 190/200 done    11.5s[load] 200/200 done    12.1s
+pagedserve_7b_flash_v6@inf tok/s=  2858.6 req/s= 16.54 ttft p50/p99= 2243.1/ 3500.1ms tpot p50/p99=  32.9/  99.6ms ok=200/200
+[baseline] wrote results/pagedserve_7b_flash_v6.json

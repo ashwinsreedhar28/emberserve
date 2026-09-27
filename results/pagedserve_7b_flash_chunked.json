@@ -1,0 +1,171 @@
+{
+ "kind": "sweep",
+ "system": "pagedserve_7b_flash_chunked",
+ "server": "pagedserve",
+ "base_url": "http://127.0.0.1:8000",
+ "model": "models/Qwen2.5-7B-Instruct",
+ "args": {
+  "server": "pagedserve",
+  "vllm_bin": "vllm",
+  "base_url": null,
+  "model": "models/Qwen2.5-7B-Instruct",
+  "served_model_name": null,
+  "dtype": "float16",
+  "max_model_len": 4096,
+  "server_args": "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --enable-chunked-prefill --max-num-batched-tokens 512",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "rates": "8,16,inf",
+  "trace_n": 200,
+  "seed": 0,
+  "shared_prefix_len": 0,
+  "max_prompt_len": 1024,
+  "max_output_len": 512,
+  "max_concurrency": null,
+  "timeout_s": 600.0,
+  "startup_timeout_s": 900.0,
+  "api_key": "x",
+  "vocab_size": null,
+  "tokenizer": null,
+  "slo_ttft_ms": null,
+  "slo_tpot_ms": null,
+  "warmup": true,
+  "save_records": false,
+  "name": "pagedserve_7b_flash_chunked",
+  "out_dir": "results"
+ },
+ "runs": [
+  {
+   "request_rate": 8.0,
+   "wall_s": 29.296777345240116,
+   "summary": {
+    "num_requests": 200,
+    "completed": 200,
+    "failed": 0,
+    "duration_s": 29.26827432960272,
+    "requests_per_s": 6.833337618327386,
+    "throughput_tok_s": 1181.2449073921634,
+    "total_throughput_tok_s": 3005.882718237942,
+    "ttft_ms": {
+     "mean": 66.83032372966409,
+     "p50": 53.82833443582058,
+     "p90": 119.77468691766262,
+     "p99": 182.51741986721703
+    },
+    "tpot_ms": {
+     "mean": 17.109408942086148,
+     "p50": 17.404895789809743,
+     "p90": 20.55646587883439,
+     "p99": 23.10275399654821
+    },
+    "e2e_ms": {
+     "mean": 2976.447981726378,
+     "p50": 2398.547012358904,
+     "p90": 5788.987958058714,
+     "p99": 9369.21119187027
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 53404,
+    "output_tokens": 34573
+   },
+   "trace": {
+    "n": 200,
+    "prompt_mean": 267.02,
+    "prompt_p50": 208.0,
+    "output_mean": 172.865,
+    "output_p50": 131.0,
+    "span_s": 24.30855464273
+   }
+  },
+  {
+   "request_rate": 16.0,
+   "wall_s": 20.94407121092081,
+   "summary": {
+    "num_requests": 200,
+    "completed": 200,
+    "failed": 0,
+    "duration_s": 20.916912846267223,
+    "requests_per_s": 9.561640451912648,
+    "throughput_tok_s": 1652.87297671988,
+    "total_throughput_tok_s": 4206.022210189595,
+    "ttft_ms": {
+     "mean": 523.167156483978,
+     "p50": 293.913459405303,
+     "p90": 1270.4047080129385,
+     "p99": 1625.9927017241716
+    },
+    "tpot_ms": {
+     "mean": 51.77022245784772,
+     "p50": 46.29803915947277,
+     "p90": 89.34304099018667,
+     "p99": 99.16686812087416
+    },
+    "e2e_ms": {
+     "mean": 7988.60096136108,
+     "p50": 7755.851466208696,
+     "p90": 12802.474100515245,
+     "p99": 16864.980217516415
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 53404,
+    "output_tokens": 34573
+   },
+   "trace": {
+    "n": 200,
+    "prompt_mean": 267.02,
+    "prompt_p50": 208.0,
+    "output_mean": 172.865,
+    "output_p50": 131.0,
+    "span_s": 12.154277321365
+   }
+  },
+  {
+   "request_rate": null,
+   "wall_s": 19.820444967597723,
+   "summary": {
+    "num_requests": 200,
+    "completed": 200,
+    "failed": 0,
+    "duration_s": 19.792404405772686,
+    "requests_per_s": 10.104886495835123,
+    "throughput_tok_s": 1746.7812041025384,
+    "total_throughput_tok_s": 4444.987996220433,
+    "ttft_ms": {
+     "mean": 5287.856219056994,
+     "p50": 4737.533044070005,
+     "p90": 10734.091687947512,
+     "p99": 12145.678799040614
+    },
+    "tpot_ms": {
+     "mean": 61.68865615462493,
+     "p50": 57.4783462882837,
+     "p90": 101.17655160171645,
+     "p99": 116.71898680289877
+    },
+    "e2e_ms": {
+     "mean": 13749.455100838095,
+     "p50": 14081.805028021336,
+     "p90": 17188.025815039873,
+     "p99": 19355.221698433157
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 53404,
+    "output_tokens": 34573
+   },
+   "trace": {
+    "n": 200,
+    "prompt_mean": 267.02,
+    "prompt_p50": 208.0,
+    "output_mean": 172.865,
+    "output_p50": 131.0,
+    "span_s": 0.0
+   }
+  }
+ ]
+}

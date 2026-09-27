@@ -1,0 +1,13 @@
+[baseline] synthetic prompt ids drawn from [2, 152064)
+[baseline] launching: /usr/local/bin/python -m pagedserve.cli serve --model models/Qwen2.5-7B-Instruct --port 8000 --host 127.0.0.1 --dtype float16 --max-model-len 4096 --device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --enable-chunked-prefill --max-num-batched-tokens 512
+[baseline] waiting for http://127.0.0.1:8000/health ...
+[baseline] pagedserve_7b_flash_chunked @ rate=8 req/s, n=200
+[load] 10/200 done     3.8s[load] 20/200 done     5.6s[load] 30/200 done     7.1s[load] 40/200 done     8.8s[load] 50/200 done    10.2s[load] 60/200 done    11.2s[load] 70/200 done    12.4s[load] 80/200 done    13.0s[load] 90/200 done    14.7s[load] 100/200 done    16.7s[load] 110/200 done    17.5s[load] 120/200 done    18.2s[load] 130/200 done    19.4s[load] 140/200 done    20.1s[load] 150/200 done    20.8s[load] 160/200 done    22.5s[load] 170/200 done    23.7s[load] 180/200 done    24.9s[load] 190/200 done    25.9s[load] 200/200 done    29.3s
+pagedserve_7b_flash_chunked@8 tok/s=  1181.2 req/s=  6.83 ttft p50/p99=   53.8/  182.5ms tpot p50/p99=  17.4/  23.1ms ok=200/200
+[baseline] pagedserve_7b_flash_chunked @ rate=16 req/s, n=200
+[load] 10/200 done     4.3s[load] 20/200 done     7.0s[load] 30/200 done     9.1s[load] 40/200 done    12.0s[load] 50/200 done    13.2s[load] 60/200 done    14.1s[load] 70/200 done    14.6s[load] 80/200 done    14.9s[load] 90/200 done    15.2s[load] 100/200 done    15.4s[load] 110/200 done    15.6s[load] 120/200 done    15.9s[load] 130/200 done    16.4s[load] 140/200 done    16.8s[load] 150/200 done    17.0s[load] 160/200 done    17.4s[load] 170/200 done    17.9s[load] 180/200 done    18.5s[load] 190/200 done    19.8s[load] 200/200 done    20.9s
+pagedserve_7b_flash_chunked@16 tok/s=  1652.9 req/s=  9.56 ttft p50/p99=  293.9/ 1626.0ms tpot p50/p99=  46.3/  99.2ms ok=200/200
+[baseline] pagedserve_7b_flash_chunked @ rate=inf req/s, n=200
+[load] 10/200 done     6.4s[load] 20/200 done     9.7s[load] 30/200 done    10.9s[load] 40/200 done    12.4s[load] 50/200 done    12.7s[load] 60/200 done    13.2s[load] 70/200 done    13.6s[load] 80/200 done    13.7s[load] 90/200 done    13.9s[load] 100/200 done    14.1s[load] 110/200 done    14.4s[load] 120/200 done    14.7s[load] 130/200 done    15.1s[load] 140/200 done    15.4s[load] 150/200 done    15.7s[load] 160/200 done    16.3s[load] 170/200 done    16.6s[load] 180/200 done    17.2s[load] 190/200 done    18.5s[load] 200/200 done    19.8s
+pagedserve_7b_flash_chunked@inf tok/s=  1746.8 req/s= 10.10 ttft p50/p99= 4737.5/12145.7ms tpot p50/p99=  57.5/ 116.7ms ok=200/200
+[baseline] wrote results/pagedserve_7b_flash_chunked.json

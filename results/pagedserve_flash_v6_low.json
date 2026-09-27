@@ -1,0 +1,171 @@
+{
+ "kind": "sweep",
+ "system": "pagedserve_flash_v6_low",
+ "server": "pagedserve",
+ "base_url": "http://127.0.0.1:8000",
+ "model": "models/Qwen2.5-0.5B-Instruct",
+ "args": {
+  "server": "pagedserve",
+  "vllm_bin": "vllm",
+  "base_url": null,
+  "model": "models/Qwen2.5-0.5B-Instruct",
+  "served_model_name": null,
+  "dtype": "float16",
+  "max_model_len": 4096,
+  "server_args": "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "rates": "1,2,4",
+  "trace_n": 200,
+  "seed": 0,
+  "shared_prefix_len": 0,
+  "max_prompt_len": 1024,
+  "max_output_len": 512,
+  "max_concurrency": null,
+  "timeout_s": 600.0,
+  "startup_timeout_s": 900.0,
+  "api_key": "x",
+  "vocab_size": null,
+  "tokenizer": null,
+  "slo_ttft_ms": null,
+  "slo_tpot_ms": null,
+  "warmup": true,
+  "save_records": false,
+  "name": "pagedserve_flash_v6_low",
+  "out_dir": "results"
+ },
+ "runs": [
+  {
+   "request_rate": 1.0,
+   "wall_s": 194.90681418776512,
+   "summary": {
+    "num_requests": 200,
+    "completed": 200,
+    "failed": 0,
+    "duration_s": 194.8773735947907,
+    "requests_per_s": 1.0262864092978838,
+    "throughput_tok_s": 177.4090001432787,
+    "total_throughput_tok_s": 451.44799715399967,
+    "ttft_ms": {
+     "mean": 16.727970894426107,
+     "p50": 16.529111191630363,
+     "p90": 18.06350275874138,
+     "p99": 18.950102068483826
+    },
+    "tpot_ms": {
+     "mean": 2.1593064772098014,
+     "p50": 2.1191618457791614,
+     "p90": 2.3660426558885557,
+     "p99": 2.7102863665450374
+    },
+    "e2e_ms": {
+     "mean": 388.50692972540855,
+     "p50": 305.0054293125868,
+     "p90": 770.6938561052083,
+     "p99": 1147.029069215059
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 53404,
+    "output_tokens": 34573
+   },
+   "trace": {
+    "n": 200,
+    "prompt_mean": 267.02,
+    "prompt_p50": 208.0,
+    "output_mean": 172.865,
+    "output_p50": 131.0,
+    "span_s": 194.46843714184
+   }
+  },
+  {
+   "request_rate": 2.0,
+   "wall_s": 97.84684277325869,
+   "summary": {
+    "num_requests": 200,
+    "completed": 200,
+    "failed": 0,
+    "duration_s": 97.80616066977382,
+    "requests_per_s": 2.044860964078394,
+    "throughput_tok_s": 353.4848905554116,
+    "total_throughput_tok_s": 899.5036651836244,
+    "ttft_ms": {
+     "mean": 16.88451061025262,
+     "p50": 16.57363958656788,
+     "p90": 18.090754374861717,
+     "p99": 24.025523625314197
+    },
+    "tpot_ms": {
+     "mean": 2.258171889396098,
+     "p50": 2.2634597313495957,
+     "p90": 2.526398203068337,
+     "p99": 2.8158060327019228
+    },
+    "e2e_ms": {
+     "mean": 405.9857803210616,
+     "p50": 312.2630789875984,
+     "p90": 797.2095940262079,
+     "p99": 1227.2072778269644
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 53404,
+    "output_tokens": 34573
+   },
+   "trace": {
+    "n": 200,
+    "prompt_mean": 267.02,
+    "prompt_p50": 208.0,
+    "output_mean": 172.865,
+    "output_p50": 131.0,
+    "span_s": 97.23421857092
+   }
+  },
+  {
+   "request_rate": 4.0,
+   "wall_s": 49.469125900417566,
+   "summary": {
+    "num_requests": 200,
+    "completed": 200,
+    "failed": 0,
+    "duration_s": 49.44166614115238,
+    "requests_per_s": 4.045171120022825,
+    "throughput_tok_s": 699.2685056627457,
+    "total_throughput_tok_s": 1779.4100981312406,
+    "ttft_ms": {
+     "mean": 16.81857055053115,
+     "p50": 16.289569437503815,
+     "p90": 18.353699147701263,
+     "p99": 27.045725360512716
+    },
+    "tpot_ms": {
+     "mean": 2.473937572645676,
+     "p50": 2.4664511014403345,
+     "p90": 2.8244017636122765,
+     "p99": 3.112730065589496
+    },
+    "e2e_ms": {
+     "mean": 442.0301401242614,
+     "p50": 340.6217209994793,
+     "p90": 850.5955819040536,
+     "p99": 1366.4085218682885
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 53404,
+    "output_tokens": 34573
+   },
+   "trace": {
+    "n": 200,
+    "prompt_mean": 267.02,
+    "prompt_p50": 208.0,
+    "output_mean": 172.865,
+    "output_p50": 131.0,
+    "span_s": 48.61710928546
+   }
+  }
+ ]
+}
