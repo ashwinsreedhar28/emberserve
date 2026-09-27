@@ -210,7 +210,10 @@ def _tuned():
                    for c in _CONFIGS_SMALL_M + _CONFIGS_LARGE_M]
 
         def prune(configs, named_args, **kwargs):
-            small = named_args["M_BUCKET"] <= 16
+            # Triton passes the positional args as `named_args` and the constexpr keyword
+            # args (M_BUCKET among them) in `kwargs`; older releases put both in named_args.
+            bucket = kwargs.get("M_BUCKET", named_args.get("M_BUCKET", 1))
+            small = bucket <= 16
             keep = [c for c in configs if (c.kwargs["BM"] == 16) == small]
             return keep or configs
 
