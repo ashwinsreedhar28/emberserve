@@ -27,8 +27,10 @@ class Tokenizer:
         return self._tok.decode(ids, skip_special_tokens=skip_special_tokens)
 
     def apply_chat_template(self, messages: list[dict], add_generation_prompt: bool = True) -> list[int]:
-        return self._tok.apply_chat_template(messages, tokenize=True,
+        # tokenize=False then encode: transformers 5.x returns an Encoding from tokenize=True.
+        text = self._tok.apply_chat_template(messages, tokenize=False,
                                              add_generation_prompt=add_generation_prompt)
+        return self._tok.encode(text, add_special_tokens=False)
 
     @property
     def raw(self):

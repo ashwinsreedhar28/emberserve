@@ -52,7 +52,9 @@ def main() -> None:
     for text in PROMPTS:
         entries.append({"kind": "text", "text": text, "prompt_ids": tok.encode(text)})
     for msgs in CHAT_PROMPTS:
-        ids = tok.apply_chat_template(msgs, tokenize=True, add_generation_prompt=True)
+        # tokenize=False + encode: transformers 5.x returns an Encoding object from tokenize=True
+        text = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+        ids = tok.encode(text, add_special_tokens=False)
         entries.append({"kind": "chat", "messages": msgs, "prompt_ids": ids})
 
     golden = []
