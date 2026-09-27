@@ -185,7 +185,11 @@ The client-side numbers include the load generator's own queueing, which at a
 200-request burst is most of the TTFT: against a fake SSE server with no model at all,
 200 simultaneous requests measure ~300 ms TTFT p50 on a 2-core box, and at
 pagedserve's saturation token rate (200 streams at 6 ms) the single-process client
-inflates TPOT by ~7%. Compare saturation TTFT server-side, not client-side.
+inflates TPOT by ~7%. Compare saturation TTFT server-side, not client-side, and run saturation sweeps with
+`--client-procs 4` (four load-generator processes, one event loop each, started on the
+same instant; the trace is dealt round-robin): against the no-model server, four
+processes measured 25k tok/s and 176 ms TTFT p50 where one process measured 19k and
+339 ms, so a single-process client caps the 0.5B saturation numbers of *both* engines.
 
 At 0.5B the same pair (`pagedserve_flash_text` / `_spec`) was a loss at every rate: the
 verification step is a mixed step (eager attention, no full-step graph) and async is off,

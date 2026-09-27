@@ -369,6 +369,38 @@ def test_http_load_generator_real_stream() -> None:
         thread.join(timeout=5)
 
 
+def test_multiprocess_client_merges_records_in_trace_order() -> None:
+    import socket
+    import threading
+
+    import uvicorn
+
+    from pagedserve.bench.load import run_http_benchmark_procs
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(_fake_app(n_chunks=4, delay_s=0.01), host="127.0.0.1",
+                                           port=port, log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{port}"
+        assert asyncio.run(wait_for_health(base, timeout_s=10))
+        trace = tiny_trace(9, rate=100.0)
+        recs = run_http_benchmark_procs(base, "m", trace, 3, timeout_s=30, tokenizer=object())
+        assert [r.request_id for r in recs] == [r.request_id for r in trace]
+        assert all(r.success and r.output_tokens == 4 for r in recs), [r.error for r in recs]
+        s = summarize(recs)
+        assert s.completed == 9 and s.tpot_ms.p50 > 0
+        # the shards started together: no request waited for a whole other shard first
+        spread = max(r.arrival_s for r in recs) - min(r.arrival_s for r in recs)
+        assert spread < 1.5, spread
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
 def test_hosted_request_omits_ignore_eos_and_uses_path():
     """`ignore_eos=None` leaves the vLLM extension out of the body and `path` picks the
     route: what `run_vllm_baseline --hosted` sends to an OpenAI-compatible API."""

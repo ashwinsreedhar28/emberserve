@@ -203,6 +203,65 @@ def parse_prometheus(text: str) -> dict[str, float]:
     return out
 
 
+def _bench_worker(conn, base_url: str, model: str, shard: list[TraceRequest], t0: float,
+                  kwargs: dict[str, Any]) -> None:
+    """One load-generator process: waits for the shared start instant, replays its shard."""
+    delay = t0 - time.perf_counter()
+    if delay > 0:
+        time.sleep(delay)
+    try:
+        recs = asyncio.run(run_http_benchmark(base_url, model, shard, progress=False, **kwargs))
+        conn.send(("ok", recs))
+    except Exception as e:  # noqa: BLE001 - reported to the parent
+        conn.send(("err", f"{type(e).__name__}: {e}"))
+    finally:
+        conn.close()
+
+
+def run_http_benchmark_procs(base_url: str, model: str, trace: list[TraceRequest], procs: int,
+                             **kwargs: Any) -> list[RequestRecord]:
+    """`run_http_benchmark` split across `procs` processes, each with its own event loop.
+
+    One Python process parsing SSE lines tops out around 20k events/s, which a 200-stream
+    burst on a fast server reaches: the client then queues, and TTFT/TPOT measure the
+    client. The trace is dealt round-robin (arrival offsets kept) and every process starts
+    at the same instant; `perf_counter` is the system monotonic clock, so the records merge.
+    `tokenizer` is not sent to the workers: real-text traces carry their text and synthetic
+    ones send ids."""
+    import multiprocessing as mp
+
+    if procs <= 1:
+        kwargs.pop("progress", None)
+        return asyncio.run(run_http_benchmark(base_url, model, trace, **kwargs))
+    kwargs = {k: v for k, v in kwargs.items() if k not in ("tokenizer", "progress", "transport")}
+    shards = [trace[i::procs] for i in range(procs)]
+    ctx = mp.get_context("spawn")
+    t0 = time.perf_counter() + 2.0  # time for the workers to import and connect
+    conns, workers = [], []
+    for shard in shards:
+        parent, child = ctx.Pipe(duplex=False)
+        w = ctx.Process(target=_bench_worker, args=(child, base_url, model, shard, t0, kwargs))
+        w.start()
+        child.close()
+        conns.append(parent)
+        workers.append(w)
+    records: list[RequestRecord] = []
+    errors: list[str] = []
+    for conn in conns:
+        kind, payload = conn.recv()
+        if kind == "ok":
+            records.extend(payload)
+        else:
+            errors.append(payload)
+    for w in workers:
+        w.join()
+    if errors:
+        raise RuntimeError("load-generator worker failed: " + "; ".join(errors))
+    order = {r.request_id: i for i, r in enumerate(trace)}
+    records.sort(key=lambda r: order.get(r.request_id, 0))
+    return records
+
+
 async def fetch_metrics(base_url: str, path: str = "/metrics",
                         transport: httpx.AsyncBaseTransport | None = None) -> dict | None:
     """The server's metrics as a flat dict: pagedserve's `/metrics` JSON as is, vLLM's

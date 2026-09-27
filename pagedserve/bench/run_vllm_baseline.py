@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from pagedserve.bench.load import fetch_metrics, run_http_benchmark, wait_for_health
+from pagedserve.bench.load import fetch_metrics, run_http_benchmark, run_http_benchmark_procs, wait_for_health
 from pagedserve.bench.metrics import records_to_json, summarize
 from pagedserve.bench.trace import generate_trace, sharegpt_trace, trace_summary
 
@@ -126,6 +126,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "--no-health and --no-ignore-eos (requires --base-url and --tokenizer)")
     p.add_argument("--completions-path", default=None,
                    help="completions route relative to --base-url (default /v1/completions)")
+    p.add_argument("--client-procs", type=int, default=1,
+                   help="split the load generator across N processes (one event loop each): a "
+                        "single process parsing SSE tops out near 20k events/s, which a 200-stream "
+                        "burst on a fast server reaches, and then TTFT/TPOT measure the client")
     p.add_argument("--no-health", dest="health", action="store_false",
                    help="do not poll <base-url>/health before the sweep")
     p.add_argument("--no-ignore-eos", dest="ignore_eos", action="store_false",
@@ -219,10 +223,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[baseline] {name} @ rate={label} req/s, n={len(trace)}", file=sys.stderr)
             before = asyncio.run(fetch_metrics(base_url)) if not args.hosted else None
             t0 = time.perf_counter()
-            records = asyncio.run(run_http_benchmark(
-                base_url, model_name, trace, max_concurrency=args.max_concurrency,
-                timeout_s=args.timeout_s, api_key=args.api_key, tokenizer=tokenizer,
-                path=path, ignore_eos=ignore_eos))
+            if args.client_procs > 1:
+                records = run_http_benchmark_procs(
+                    base_url, model_name, trace, args.client_procs,
+                    max_concurrency=args.max_concurrency, timeout_s=args.timeout_s,
+                    api_key=args.api_key, path=path, ignore_eos=ignore_eos)
+            else:
+                records = asyncio.run(run_http_benchmark(
+                    base_url, model_name, trace, max_concurrency=args.max_concurrency,
+                    timeout_s=args.timeout_s, api_key=args.api_key, tokenizer=tokenizer,
+                    path=path, ignore_eos=ignore_eos))
             wall = time.perf_counter() - t0
             summary = summarize(records, slo_ttft_ms=args.slo_ttft_ms,
                                 slo_tpot_ms=args.slo_tpot_ms)
