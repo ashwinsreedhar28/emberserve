@@ -69,6 +69,10 @@ class Request:
     # request this is 0; after prefill it equals len(prompt_token_ids); it grows by one
     # per decode step. With prefix caching it can start > 0 (cached prefix blocks).
     num_computed_tokens: int = 0
+    # Async scheduling: index of this request's row in the last launched step's sampled
+    # tensor while that token has not been read back to the host yet (None otherwise).
+    # While set, `all_token_ids` is one token short of what the cache has computed.
+    pending_row: int | None = None
     # Timestamps for TTFT/TPOT metrics.
     first_scheduled_time: float | None = None
     first_token_time: float | None = None

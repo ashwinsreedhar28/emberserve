@@ -25,14 +25,16 @@ BLOCK = 256
 
 
 def make_engine(graphs: bool, num_blocks: int = 64, max_num_seqs: int = 64,
-                max_model_len: int = 512) -> LLMEngine:
+                max_model_len: int = 512, async_scheduling: bool = False,
+                chunked: bool = False, max_batched: int = 4096) -> LLMEngine:
     model = Qwen2ForCausalLM(CFG)
     reset_parameters_deterministic(model, 0)
     model = model.to("cuda", torch.float16)
     ecfg = EngineConfig(device="cuda", dtype=torch.float16, block_size=BLOCK,
                         num_gpu_blocks=num_blocks, max_num_seqs=max_num_seqs,
-                        max_num_batched_tokens=4096, max_model_len=max_model_len,
-                        attn_backend="paged_flash", enable_cuda_graphs=graphs)
+                        max_num_batched_tokens=max_batched, max_model_len=max_model_len,
+                        attn_backend="paged_flash", enable_cuda_graphs=graphs,
+                        async_scheduling=async_scheduling, enable_chunked_prefill=chunked)
     return LLMEngine(model, CFG, ecfg, tokenizer=None)
 
 
@@ -77,3 +79,20 @@ def test_scratch_block_never_in_block_tables():
     # Padding rows of the static tables only reference the scratch block or block 0.
     assert eng.graph_runner.block_tables[:, 0].max().item() <= scratch
 
+
+
+@pytest.mark.parametrize("graphs", [False, True])
+def test_async_scheduling_matches_sync_on_cuda(graphs):
+    """The device-side token gather + pinned read-back path: same greedy tokens as the
+    synchronous engine, with and without graphs, plain and chunked, and under
+    EOS-style stop tokens (the discarded extra token never surfaces)."""
+    ps = prompts(13, seed=3)
+    ref = gen(make_engine(graphs), ps)
+    assert gen(make_engine(graphs, async_scheduling=True), ps) == ref
+    assert gen(make_engine(graphs, async_scheduling=True, chunked=True, max_batched=24), ps) == ref
+    sps = [SamplingParams.greedy(16, stop_token_ids=[r[5]]) for r in ref]
+    eng = make_engine(graphs, async_scheduling=True)
+    got = [r.output_token_ids for r in LLM.from_engine(eng).generate(ps, sps)]
+    for r, sp, g in zip(ref, sps, got):
+        assert g == r[: r.index(sp.stop_token_ids[0]) + 1]
+    assert eng.block_manager.num_free_blocks == eng.block_manager.num_blocks

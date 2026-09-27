@@ -7,6 +7,10 @@ sampled token per scheduled sequence.
     while engine.has_unfinished_requests():
         for out in engine.step():
             ...
+
+With `EngineConfig.async_scheduling` a `step()` launches the next batch and returns the
+outputs of the PREVIOUS one (see `_PendingStep`): same tokens, one step of latency inside
+the engine, and the GPU never waits for the scheduler.
 """
 
 from __future__ import annotations
@@ -53,6 +57,30 @@ class StepStats:
 # Backends whose decode step reads only static device tensors (meta.context_lens_t /
 # meta.block_tables_nonneg) and can therefore be captured into a CUDA graph.
 GRAPH_CAPABLE_BACKENDS = ("paged_flash", "paged_triton", "mla_triton")
+
+
+@dataclass
+class _PendingStep:
+    """A launched step whose sampled tokens have not been read back yet.
+
+    `sampled_dev[j]` is the token of `sampled_reqs[j]` (the rows with
+    `prefill_complete`), still on the device; on CUDA a non-blocking copy of it into a
+    pinned host buffer was enqueued right after sampling and `event` marks its completion,
+    so reading the tokens waits for that copy only, never for the step launched after it.
+    """
+
+    so: SchedulerOutput
+    sampled_reqs: list[Request]
+    sampled_dev: torch.Tensor
+    host: torch.Tensor | None = None
+    event: torch.cuda.Event | None = None
+
+    def tokens(self) -> list[int]:
+        if self.event is not None:
+            self.event.synchronize()
+            assert self.host is not None
+            return self.host[:self.sampled_dev.shape[0]].tolist()
+        return self.sampled_dev.tolist()
 
 
 def default_num_blocks(model_config: ModelConfig, engine_config: EngineConfig,
@@ -119,6 +147,19 @@ class LLMEngine:
         self._step_count = 0
         self.stats: list[StepStats] = []
         self.keep_stats = True
+        # Async scheduling state: the launched-but-unread step, and two pinned host
+        # buffers its tokens land in (alternating, so a buffer is never overwritten before
+        # the step that filled it has been resolved).
+        self.async_scheduling = bool(engine_config.async_scheduling)
+        self._pending: _PendingStep | None = None
+        self._host_bufs: list[torch.Tensor] = []
+        self._host_idx = 0
+        if self.async_scheduling and self.device.type == "cuda":
+            self._host_bufs = [torch.empty(engine_config.max_num_seqs, dtype=torch.int64,
+                                           pin_memory=True) for _ in range(2)]
+        # Whether the last `step()` call scheduled any work (distinguishes "nothing to do"
+        # from "launched, outputs come next call" for the callers' stuck-queue check).
+        self.last_step_scheduled = False
 
     # ---- construction -----------------------------------------------------------
     def _make_backend(self, num_blocks: int) -> AttentionBackend:
@@ -203,26 +244,25 @@ class LLMEngine:
             self.detok.reset(request_id)
 
     def has_unfinished_requests(self) -> bool:
-        return self.scheduler.has_unfinished_requests()
+        return self.scheduler.has_unfinished_requests() or self._pending is not None
 
     # ---- the step ---------------------------------------------------------------------
     @torch.inference_mode()
     def step(self) -> list[RequestOutput]:
+        if self.async_scheduling:
+            return self._step_async()
         sched_out = self.scheduler.schedule()
         for req in sched_out.preempted:
             # Recompute-on-readmit: the backend must drop whatever it held for this seq.
             self.backend.free_sequence(req.seq_id)
+        self.last_step_scheduled = not sched_out.is_empty
         if sched_out.is_empty:
             return []
         self._step_count += 1
 
         input_ids, meta = self._build_inputs(sched_out)
         t0 = time.perf_counter()
-        if self.graph_runner is not None and not sched_out.is_prefill:
-            logits = self.graph_runner.run(input_ids, meta)
-        else:
-            hidden = self.model(input_ids, self.backend, meta)
-            logits = self.model.compute_logits(hidden, meta)
+        logits = self._forward(input_ids, meta, sched_out)
         t1 = time.perf_counter()
         # Only rows whose prefill completes this step get a token; a partial prefill
         # chunk's last-token logits are meaningless (its next chunk continues the prompt).
@@ -238,6 +278,7 @@ class LLMEngine:
                 sampled[i] = tok
         t2 = time.perf_counter()
 
+        self._advance(sched_out)
         outputs = self._postprocess(sched_out, sampled)
         if self.keep_stats:
             st = self.block_manager.stats()
@@ -250,6 +291,93 @@ class LLMEngine:
                 num_prefill_tokens=sched_out.num_prefill_tokens,
                 num_decode_tokens=sched_out.num_decode_tokens))
         return outputs
+
+    def _forward(self, input_ids: torch.Tensor, meta: AttnMetadata,
+                 so: SchedulerOutput) -> torch.Tensor:
+        if self.graph_runner is not None and not so.is_prefill:
+            return self.graph_runner.run(input_ids, meta)
+        hidden = self.model(input_ids, self.backend, meta)
+        return self.model.compute_logits(hidden, meta)
+
+    @staticmethod
+    def _advance(so: SchedulerOutput) -> None:
+        """Account the K/V this step writes. Independent of the sampled tokens, so under
+        async scheduling it happens at launch, before the next schedule() looks."""
+        for req, qlen in zip(so.scheduled, so.query_lens, strict=True):
+            req.num_computed_tokens += qlen
+
+    def _step_async(self) -> list[RequestOutput]:
+        """Launch this step, then resolve the previous one.
+
+        Order matters: `_build_inputs` reads the previous step's sampled tensor for the
+        decode rows whose token is still on the device (`Request.pending_row`), so the
+        launch goes first, and only then are the previous tokens read back (their
+        device->host copy was enqueued before this step's kernels, so the wait is short)
+        and turned into outputs. Requests that finished meanwhile (aborted, or ended by
+        the previous step's token) are skipped when this step resolves.
+        """
+        sched_out = self.scheduler.schedule()
+        for req in sched_out.preempted:
+            self.backend.free_sequence(req.seq_id)
+        self.last_step_scheduled = not sched_out.is_empty
+        launched: _PendingStep | None = None
+        if not sched_out.is_empty:
+            self._step_count += 1
+            input_ids, meta = self._build_inputs(sched_out)
+            t0 = time.perf_counter()
+            logits = self._forward(input_ids, meta, sched_out)
+            complete = sched_out.prefill_complete
+            if all(complete):
+                reqs = list(sched_out.scheduled)
+                sampled_dev = self.sampler.sample_tensor(logits, reqs)
+            else:
+                idx = [i for i, c in enumerate(complete) if c]
+                reqs = [sched_out.scheduled[i] for i in idx]
+                sampled_dev = (self.sampler.sample_tensor(logits[idx], reqs) if idx
+                               else torch.empty(0, dtype=torch.int64, device=logits.device))
+            host = event = None
+            if self._host_bufs:
+                host = self._host_bufs[self._host_idx]
+                self._host_idx ^= 1
+                host[:sampled_dev.shape[0]].copy_(sampled_dev, non_blocking=True)
+                event = torch.cuda.Event()
+                event.record()
+            t1 = time.perf_counter()
+            self._advance(sched_out)
+            # The rows sampled here own the pending tokens now; every other scheduled row
+            # (a partial chunk) has nothing outstanding.
+            for req in sched_out.scheduled:
+                req.pending_row = None
+            for j, req in enumerate(reqs):
+                req.pending_row = j
+            launched = _PendingStep(sched_out, reqs, sampled_dev, host, event)
+            if self.keep_stats:
+                st = self.block_manager.stats()
+                self.stats.append(StepStats(
+                    step=self._step_count, is_prefill=sched_out.is_prefill,
+                    num_seqs=len(sched_out.scheduled), num_tokens=sched_out.num_tokens,
+                    num_preempted=len(sched_out.preempted), forward_ms=(t1 - t0) * 1e3,
+                    sample_ms=0.0, kv_utilization=st.utilization, num_free_blocks=st.num_free,
+                    num_prefill_tokens=sched_out.num_prefill_tokens,
+                    num_decode_tokens=sched_out.num_decode_tokens))
+        outputs: list[RequestOutput] = []
+        if self._pending is not None:
+            # Rows re-sampled by the step just launched keep their (new) pending_row.
+            keep = {id(r) for r in launched.sampled_reqs} if launched is not None else set()
+            outputs = self._resolve(self._pending, keep)
+        self._pending = launched
+        return outputs
+
+    def _resolve(self, pending: _PendingStep, keep: set[int]) -> list[RequestOutput]:
+        tokens = pending.tokens()
+        so = pending.so
+        sampled: list[int | None] = [None] * len(so.scheduled)
+        by_id = {id(r): i for i, r in enumerate(so.scheduled)}
+        for req, tok in zip(pending.sampled_reqs, tokens, strict=True):
+            sampled[by_id[id(req)]] = tok
+            if id(req) not in keep:
+                req.pending_row = None
+        return self._postprocess(so, sampled)
 
     def _build_inputs(self, so: SchedulerOutput) -> tuple[torch.Tensor, AttnMetadata]:
         """Per-step tensors in two host->device copies (one int64, one int32) instead of one
@@ -267,11 +395,20 @@ class LLMEngine:
         context_lens: list[int] = []
         cu = [0]
         tables: list[list[int]] = []
+        fill_rows: list[int] = []  # packed rows whose token is still on the device
+        fill_src: list[int] = []  # ... and its row in the pending step's sampled tensor
         for r, start, qlen in zip(reqs, starts, so.query_lens, strict=True):
             end = start + qlen
-            ids = r.all_token_ids[start:end]
-            assert len(ids) == qlen, (len(ids), qlen, r.request_id)
-            tokens.extend(ids)
+            known = r.all_token_ids
+            if start == len(known):  # async: the token at `start` was sampled last step
+                assert qlen == 1 and r.pending_row is not None, (qlen, r.pending_row, r.request_id)
+                fill_rows.append(len(tokens))
+                fill_src.append(r.pending_row)
+                tokens.append(0)
+            else:
+                ids = known[start:end]
+                assert len(ids) == qlen, (len(ids), qlen, r.request_id)
+                tokens.extend(ids)
             context_lens.append(end)
             cu.append(cu[-1] + qlen)
             if qlen == 1:
@@ -288,10 +425,17 @@ class LLMEngine:
         n, b = len(tokens), len(reqs)
         dev = self.device
         pin = dev.type == "cuda"
-        # int64 block: [tokens | positions | slots]
-        i64 = torch.tensor(tokens + positions + slots, dtype=torch.int64, pin_memory=pin)
+        # int64 block: [tokens | positions | slots | fill rows | fill sources]
+        i64 = torch.tensor(tokens + positions + slots + fill_rows + fill_src, dtype=torch.int64,
+                           pin_memory=pin)
         i64 = i64.to(dev, non_blocking=pin)
         input_ids, pos = i64[:n], i64[n:2 * n]
+        if fill_rows:
+            assert self._pending is not None
+            m = len(fill_rows)
+            o = 2 * n + len(slots)
+            input_ids.index_copy_(0, i64[o:o + m],
+                                  self._pending.sampled_dev.index_select(0, i64[o + m:o + 2 * m]))
         # int32 block: [context_lens | cu_seqlens | block tables (padded with -1)]
         max_blocks = max((len(t) for t in tables), default=0) if paged else 0
         flat32 = context_lens + cu
@@ -314,18 +458,18 @@ class LLMEngine:
         return input_ids, meta
 
     def _postprocess(self, so: SchedulerOutput, sampled: list[int | None]) -> list[RequestOutput]:
-        """Advance every scheduled request; append/stop-check only the sampled rows.
+        """Append/stop-check the sampled rows (`_advance` has already accounted the K/V).
         `sampled[i]` is None exactly where `so.prefill_complete[i]` is False. Detokenization
         for all sampled rows happens in one batched call."""
         now = time.perf_counter()
         emitted: list[tuple[Request, int, FinishReason | None]] = []
-        for req, qlen, tok, done in zip(so.scheduled, so.query_lens, sampled,
-                                        so.prefill_complete, strict=True):
-            req.num_computed_tokens += qlen
+        for req, tok, done in zip(so.scheduled, sampled, so.prefill_complete, strict=True):
             if not done:
                 assert tok is None
                 continue  # partial prefill chunk: K/V written, nothing to emit yet
             assert tok is not None
+            if req.is_finished:
+                continue  # async: aborted, or ended by its previous token, after this launch
             req.append_output(tok)
             if req.first_token_time is None:
                 req.first_token_time = now
@@ -374,6 +518,7 @@ class LLMEngine:
 
     def reset(self) -> None:
         """Drop all requests and cache state (used between benchmark runs)."""
+        self._pending = None
         for rid in [r.request_id for r in list(self.scheduler.running) + list(self.scheduler.waiting)]:
             self.abort_request(rid)
         self.backend.reset()

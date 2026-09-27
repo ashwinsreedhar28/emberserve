@@ -137,7 +137,7 @@ def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connectio
                                f"engine step failed: {type(exc).__name__}: {exc}"))
                 continue
             if not outputs:
-                if idle_before and waiting_before:
+                if idle_before and waiting_before and not engine.last_step_scheduled:
                     stuck = sched.waiting[0].request_id
                     engine.abort_request(stuck)
                     out_conn.send(("failed", [stuck],

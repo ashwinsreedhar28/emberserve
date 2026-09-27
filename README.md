@@ -88,6 +88,18 @@ step, and prompts longer than the budget are accepted. A partial chunk writes K/
 nothing; the token is sampled only on the step that completes the prompt
 (`SchedulerOutput.prefill_complete`). Chunked outputs equal unchunked outputs; also a test.
 
+With `--async-scheduling` (vLLM v1's trick) the engine launches step N+1 before it has read
+step N's sampled tokens back from the GPU: the scheduler assumes every sampled request
+advanced by one token, decode rows whose token is still on the device take it from the
+previous step's sampled tensor with a device-side gather, and the tokens come back through
+a pinned buffer whose copy was enqueued before step N+1's kernels, so waiting for them never
+waits for step N+1. The CPU work of a step (schedule, pack inputs, launch, detokenize)
+overlaps the GPU work of the previous one and the device never idles between steps. A
+request ending on EOS computes one extra token that is discarded; length limits are
+anticipated (`Scheduler._finishes_on_resolve`) so they waste nothing. Outputs of a step are
+returned by the next `step()` call; tokens are identical to the synchronous engine's,
+including under preemption, chunked prefill, prefix caching, seeded sampling and aborts.
+
 ### Paged KV cache
 
 Each layer's cache is one tensor `[num_blocks, block_size, Hkv, D]` for K and one for V.
@@ -470,7 +482,7 @@ results/               every JSON the tables above were built from
 
 ## Roadmap
 
-* Async scheduling in the engine core (overlap step N+1's CPU work with step N on the GPU).
+* Async scheduling: implemented (`--async-scheduling`, off by default); A100 sweep vs v6 pending, then the CUDA default.
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Piecewise CUDA graphs so mixed (chunked-prefill) steps are captured too; chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.

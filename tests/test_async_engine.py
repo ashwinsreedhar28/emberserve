@@ -121,3 +121,21 @@ async def test_stop_is_clean() -> None:
         await collect(aeng, "y", prompts(1)[0], SamplingParams.greedy(4))
     aeng.stop()  # idempotent
     assert aeng.metrics()["requests_running"] == 0
+
+
+async def test_async_scheduling_in_process_matches_offline() -> None:
+    from tests.test_async_scheduling import make_engine as make_async_engine
+
+    ps = prompts(8, seed=5)
+    sp = SamplingParams.greedy(12, ignore_eos=True)
+    ref = LLM.from_engine(install(make_engine())).generate(ps, sp)
+    aeng = AsyncLLMEngine(install(make_async_engine(True)))
+    aeng.start()
+    try:
+        outs = await asyncio.gather(*(collect(aeng, f"r{i}", p, sp) for i, p in enumerate(ps)))
+    finally:
+        aeng.stop()
+    for r, chunks in zip(ref, outs, strict=True):
+        assert [c.new_token_ids[0] for c in chunks] == r.output_token_ids
+        assert chunks[-1].finished and chunks[-1].output_token_ids == r.output_token_ids
+    assert aeng.metrics()["requests_finished_total"] == 8

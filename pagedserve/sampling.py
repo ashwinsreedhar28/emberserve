@@ -103,6 +103,12 @@ class Sampler:
 
     @torch.no_grad()
     def sample(self, logits: torch.Tensor, requests: list[Request]) -> list[int]:
+        """Token per row, on the host: one device->host transfer per step."""
+        return self.sample_tensor(logits, requests).tolist()
+
+    def sample_tensor(self, logits: torch.Tensor, requests: list[Request]) -> torch.Tensor:
+        """Token per row as an int64 tensor on the device; no sync (async scheduling reads
+        it back later, after the next step has been launched)."""
         assert logits.dim() == 2 and logits.shape[0] == len(requests), \
             f"logits {tuple(logits.shape)} vs {len(requests)} requests"
         logits = logits.to(self.device).float()
@@ -114,7 +120,7 @@ class Sampler:
                 logits[i] = apply_repetition_penalty(logits[i], req.all_token_ids,
                                                      p.repetition_penalty)
         if all(p.is_greedy for p in params):
-            return torch.argmax(logits, dim=-1).tolist()  # the whole step: one transfer
+            return torch.argmax(logits, dim=-1)  # the whole step in one tensor
 
         n = len(requests)
         tokens = torch.empty(n, dtype=torch.long, device=logits.device)
@@ -135,7 +141,7 @@ class Sampler:
         draws = [torch.multinomial(probs[j], 1, generator=get_generator(requests[i], self.device))
                  for j, i in enumerate(rand)]
         tokens[r_idx] = torch.cat(draws)
-        return tokens.tolist()
+        return tokens
 
 
 def check_stop(request: Request, token_id: int, eos_token_id: int | frozenset[int] | set[int],

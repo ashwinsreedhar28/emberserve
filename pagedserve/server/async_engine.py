@@ -239,9 +239,11 @@ class AsyncLLMEngine:
             self._snapshot = self._take_snapshot()
             return
         if not outputs:
-            if idle_before and waiting_before:
+            if idle_before and waiting_before and not self.engine.last_step_scheduled:
                 # With nothing running every block was free, yet the head of the queue could
                 # not be admitted (prompt larger than the KV cache): it would spin forever.
+                # (Under async scheduling a launched step returns its outputs next call, so
+                # an empty result right after a launch is not that.)
                 stuck = sched.waiting[0].request_id
                 self.engine.abort_request(stuck)
                 self._post(self._fail, [stuck], ValueError(

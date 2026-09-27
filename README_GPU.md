@@ -39,6 +39,21 @@ a tighter TPOT tail at ~6% throughput). Both were measured on the A100: the proc
 took Qwen2.5-0.5B from 10.6k to 13.9k tok/s at saturation, chunked prefill took Qwen2.5-7B
 from 89% to 97% of vLLM.
 
+### Async scheduling A/B
+
+`--async-scheduling` overlaps each step's CPU work with the previous step's GPU work
+(README, "Scheduler"). It is off by default until the A100 sweep says otherwise:
+
+```bash
+python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 \
+  --max-model-len 4096 --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --async-scheduling" \
+  --rates 1,2,4,8,16,inf --trace-n 200 --name pagedserve_flash_v7
+```
+
+Compare with `results/pagedserve_flash_v6.json` (13,945 tok/s at saturation). The tiny-model
+GPU tests (`tests/test_cuda_graphs_gpu.py::test_async_scheduling_matches_sync_on_cuda`)
+check token parity with and without graphs first.
+
 ## DeepSeek / Moonlight checkpoints
 
 `scripts/download_model.py` fetches the repo's own tokenizer/modeling code and tiktoken

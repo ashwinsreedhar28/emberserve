@@ -255,6 +255,15 @@ class EngineConfig:
     # so a long prompt is split across steps instead of stalling every decode for one
     # long prefill step. Prompts longer than the budget are accepted when this is on.
     enable_chunked_prefill: bool = False
+    # Async scheduling (vLLM v1): the engine launches step N+1 (schedule, build inputs,
+    # forward, sample) before it has read step N's sampled tokens back from the device.
+    # Decode rows whose token is still on the device take it from the previous step's
+    # sampled tensor with a device-side gather, so the CPU work of one step overlaps the
+    # GPU work of the previous one and the device never waits for Python between steps.
+    # A request that finishes on EOS computes one extra (discarded) token; length limits
+    # are anticipated so they waste nothing. Outputs of a step come back from the NEXT
+    # `step()` call.
+    async_scheduling: bool = False
     seed: int = 0
     extra: dict = field(default_factory=dict)
 

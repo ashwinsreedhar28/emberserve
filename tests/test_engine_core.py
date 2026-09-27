@@ -127,3 +127,27 @@ async def test_served_over_http_with_engine_process() -> None:
             assert body["choices"][0]["finish_reason"] == "length"
             m = (await http.get("/metrics")).json()
             assert m["engine_running"] and m["requests_finished_total"] == 1
+
+
+async def test_async_scheduling_through_the_core_process() -> None:
+    """The one-step-late outputs of async scheduling flow through the core process and the
+    client unchanged; stop tokens end streams exactly where the sync engine does."""
+    ps = prompts(6, seed=8)
+    sp = SamplingParams.greedy(10, ignore_eos=True)
+    ref = LLM.from_engine(install(make_engine())).generate(ps, sp)
+    stop_sps = [SamplingParams.greedy(10, stop_token_ids=[r.output_token_ids[4]]) for r in ref]
+    c = AsyncEngineCoreClient(spec(async_scheduling=True), StubTokenizer())
+    c.start()
+    try:
+        outs = await asyncio.gather(*(collect(c, f"r{i}", p, sp) for i, p in enumerate(ps)))
+        stopped = await asyncio.gather(*(collect(c, f"s{i}", p, s) for i, (p, s) in enumerate(zip(ps, stop_sps))))
+    finally:
+        c.stop()
+    for r, chunks in zip(ref, outs, strict=True):
+        assert [ch.new_token_ids[0] for ch in chunks] == r.output_token_ids
+        assert chunks[-1].finished and chunks[-1].finish_reason is FinishReason.LENGTH
+    for r, sp_stop, chunks in zip(ref, stop_sps, stopped, strict=True):
+        stop = sp_stop.stop_token_ids[0]
+        expect = r.output_token_ids[: r.output_token_ids.index(stop) + 1]
+        assert [ch.new_token_ids[0] for ch in chunks] == expect
+        assert chunks[-1].finish_reason is FinishReason.STOP

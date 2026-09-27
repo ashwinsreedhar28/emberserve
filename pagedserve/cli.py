@@ -30,6 +30,12 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
                         "becomes the per-step cap. Default: on for --device cuda (with a 2048-token "
                         "cap unless --max-num-batched-tokens is given), off otherwise")
     p.add_argument("--no-chunked-prefill", dest="enable_chunked_prefill", action="store_false")
+    p.add_argument("--async-scheduling", dest="async_scheduling", action="store_true", default=False,
+                   help="launch step N+1 before reading step N's tokens back (vLLM v1 style): the "
+                        "CPU work of a step overlaps the GPU work of the previous one. Outputs of "
+                        "a step arrive one step() later; EOS-ended requests compute one discarded "
+                        "token. Default: off")
+    p.add_argument("--no-async-scheduling", dest="async_scheduling", action="store_false")
 
 
 def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
@@ -47,7 +53,8 @@ def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
                         max_model_len=args.max_model_len, attn_backend=args.attn_backend,
                         enable_prefix_caching=args.enable_prefix_caching,
                         enable_cuda_graphs=args.enable_cuda_graphs,
-                        enable_chunked_prefill=chunked)
+                        enable_chunked_prefill=chunked,
+                        async_scheduling=bool(getattr(args, "async_scheduling", False)))
 
 
 def build_parser() -> argparse.ArgumentParser:

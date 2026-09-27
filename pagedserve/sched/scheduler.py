@@ -191,13 +191,28 @@ class Scheduler:
             budget += query_len
         return SchedulerOutput(batch, True, query_lens)
 
+    def _finishes_on_resolve(self, req: Request) -> bool:
+        """Async scheduling: True when the token this request is still waiting to read back
+        will end it on a length limit (`check_stop`'s rules with that token counted), so
+        scheduling another decode slot for it would only compute a discarded token. EOS
+        cannot be anticipated (the token is on the device), so EOS-ended requests do
+        compute one extra token; length-ended ones never do."""
+        if req.pending_row is None:
+            return False
+        return (req.num_output_tokens + 1 >= req.sampling_params.max_tokens
+                or req.num_tokens + 1 >= self.config.max_model_len)
+
     def _schedule_decode(self) -> SchedulerOutput:
         """Reserve one slot per running request, preempting the youngest on overflow."""
         bm = self.block_manager
         preempted: list[Request] = []
+        scheduled: list[Request] = []
         i = 0
         while i < len(self.running):
             req = self.running[i]
+            if self._finishes_on_resolve(req):
+                i += 1
+                continue
             try:
                 bm.append_slots(req.seq_id, 1)
             except OutOfBlocksError:
@@ -206,9 +221,9 @@ class Scheduler:
                 if victim is req:
                     break  # nothing younger left to evict; `req` waits for re-prefill
                 continue  # retry the same request with the freed blocks
+            scheduled.append(req)
             i += 1
-        # Every request still in `running` has its slot; victims were removed.
-        scheduled = list(self.running)
+        # Every scheduled request has its slot; victims were removed from `running`.
         return SchedulerOutput(scheduled, False, [1] * len(scheduled), preempted,
                                num_decode_tokens=len(scheduled))
 
@@ -244,7 +259,7 @@ class Scheduler:
         i = 0
         while i < len(self.running):
             req = self.running[i]
-            if self._prefill_remaining(req) > 0:
+            if self._prefill_remaining(req) > 0 or self._finishes_on_resolve(req):
                 i += 1
                 continue
             try:
