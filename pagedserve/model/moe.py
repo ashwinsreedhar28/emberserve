@@ -20,57 +20,14 @@ a per-expert loop over the experts that received tokens (gather rows, one fused 
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import torch
 import torch.nn.functional as F
 from torch import nn
 
+from pagedserve.config import MoEConfig
 from pagedserve.model import ops
 
-
-@dataclass(frozen=True)
-class MoEConfig:
-    hidden_size: int
-    moe_intermediate_size: int
-    n_routed_experts: int
-    num_experts_per_tok: int
-    n_shared_experts: int = 0
-    n_group: int = 1
-    topk_group: int = 1
-    norm_topk_prob: bool = True
-    routed_scaling_factor: float = 1.0
-    scoring_func: str = "sigmoid"
-    topk_method: str = "noaux_tc"
-
-    def __post_init__(self) -> None:
-        if self.scoring_func != "sigmoid":
-            raise ValueError(f"unsupported scoring_func {self.scoring_func!r} (sigmoid only)")
-        if self.topk_method != "noaux_tc":
-            raise ValueError(f"unsupported topk_method {self.topk_method!r} (noaux_tc only)")
-        if self.n_routed_experts % self.n_group:
-            raise ValueError("n_routed_experts must be divisible by n_group")
-        if not 1 <= self.topk_group <= self.n_group:
-            raise ValueError("topk_group must be in [1, n_group]")
-        if not 1 <= self.num_experts_per_tok <= self.n_routed_experts:
-            raise ValueError("num_experts_per_tok must be in [1, n_routed_experts]")
-
-    @classmethod
-    def from_hf(cls, cfg: dict) -> "MoEConfig":
-        """From an HF `config.json` dict (DeepSeek-V2/V3 field names)."""
-        return cls(
-            hidden_size=cfg["hidden_size"],
-            moe_intermediate_size=cfg["moe_intermediate_size"],
-            n_routed_experts=cfg["n_routed_experts"],
-            num_experts_per_tok=cfg["num_experts_per_tok"],
-            n_shared_experts=cfg.get("n_shared_experts", 0) or 0,
-            n_group=cfg.get("n_group", 1) or 1,
-            topk_group=cfg.get("topk_group", 1) or 1,
-            norm_topk_prob=cfg.get("norm_topk_prob", True),
-            routed_scaling_factor=float(cfg.get("routed_scaling_factor", 1.0)),
-            scoring_func=cfg.get("scoring_func", "sigmoid"),
-            topk_method=cfg.get("topk_method", "noaux_tc"),
-        )
+__all__ = ["DeepseekMoE", "MoEConfig", "MoEGate", "SharedExperts", "moe_forward_reference"]
 
 
 class MoEGate(nn.Module):

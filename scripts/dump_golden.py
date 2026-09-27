@@ -40,12 +40,15 @@ def main() -> None:
     ap.add_argument("--out", default="golden")
     ap.add_argument("--max-new-tokens", type=int, default=MAX_NEW_TOKENS)
     ap.add_argument("--device", default="cpu", help="cpu (default) or cuda; fp32 either way")
+    ap.add_argument("--trust-remote-code", action="store_true",
+                    help="for checkpoints that ship their own modeling code (DeepSeek-V2/V3, Moonlight)")
     args = ap.parse_args()
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     torch.manual_seed(0)
-    tok = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float32).eval().to(args.device)
+    tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=args.trust_remote_code)
+    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float32,
+                                                 trust_remote_code=args.trust_remote_code).eval().to(args.device)
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
 

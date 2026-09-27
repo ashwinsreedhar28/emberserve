@@ -40,8 +40,10 @@ _EXPERT_RE = re.compile(r"^(?P<prefix>.*\.mlp)\.experts\.(?P<e>\d+)\.(?P<part>ga
 Shard = str | tuple[str, int, str] | None
 
 
-def hf_to_local(name: str) -> tuple[str, Shard] | None:
-    """Map an HF checkpoint key to `(state_dict key, shard)`. None = skip the tensor."""
+def hf_to_local(name: str, model_type: str = "qwen2") -> tuple[str, Shard] | None:
+    """Map an HF checkpoint key to `(state_dict key, shard)`. None = skip the tensor.
+    DeepSeek's latent attention keeps its own projection names (`q_proj` there is not a
+    third of a fused qkv), so the attention fusion applies to the qwen2/llama families only."""
     if name.endswith(_SKIP_SUFFIXES):
         return None
     m = _EXPERT_RE.match(name)
@@ -50,7 +52,10 @@ def hf_to_local(name: str) -> tuple[str, Shard] | None:
         stacked = "experts_down" if part == "down" else "experts_gate_up"
         return f"{m['prefix']}.{stacked}", ("expert", e, part)
     head, _, leaf = name.rpartition(".")  # leaf: weight | bias
+    fuse_attention = not model_type.startswith("deepseek")
     for hf_suffix, (local_suffix, shard) in _FUSED.items():
+        if not fuse_attention and hf_suffix.startswith("self_attn."):
+            continue
         if head.endswith(hf_suffix):
             return f"{head[:-len(hf_suffix)]}{local_suffix}.{leaf}", shard
     return name, None
@@ -144,7 +149,7 @@ def load_hf_weights(model: nn.Module, model_dir: str | os.PathLike,
         for path in files:
             with safe_open(str(path), framework="pt", device="cpu") as f:
                 for hf_name in f.keys():
-                    m = hf_to_local(hf_name)
+                    m = hf_to_local(hf_name, getattr(config, "model_type", "qwen2"))
                     if m is None:
                         continue
                     local, shard = m
@@ -169,10 +174,19 @@ def load_hf_weights(model: nn.Module, model_dir: str | os.PathLike,
         raise KeyError(f"parameters never loaded from {model_dir}: {missing}")
 
 
+def build_model(config: ModelConfig) -> nn.Module:
+    """The module for a config's family: DeepSeek (MLA + MoE) or the Qwen2/Llama block."""
+    if config.mla is not None:
+        from pagedserve.model.deepseek import DeepseekForCausalLM
+
+        return DeepseekForCausalLM(config)
+    return Qwen2ForCausalLM(config)
+
+
 def load_model(model_dir: str | os.PathLike, device: torch.device | str = "cpu",
-               dtype: torch.dtype = torch.float32) -> Qwen2ForCausalLM:
-    """Build a `Qwen2ForCausalLM` from an HF snapshot directory, weights loaded, in eval mode."""
+               dtype: torch.dtype = torch.float32) -> nn.Module:
+    """Build the model for an HF snapshot directory, weights loaded, in eval mode."""
     config = ModelConfig.from_hf_dir(model_dir)
-    model = Qwen2ForCausalLM(config).to(device=device, dtype=dtype)
+    model = build_model(config).to(device=device, dtype=dtype)
     load_hf_weights(model, model_dir, dtype=dtype, device=device)
     return model.eval()

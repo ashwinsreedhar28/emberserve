@@ -123,6 +123,16 @@ class LLMEngine:
     # ---- construction -----------------------------------------------------------
     def _make_backend(self, num_blocks: int) -> AttentionBackend:
         name = self.config.attn_backend
+        if self.model_config.mla is not None:
+            from pagedserve.attn.mla_torch import MLATorchBackend
+            from pagedserve.kv.cache import PagedLatentCache
+
+            if name not in ("mla_torch", "naive", "paged_torch"):
+                raise ValueError(f"attn_backend {name!r} does not support latent attention yet; "
+                                 f"use mla_torch")
+            cache = PagedLatentCache(self.model_config, num_blocks, self.config.block_size,
+                                     self.device, self.dtype)
+            return MLATorchBackend(self.model_config, cache)  # type: ignore[return-value]
         if name == "naive":
             return NaiveAttentionBackend(self.model_config, self.device, self.dtype)
         if name == "paged_torch":
@@ -242,7 +252,7 @@ class LLMEngine:
         reqs = so.scheduled
         bm = self.block_manager
         bs = self.config.block_size
-        paged = self.config.attn_backend != "naive"
+        paged = self.config.attn_backend != "naive" or self.model_config.mla is not None
         seq_ids = [r.seq_id for r in reqs]
         starts = [r.num_computed_tokens for r in reqs]
         tokens: list[int] = []

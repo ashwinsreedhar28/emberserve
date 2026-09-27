@@ -116,3 +116,50 @@ class PagedKVCache:
                 f"block_size={self.block_size}, kv_heads={self.num_kv_heads}, "
                 f"head_dim={self.head_dim}, dtype={self.dtype}, device={self.device}, "
                 f"bytes={self.memory_bytes()})")
+
+
+class PagedLatentCache:
+    """Paged storage for multi-head latent attention: one row per token per layer holding
+    the compressed KV latent and the shared rope key (`kv_lora_rank + qk_rope_head_dim`,
+    576 for DeepSeek-V2-Lite and Moonlight) instead of K and V per head. Same block /
+    slot geometry as `PagedKVCache`, so the BlockManager and block tables are unchanged."""
+
+    def __init__(self, config: ModelConfig, num_blocks: int, block_size: int,
+                 device: str | torch.device, dtype: torch.dtype) -> None:
+        assert config.mla is not None, "PagedLatentCache needs an MLA model config"
+        assert num_blocks > 0 and block_size > 0, (num_blocks, block_size)
+        self.config = config
+        self.num_blocks = num_blocks
+        self.block_size = block_size
+        self.device = torch.device(device)
+        self.dtype = dtype
+        self.num_layers = config.num_hidden_layers
+        self.latent_dim = config.mla.latent_dim
+        shape = (num_blocks, block_size, self.latent_dim)
+        self.latent: list[Tensor] = [torch.zeros(shape, device=self.device, dtype=dtype)
+                                     for _ in range(self.num_layers)]
+
+    @property
+    def num_slots(self) -> int:
+        return self.num_blocks * self.block_size
+
+    def blocks_needed(self, num_tokens: int) -> int:
+        return (num_tokens + self.block_size - 1) // self.block_size
+
+    def memory_bytes(self) -> int:
+        return sum(t.numel() * t.element_size() for t in self.latent)
+
+    def write(self, layer_idx: int, latent: Tensor, slot_mapping: Tensor) -> None:
+        """Scatter this step's latent rows ([N, latent_dim]) into physical slots ([N])."""
+        slots = slot_mapping.to(device=self.device, dtype=torch.long)
+        assert tuple(latent.shape) == (slots.numel(), self.latent_dim), latent.shape
+        self.latent[layer_idx].view(self.num_slots, self.latent_dim).index_copy_(
+            0, slots, latent.to(self.dtype))
+
+    def gather(self, layer_idx: int, block_table: list[int] | Tensor, context_len: int) -> Tensor:
+        """One sequence's latent rows in logical order: [ctx, latent_dim]."""
+        n = self.blocks_needed(context_len)
+        table = torch.as_tensor(block_table, dtype=torch.long, device=self.device)[:n]
+        assert table.numel() == n and bool((table >= 0).all()), "block table too short"
+        blocks = self.latent[layer_idx][table]  # [n, block_size, L]
+        return blocks.reshape(-1, self.latent_dim)[:context_len]

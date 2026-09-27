@@ -17,6 +17,76 @@ import torch
 
 
 @dataclass(frozen=True)
+class MoEConfig:
+    hidden_size: int
+    moe_intermediate_size: int
+    n_routed_experts: int
+    num_experts_per_tok: int
+    n_shared_experts: int = 0
+    n_group: int = 1
+    topk_group: int = 1
+    norm_topk_prob: bool = True
+    routed_scaling_factor: float = 1.0
+    scoring_func: str = "sigmoid"
+    topk_method: str = "noaux_tc"
+
+    def __post_init__(self) -> None:
+        if self.scoring_func != "sigmoid":
+            raise ValueError(f"unsupported scoring_func {self.scoring_func!r} (sigmoid only)")
+        if self.topk_method != "noaux_tc":
+            raise ValueError(f"unsupported topk_method {self.topk_method!r} (noaux_tc only)")
+        if self.n_routed_experts % self.n_group:
+            raise ValueError("n_routed_experts must be divisible by n_group")
+        if not 1 <= self.topk_group <= self.n_group:
+            raise ValueError("topk_group must be in [1, n_group]")
+        if not 1 <= self.num_experts_per_tok <= self.n_routed_experts:
+            raise ValueError("num_experts_per_tok must be in [1, n_routed_experts]")
+
+    @classmethod
+    def from_hf(cls, cfg: dict) -> "MoEConfig":
+        """From an HF `config.json` dict (DeepSeek-V2/V3 field names)."""
+        return cls(
+            hidden_size=cfg["hidden_size"],
+            moe_intermediate_size=cfg["moe_intermediate_size"],
+            n_routed_experts=cfg["n_routed_experts"],
+            num_experts_per_tok=cfg["num_experts_per_tok"],
+            n_shared_experts=cfg.get("n_shared_experts", 0) or 0,
+            n_group=cfg.get("n_group", 1) or 1,
+            topk_group=cfg.get("topk_group", 1) or 1,
+            norm_topk_prob=cfg.get("norm_topk_prob", True),
+            routed_scaling_factor=float(cfg.get("routed_scaling_factor", 1.0)),
+            scoring_func=cfg.get("scoring_func", "sigmoid"),
+            topk_method=cfg.get("topk_method", "noaux_tc"),
+        )
+
+
+@dataclass(frozen=True)
+class MLAConfig:
+    """Multi-head latent attention geometry (DeepSeek-V2/V3, Moonshot Moonlight)."""
+
+    q_lora_rank: int | None
+    kv_lora_rank: int
+    qk_nope_head_dim: int
+    qk_rope_head_dim: int
+    v_head_dim: int
+
+    @property
+    def qk_head_dim(self) -> int:
+        return self.qk_nope_head_dim + self.qk_rope_head_dim
+
+    @property
+    def latent_dim(self) -> int:
+        """What the cache stores per token: the compressed KV latent plus the shared rope key."""
+        return self.kv_lora_rank + self.qk_rope_head_dim
+
+    @classmethod
+    def from_hf(cls, cfg: dict) -> "MLAConfig":
+        return cls(q_lora_rank=cfg.get("q_lora_rank"), kv_lora_rank=cfg["kv_lora_rank"],
+                   qk_nope_head_dim=cfg["qk_nope_head_dim"], qk_rope_head_dim=cfg["qk_rope_head_dim"],
+                   v_head_dim=cfg["v_head_dim"])
+
+
+@dataclass(frozen=True)
 class ModelConfig:
     vocab_size: int = 151936
     hidden_size: int = 896
@@ -37,8 +107,17 @@ class ModelConfig:
     eos_token_ids: tuple[int, ...] = ()
     # HF `rope_scaling` (e.g. Llama 3's {"rope_type": "llama3", "factor": 32, ...}); None = plain.
     rope_scaling: dict | None = None
+    # DeepSeek-V2/V3 family: latent attention and mixture-of-experts layers.
+    mla: MLAConfig | None = None
+    moe: MoEConfig | None = None
+    first_k_dense_replace: int = 0  # the first k layers use the dense MLP
+    moe_layer_freq: int = 1  # every k-th layer (past the dense ones) is MoE
 
-    SUPPORTED_MODEL_TYPES = ("qwen2", "llama", "mistral")
+    SUPPORTED_MODEL_TYPES = ("qwen2", "llama", "mistral", "deepseek_v2", "deepseek_v3")
+
+    def is_moe_layer(self, layer_idx: int) -> bool:
+        return (self.moe is not None and layer_idx >= self.first_k_dense_replace
+                and layer_idx % self.moe_layer_freq == 0)
 
     def __post_init__(self) -> None:
         if not self.eos_token_ids:  # normalize so configs compare equal however they were built
@@ -58,8 +137,11 @@ class ModelConfig:
         return self.num_attention_heads // self.num_key_value_heads
 
     def kv_bytes_per_token(self, dtype: torch.dtype) -> int:
-        """Bytes of K+V stored per token across all layers."""
+        """Bytes of cache stored per token across all layers: K+V per KV head, or, with
+        MLA, one latent row (`kv_lora_rank + qk_rope_head_dim`) per layer."""
         esize = torch.tensor([], dtype=dtype).element_size()
+        if self.mla is not None:
+            return self.num_hidden_layers * self.mla.latent_dim * esize
         return 2 * self.num_hidden_layers * self.num_key_value_heads * self.head_dim * esize
 
     @classmethod
@@ -74,7 +156,9 @@ class ModelConfig:
             raise ValueError("sliding-window attention is not supported (set for this checkpoint)")
         if cfg.get("mlp_bias", False):
             raise ValueError("mlp_bias=True is not supported")
-        if cfg.get("head_dim") not in (None, cfg["hidden_size"] // cfg["num_attention_heads"]):
+        is_deepseek = model_type in ("deepseek_v2", "deepseek_v3")
+        if not is_deepseek and cfg.get("head_dim") not in (
+                None, cfg["hidden_size"] // cfg["num_attention_heads"]):
             raise ValueError("head_dim != hidden_size / num_attention_heads is not supported")
         eos = cfg.get("eos_token_id")
         if isinstance(eos, list):
@@ -92,6 +176,15 @@ class ModelConfig:
                 raise ValueError(f"unsupported rope_scaling type {kind!r}")
             if kind == "default":
                 rope_scaling = None
+        mla = moe = None
+        first_k_dense = 0
+        moe_freq = 1
+        if is_deepseek:
+            mla = MLAConfig.from_hf(cfg)
+            if cfg.get("n_routed_experts"):
+                moe = MoEConfig.from_hf(cfg)
+                first_k_dense = int(cfg.get("first_k_dense_replace", 0))
+                moe_freq = int(cfg.get("moe_layer_freq", 1) or 1)
         return cls(
             vocab_size=cfg["vocab_size"],
             hidden_size=cfg["hidden_size"],
@@ -109,6 +202,10 @@ class ModelConfig:
             model_type=model_type,
             eos_token_ids=eos_ids,
             rope_scaling=rope_scaling,
+            mla=mla,
+            moe=moe,
+            first_k_dense_replace=first_k_dense,
+            moe_layer_freq=moe_freq,
         )
 
     @classmethod
