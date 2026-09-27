@@ -3,6 +3,7 @@
     python scripts/profile_step.py --model models/Qwen2.5-0.5B-Instruct --device cuda --dtype float16 \
         --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --batches 1,8,32,128,200
     python scripts/profile_step.py --tiny --batches 1,8,32          # CPU smoke run, random 2-layer model
+    ... --kernels 1,128 --top 30     # plus GPU time per kernel at those batch sizes (torch.profiler)
 
 For each batch size N: admit N requests with `--prompt-len` random tokens, run prefill until
 all N are decoding, then time `--steps` decode steps split into schedule / build_inputs /
@@ -157,6 +158,47 @@ def run_batch(engine: LLMEngine, timer: PhaseTimer, n: int, prompt_len: int, ste
     return m
 
 
+def profile_kernels(engine: LLMEngine, n: int, prompt_len: int, steps: int, vocab: int,
+                    seed: int, top: int) -> list[dict]:
+    """GPU time per kernel over `steps` decode steps at batch `n` (torch.profiler / CUPTI;
+    kernels replayed inside a CUDA graph are recorded too). Returns rows sorted by time."""
+    from torch.autograd import DeviceType
+    from torch.profiler import ProfilerActivity, profile
+
+    rng = random.Random(seed)
+    engine.reset()
+    sp = SamplingParams.greedy(max_tokens=steps + 4, ignore_eos=True)
+    for i in range(n):
+        engine.add_request(f"k{n}-{i}", [rng.randrange(1, vocab) for _ in range(prompt_len)], sp)
+    while engine.scheduler.num_waiting:
+        engine.step()
+    engine.step()
+    engine.step()
+    torch.cuda.synchronize()
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        for _ in range(steps):
+            engine.step()
+        torch.cuda.synchronize()
+    rows = []
+    for ev in prof.key_averages():
+        if ev.device_type != DeviceType.CUDA:
+            continue
+        total = getattr(ev, "self_device_time_total", None)
+        if total is None:
+            total = getattr(ev, "self_cuda_time_total", 0.0)
+        rows.append({"name": ev.key, "us_per_step": total / steps, "calls_per_step": ev.count / steps})
+    rows.sort(key=lambda r: -r["us_per_step"])
+    engine.reset()
+    gpu_total = sum(r["us_per_step"] for r in rows)
+    print(f"\nGPU kernels per decode step at N={n} (mean of {steps}): {gpu_total / 1e3:.3f} ms of "
+          f"kernel time in {sum(r['calls_per_step'] for r in rows):.0f} launches")
+    print(f"{'us/step':>9} {'share':>6} {'calls':>6}  kernel")
+    for r in rows[:top]:
+        name = r["name"] if len(r["name"]) <= 90 else r["name"][:87] + "..."
+        print(f"{r['us_per_step']:>9.1f} {100 * r['us_per_step'] / gpu_total:>5.1f}% {r['calls_per_step']:>6.1f}  {name}")
+    return rows
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default=None)
@@ -176,6 +218,9 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=50)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", default=None, help="write results JSON here")
+    ap.add_argument("--kernels", default=None,
+                    help="also list GPU time per kernel at these batch sizes, e.g. 1,128 (CUDA only)")
+    ap.add_argument("--top", type=int, default=25, help="kernels to print with --kernels")
     args = ap.parse_args()
     if args.tiny:
         args.prompt_len = min(args.prompt_len, 32)
@@ -205,6 +250,13 @@ def main() -> int:
         rows.append(m)
         print(f"{n:>4} " + " ".join(f"{m[p]:>13.3f}" for p in PHASES)
               + f" {m['unaccounted']:>12.3f} {m['total']:>8.3f} {slope:>8.3f}")
+    kernels = {}
+    if args.kernels:
+        if engine.device.type != "cuda":
+            raise SystemExit("--kernels needs --device cuda")
+        for n in (int(b) for b in args.kernels.split(",")):
+            kernels[n] = profile_kernels(engine, n, args.prompt_len, min(args.steps, 20), vocab,
+                                         args.seed, args.top)
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         meta = {"kind": "profile_step", "device": args.device, "dtype": args.dtype,
@@ -212,7 +264,7 @@ def main() -> int:
                 "cuda_graphs": args.enable_cuda_graphs, "prompt_len": args.prompt_len,
                 "steps": args.steps, "torch": torch.__version__,
                 "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
-                "rows": rows}
+                "rows": rows, "kernels": {str(k): v[:60] for k, v in kernels.items()}}
         Path(args.out).write_text(json.dumps(meta, indent=1))
         print(f"wrote {args.out}")
     return 0

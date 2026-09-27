@@ -120,7 +120,8 @@ length *after* the write.
 | `naive` | per-sequence `torch.cat` cache | same | n/a | what "no KV cache management" looks like |
 | `paged_torch` | `index_select` blocks into a padded `[B, max_ctx, Hkv, D]`, masked softmax | same | any | the reference for every other backend's tests |
 | `paged_flash` | `flash_attn_with_kvcache(block_table=...)` | `flash_attn_varlen_func` | multiple of 256 | upstream flash-attn hard-checks `page_block_size % 256` |
-| `paged_triton` | hand-written Triton kernel, grid `(B, Hkv, splits)` | delegated to `paged_flash` when the block size allows, else `paged_torch` | multiple of 16 | one program owns one sequence, one KV head and all its GQA query heads; online softmax; split-K past 1k keys; `tl.dot` on tensor cores |
+| `paged_triton` | hand-written Triton kernel, grid `(B, Hkv, splits)` | `flash_attn_varlen_func` on the step's packed k/v; chunk rows with cached context are gathered out of the paged cache into a packed buffer first, decode rows of the same step still run the Triton kernel | multiple of 16 | one program owns one sequence, one KV head and all its GQA query heads; online softmax; split-K past 1k keys; `tl.dot` on tensor cores |
+| `mla_torch` / `mla_triton` | absorbed latent attention: fp32 reference / Triton kernel over the `[c \| k_pe]` rows | flash varlen in the non-absorbed form (per-head k/v materialized from the latent); chunk rows gather + varlen like `paged_triton` | multiple of 16 | DeepSeek-V2/V3 and Moonlight; see below |
 
 `paged_triton` exists because flash-attn's block-256 constraint is not free: at block 256 a
 64-token shared prefix never fills a block and gets zero cache hits, and KV utilization drops
@@ -270,9 +271,10 @@ invisible below 8 req/s).
 `python -m pagedserve.bench.plot results/vllm.json results/pagedserve_flash.json results/pagedserve_flash_final.json --labels "vLLM,pagedserve (first run),pagedserve (after 6 fixes)" --ablation results/ablation_a100.json`.)
 
 Rates 1–8 are latency comparisons (throughput equals offered load for both); 16 and the
-saturation row compare capacity. The `paged_triton` server at block 16 matches these to
-8 req/s but pays +8 ms TTFT (its fresh-prompt prefill still goes through the gather path)
-and 1.7 s TTFT at saturation; `results/pagedserve_triton.json`.
+saturation row compare capacity. The `paged_triton` server at block 16 matched these to
+8 req/s but paid +8 ms TTFT and 1.7 s TTFT at saturation
+(`results/pagedserve_triton.json`) because its fresh-prompt prefill went through the
+gather path at the time; prefill now runs flash varlen at any block size.
 
 ### The gap against vLLM
 
@@ -458,9 +460,7 @@ results/               every JSON the tables above were built from
 ## Roadmap
 
 * Async scheduling in the engine core (overlap step N+1's CPU work with step N on the GPU).
-* Triton MLA decode kernel + flash-varlen prefill for the DeepSeek/Moonlight path, then its vLLM sweep.
-* Route fresh-prompt prefill for `paged_triton` at block 16 through flash varlen (today it
-  falls back to `paged_torch`, costing ~8 ms of TTFT).
+* Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Piecewise CUDA graphs so mixed (chunked-prefill) steps are captured too; chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
 * Speculative decoding; Runpod Serverless deployment.

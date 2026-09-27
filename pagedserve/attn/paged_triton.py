@@ -4,9 +4,12 @@ Why this exists: upstream flash-attn's paged decode (`flash_attn_with_kvcache`) 
 `page_block_size % 256 == 0`, so `paged_flash` forces `--block-size 256` and wastes up to
 255 slots per sequence to internal fragmentation. This backend runs decode through a
 hand-written Triton kernel that only needs `block_size % 16 == 0`, so `--block-size 16`
-is legal on the GPU again and more sequences fit in the same KV memory. Prefill (a
-handful of steps per request) is delegated to `paged_flash` when it is installed, else
-to `paged_torch`.
+is legal on the GPU again and more sequences fit in the same KV memory. Prefill uses
+flash-attn's packed *varlen* kernel, which has no block-size constraint: fresh prompts
+attend over this step's own packed k/v, and chunk rows that attend through the cache
+get their context gathered out of the paged cache first (`_prefill_mixed`, decode rows
+of the same step still go through the Triton kernel). With a 256-multiple block size the
+whole `paged_flash` backend is the prefill delegate; without flash-attn, `paged_torch`.
 
 Kernel (`_paged_decode_kernel`, flash-decoding style, one pass, fp32 accumulation):
 
@@ -411,23 +414,35 @@ class PagedTritonAttentionBackend(AttentionBackend):
         self.scale = 1.0 / math.sqrt(self.head_dim)
         self.num_splits = num_splits  # None -> shape heuristic
         self.variant = variant or default_variant()
+        self._varlen_fn = None  # flash_attn_varlen_func when flash-attn can run here
         self._prefill = self._make_prefill_delegate()
 
     def _make_prefill_delegate(self) -> AttentionBackend:
         """Prefill goes to flash-attn when it can run here, else the torch reference.
 
-        The delegate shares OUR cache; only its private `_prefill*` helpers are called
-        (after our single `cache.write`), so K/V is written once per step.
+        With a block size flash's paged path accepts (multiple of 256) the delegate is the
+        full `paged_flash` backend sharing OUR cache; only its private `_prefill*` helpers
+        are called (after our single `cache.write`), so K/V is written once per step.
+        With the block sizes this backend exists for (16, 32, ...) flash's paged kernel is
+        off the table, but its packed *varlen* kernel is not: fresh prompts attend over
+        this step's own packed k/v, and rows that attend through the cache (chunked-prefill
+        chunks, cached prefixes) get their context gathered out of the paged cache into a
+        packed buffer first (`_prefill_mixed`). Only without flash-attn at all does prefill
+        fall back to the torch reference.
         """
         from pagedserve.attn import paged_flash
-        if (paged_flash.is_available() and self.cache.device.type == "cuda"
-                and self.cache.dtype in paged_flash.SUPPORTED_DTYPES
-                and self.cache.block_size % paged_flash.required_block_multiple() == 0):
-            return paged_flash.PagedFlashAttentionBackend(self.config, self.cache)
+        flash_ok = (paged_flash.is_available() and self.cache.device.type == "cuda"
+                    and self.cache.dtype in paged_flash.SUPPORTED_DTYPES)
+        if flash_ok:
+            self._varlen_fn = paged_flash._import_flash()[2]
+            if self.cache.block_size % paged_flash.required_block_multiple() == 0:
+                return paged_flash.PagedFlashAttentionBackend(self.config, self.cache)
         return PagedTorchAttentionBackend(self.config, self.cache)
 
     @property
     def prefill_backend_name(self) -> str:
+        if self._varlen_fn is not None and isinstance(self._prefill, PagedTorchAttentionBackend):
+            return "flash_varlen+triton_decode"
         return type(self._prefill).__name__
 
     # ---- entry point -----------------------------------------------------------------
@@ -456,14 +471,69 @@ class PagedTritonAttentionBackend(AttentionBackend):
     def _delegate_prefill(self, layer_idx: int, q: Tensor, k: Tensor, v: Tensor,
                           meta: AttnMetadata) -> Tensor:
         d = self._prefill
-        if isinstance(d, PagedTorchAttentionBackend):
+        if self._varlen_fn is None:
             return d._prefill(layer_idx, q, meta)
         if q.dtype != self.cache.dtype:
             raise RuntimeError(f"paged_triton/flash prefill: q dtype {q.dtype} must equal the "
                                f"cache dtype {self.cache.dtype}")
-        if not meta.num_cached_tokens or all(c == 0 for c in meta.num_cached_tokens):
+        fresh = not meta.num_cached_tokens or all(c == 0 for c in meta.num_cached_tokens)
+        if isinstance(d, PagedTorchAttentionBackend):  # block size flash's paged path rejects
+            if fresh:
+                return self._prefill_varlen(q, k, v, meta)
+            return self._prefill_mixed(layer_idx, q, meta)
+        if fresh:
             return d._prefill_varlen(q, k, v, meta)
         return d._prefill_kvcache(layer_idx, q, meta)
+
+    def _prefill_varlen(self, q: Tensor, k: Tensor, v: Tensor, meta: AttnMetadata) -> Tensor:
+        """Fresh prompts: this step's packed k/v are the whole context, so flash's varlen
+        kernel runs straight on them (no block-size constraint, nothing gathered)."""
+        max_q = max(meta.query_lens)
+        cu = meta.cu_seqlens_q
+        return self._varlen_fn(q, k, v, cu_seqlens_q=cu, cu_seqlens_k=cu, max_seqlen_q=max_q,
+                               max_seqlen_k=max_q, softmax_scale=self.scale, causal=True)
+
+    def _prefill_mixed(self, layer_idx: int, q: Tensor, meta: AttnMetadata) -> Tensor:
+        """Rows attending through the cache with query_len > 1 (a chunked-prefill chunk, a
+        cached-prefix prompt), usually beside many decode rows.
+
+        Decode rows (query_len == 1) go through the Triton decode kernel in one batched
+        launch, exactly as a pure decode step would. Each chunk row's FULL context is
+        gathered out of the paged cache into a packed [sum ctx, Hkv, D] buffer (cheap: the
+        chunk is compute-bound anyway and there are only a few such rows per step) and the
+        chunk queries attend over it with flash varlen, whose causal mask is bottom-right
+        aligned for seqlen_q < seqlen_k: query j of a chunk lands on key
+        `context_len - query_len + j`, the packed-layout contract.
+        """
+        from pagedserve.attn.paged_flash import MixedPlan
+        plan = meta.mixed_plan
+        if plan is None:
+            plan = meta.mixed_plan = MixedPlan.build(meta, self.cache.device)
+        out = q.new_empty(q.shape)
+        if plan.dec_tokens is not None:
+            o = paged_attention_decode(
+                q.index_select(0, plan.dec_tokens), self.cache.k_cache[layer_idx],
+                self.cache.v_cache[layer_idx], plan.dec_bt, plan.dec_ctx, self.scale,
+                num_splits=self.num_splits, variant=self.variant)
+            out.index_copy_(0, plan.dec_tokens, o)
+        if plan.pre_rows:
+            plan.packed_prefill(meta, self.cache.device)
+            k_store, v_store = self.cache.k_cache[layer_idx], self.cache.v_cache[layer_idx]
+            ks, vs = [], []
+            for r, i in enumerate(plan.pre_seqs):  # no host sync: pre_bt is already non-negative
+                ctx = meta.context_lens[i]
+                idx = plan.pre_bt[r, :self.cache.blocks_needed(ctx)].long()
+                ks.append(k_store[idx].view(-1, self.num_kv_heads, self.head_dim)[:ctx])
+                vs.append(v_store[idx].view(-1, self.num_kv_heads, self.head_dim)[:ctx])
+            k_ctx = ks[0] if len(ks) == 1 else torch.cat(ks, dim=0)
+            v_ctx = vs[0] if len(vs) == 1 else torch.cat(vs, dim=0)
+            o = self._varlen_fn(
+                q.index_select(0, plan.pre_tokens), k_ctx, v_ctx,
+                cu_seqlens_q=plan.pre_cu_q, cu_seqlens_k=plan.pre_cu_k,
+                max_seqlen_q=plan.pre_max_q, max_seqlen_k=plan.pre_max_k,
+                softmax_scale=self.scale, causal=True)
+            out.index_copy_(0, plan.pre_tokens, o)
+        return out
 
     # ---- lifecycle ---------------------------------------------------------------------
     def free_sequence(self, seq_id: int) -> None:

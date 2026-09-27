@@ -49,7 +49,17 @@ so run the dump first, then the check:
 
 ```bash
 python scripts/dump_golden.py --model models/Moonlight-16B-A3B-Instruct --out golden/moonlight --device cuda --trust-remote-code
-python scripts/check_golden.py --model models/Moonlight-16B-A3B-Instruct --golden golden/moonlight --device cuda --dtype bfloat16 --backends mla_torch --block-size 16
+python scripts/check_golden.py --model models/Moonlight-16B-A3B-Instruct --golden golden/moonlight --device cuda --dtype bfloat16 --backends mla_torch,mla_triton --block-size 16
+```
+
+Serving it: `--attn-backend mla_triton --block-size 16 --enable-cuda-graphs` (the Triton
+MLA decode kernel and the fused MoE grouped GEMM are both captured; `PAGEDSERVE_FUSED_MOE=0`
+falls back to the per-expert loop, which was 63.6 ms per batch-1 step against 9.2 ms
+fused). Where a step's time goes, per kernel:
+
+```bash
+python scripts/profile_step.py --model models/Moonlight-16B-A3B-Instruct --device cuda --dtype bfloat16 \
+  --attn-backend mla_triton --block-size 16 --enable-cuda-graphs --batches 1,128 --kernels 1,128 --top 30
 ```
 
 ## vLLM goes in its own venv
@@ -88,9 +98,12 @@ request mix (A100). If a future flash-attn release relaxes the check, lower
 ## Triton decode kernel (`--attn-backend paged_triton`)
 
 `pagedserve/attn/paged_triton.py` is a hand-written Triton PagedAttention kernel for the
-decode step. Prefill is delegated to `paged_flash` when the block size allows it, else to
-`paged_torch` (so at block 16 today prefill is the gather path; routing fresh prompts
-through flash varlen is on the roadmap). Grid `(B, Hkv, num_splits)`: one program owns one
+decode step. Prefill runs flash-attn's packed *varlen* kernel, which has no block-size
+constraint: a fresh prompt attends over the step's own packed k/v, and a chunk row that
+attends through the cache (chunked prefill, cached prefix) has its context gathered out of
+the paged cache into a packed buffer first while the decode rows of the same step take the
+Triton kernel (`_prefill_mixed`). Without flash-attn prefill falls back to `paged_torch`.
+Grid `(B, Hkv, num_splits)`: one program owns one
 sequence, one KV head and ALL of that head's GQA query heads (7 for Qwen2.5-0.5B, padded
 to 16 for `tl.dot`), so each K/V element is read from HBM once per KV head instead of once
 per query head. The program walks the sequence's block-table pages in tiles with an online

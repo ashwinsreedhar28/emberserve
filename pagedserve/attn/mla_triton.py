@@ -206,8 +206,10 @@ class MLATritonBackend:
         if all(n == 1 for n in meta.query_lens):
             return self._decode(layer_idx, q_nope, q_pe, w_uk, w_uv, scale, meta)
         fresh = not meta.num_cached_tokens or all(c == 0 for c in meta.num_cached_tokens)
-        if fresh and self._varlen is not None and kv_b_weight is not None:
-            return self._prefill_varlen(q_nope, q_pe, latent, kv_b_weight, scale, meta)
+        if self._varlen is not None and kv_b_weight is not None:
+            if fresh:
+                return self._prefill_varlen(q_nope, q_pe, latent, kv_b_weight, scale, meta)
+            return self._prefill_mixed(layer_idx, q_nope, q_pe, w_uk, w_uv, kv_b_weight, scale, meta)
         return self._prefill_reference(layer_idx, q_nope, q_pe, w_uk, w_uv, scale, meta)
 
     # ---- decode: absorb W_UK into q, kernel over the latent, W_UV after -----------------
@@ -225,22 +227,69 @@ class MLATritonBackend:
         return torch.bmm(out_c.transpose(0, 1), w_uv.transpose(1, 2)).transpose(0, 1)
 
     # ---- fresh-prompt prefill: materialize k/v per head, flash varlen -------------------
-    def _prefill_varlen(self, q_nope: Tensor, q_pe: Tensor, latent: Tensor, kv_b_weight: Tensor,
-                        scale: float, meta: AttnMetadata) -> Tensor:
-        n, h, dn = q_nope.shape
+    def _materialize_kv(self, latent: Tensor, kv_b_weight: Tensor) -> tuple[Tensor, Tensor]:
+        """Non-absorbed k/v per head from cache rows `latent [T, Dl + Dr]`: k = [W_UK c | k_pe]
+        `[T, H, Dn + Dr]`, v = W_UV c zero-padded to the qk head dim (flash wants v's head
+        dim == k's); the caller slices the output back to `v_head_dim`."""
+        t = latent.shape[0]
+        h, dn = self.config.num_attention_heads, self.mla.qk_nope_head_dim
         dr, dv = self.mla.qk_rope_head_dim, self.mla.v_head_dim
         c = latent[:, :self.kv_lora_rank]
         k_pe = latent[:, self.kv_lora_rank:]
-        kv = torch.nn.functional.linear(c, kv_b_weight).view(n, h, dn + dv)
-        k = torch.cat([kv[..., :dn], k_pe[:, None, :].expand(n, h, dr)], dim=-1)  # [N, H, Dn + Dr]
-        q = torch.cat([q_nope, q_pe], dim=-1)
+        kv = torch.nn.functional.linear(c, kv_b_weight).view(t, h, dn + dv)
+        k = torch.cat([kv[..., :dn], k_pe[:, None, :].expand(t, h, dr)], dim=-1)
         v = kv[..., dn:]
         v_pad = torch.nn.functional.pad(v, (0, dn + dr - dv)) if dv != dn + dr else v
+        return k, v_pad
+
+    def _prefill_varlen(self, q_nope: Tensor, q_pe: Tensor, latent: Tensor, kv_b_weight: Tensor,
+                        scale: float, meta: AttnMetadata) -> Tensor:
+        k, v_pad = self._materialize_kv(latent, kv_b_weight)
+        q = torch.cat([q_nope, q_pe], dim=-1)
         cu = meta.cu_seqlens_q
         max_q = max(meta.query_lens)
         out = self._varlen(q, k, v_pad, cu_seqlens_q=cu, cu_seqlens_k=cu, max_seqlen_q=max_q,
                            max_seqlen_k=max_q, softmax_scale=scale, causal=True)
-        return out[..., :dv]
+        return out[..., :self.mla.v_head_dim]
+
+    # ---- mixed step: decode rows through the kernel, chunk rows gather + flash varlen ---
+    def _prefill_mixed(self, layer_idx: int, q_nope: Tensor, q_pe: Tensor, w_uk: Tensor,
+                       w_uv: Tensor, kv_b_weight: Tensor, scale: float, meta: AttnMetadata) -> Tensor:
+        """Same split as `paged_triton._prefill_mixed`: rows with query_len == 1 run the
+        absorbed Triton decode kernel in one batched launch; each chunk row's full context
+        is gathered out of the latent cache, its per-head k/v materialized (the
+        non-absorbed form, as for a fresh prompt) and attended with flash varlen, whose
+        bottom-right causal alignment puts chunk query j on key `context_len - query_len + j`."""
+        from pagedserve.attn.paged_flash import MixedPlan
+        plan = meta.mixed_plan
+        if plan is None:
+            plan = meta.mixed_plan = MixedPlan.build(meta, self.cache.device)
+        dv = self.mla.v_head_dim
+        out = q_nope.new_empty((q_nope.shape[0], q_nope.shape[1], dv))
+        if plan.dec_tokens is not None:
+            q_abs = self._absorb(q_nope.index_select(0, plan.dec_tokens),
+                                 q_pe.index_select(0, plan.dec_tokens), w_uk)
+            out_c = mla_decode(q_abs, self.cache.latent[layer_idx], plan.dec_bt, plan.dec_ctx,
+                               scale, self.kv_lora_rank)
+            o = torch.bmm(out_c.transpose(0, 1), w_uv.transpose(1, 2)).transpose(0, 1)
+            out.index_copy_(0, plan.dec_tokens, o)
+        if plan.pre_rows:
+            plan.packed_prefill(meta, self.cache.device)
+            store = self.cache.latent[layer_idx]
+            rows = []
+            for r, i in enumerate(plan.pre_seqs):  # no host sync: pre_bt is already non-negative
+                ctx = meta.context_lens[i]
+                idx = plan.pre_bt[r, :self.cache.blocks_needed(ctx)].long()
+                rows.append(store[idx].view(-1, store.shape[-1])[:ctx])
+            latent = rows[0] if len(rows) == 1 else torch.cat(rows, dim=0)
+            k, v_pad = self._materialize_kv(latent, kv_b_weight)
+            q = torch.cat([q_nope.index_select(0, plan.pre_tokens),
+                           q_pe.index_select(0, plan.pre_tokens)], dim=-1)
+            o = self._varlen(q, k, v_pad, cu_seqlens_q=plan.pre_cu_q, cu_seqlens_k=plan.pre_cu_k,
+                             max_seqlen_q=plan.pre_max_q, max_seqlen_k=plan.pre_max_k,
+                             softmax_scale=scale, causal=True)
+            out.index_copy_(0, plan.pre_tokens, o[..., :dv])
+        return out
 
     # ---- rows attending through the cache with query_len > 1: torch reference -----------
     def _prefill_reference(self, layer_idx: int, q_nope: Tensor, q_pe: Tensor, w_uk: Tensor,

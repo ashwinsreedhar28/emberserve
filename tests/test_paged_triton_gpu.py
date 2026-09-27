@@ -190,6 +190,19 @@ def test_backend_block16_matches_paged_torch_over_steps():
         q, k, v = rand(len(seqs), H), rand(len(seqs), HKV), rand(len(seqs), HKV)
         a, b = tri.forward(0, q, k, v, meta), ref.forward(0, q, k, v, meta)
         torch.testing.assert_close(a.float(), b.float(), atol=ATOL, rtol=RTOL)
+    # a mixed step (chunked prefill): decode rows beside chunk rows that attend through
+    # the cache with query_len > 1 -> Triton kernel for the former, gather + flash varlen
+    # (or the torch reference without flash-attn) for the latter
+    for qlens in ([1, 1, 7, 1, 33, 1, 1, 1], [5, 40, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 9]):
+        starts = [bm.get_num_tokens(s) for s in seqs]
+        for sid, n in zip(seqs, qlens):
+            bm.append_slots(sid, n)
+        meta = meta_for(qlens, starts, True)
+        n_tok = sum(qlens)
+        q, k, v = rand(n_tok, H), rand(n_tok, HKV), rand(n_tok, HKV)
+        a, b = tri.forward(0, q, k, v, meta), ref.forward(0, q, k, v, meta)
+        torch.testing.assert_close(a.float(), b.float(), atol=ATOL, rtol=RTOL)
+        assert meta.mixed_plan is not None
 
 
 # ---- engine level ----------------------------------------------------------------------
@@ -227,7 +240,8 @@ def test_engine_greedy_identical_across_backends():
     ref = gen(make_engine("paged_torch", 16, False), ps)
     tri = make_engine("paged_triton", 16, False)
     assert tri.graph_runner is None and tri.block_manager.num_blocks == 64
-    assert tri.backend.prefill_backend_name == "PagedTorchAttentionBackend"  # block 16
+    assert tri.backend.prefill_backend_name == (  # block 16: flash's paged path is out
+        "flash_varlen+triton_decode" if paged_flash.is_available() else "PagedTorchAttentionBackend")
     assert gen(tri, ps) == ref
     tri_g = make_engine("paged_triton", 16, True, num_blocks=64)
     assert tri_g.graph_runner is not None and tri_g.scratch_block == 63
@@ -277,3 +291,23 @@ def test_engine_triton_block256_delegates_prefill_to_flash():
     tri = make_engine("paged_triton", 256, True, num_blocks=16)
     assert tri.backend.prefill_backend_name == "PagedFlashAttentionBackend"
     assert gen(tri, ps) == gen(make_engine("paged_flash", 256, True, num_blocks=16), ps)
+
+
+def test_engine_chunked_prefill_block16_matches_paged_torch():
+    """Chunked prefill at block 16: every step past the first mixes decode rows with a
+    chunk that attends through the cache. Same greedy tokens as paged_torch."""
+    ps = prompts(10, seed=7)
+
+    def eng(backend, graphs):
+        model = Qwen2ForCausalLM(ENGINE_CFG)
+        reset_parameters_deterministic(model, 0)
+        model = model.to(DEV, torch.float16)
+        ecfg = EngineConfig(device=DEV, dtype=torch.float16, block_size=16, num_gpu_blocks=64,
+                            max_num_seqs=64, max_num_batched_tokens=24, max_model_len=512,
+                            attn_backend=backend, enable_cuda_graphs=graphs,
+                            enable_chunked_prefill=True)
+        return LLMEngine(model, ENGINE_CFG, ecfg, tokenizer=None)
+
+    ref = gen(eng("paged_torch", False), ps)
+    assert gen(eng("paged_triton", False), ps) == ref
+    assert gen(eng("paged_triton", True), ps) == ref

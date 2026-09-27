@@ -100,16 +100,23 @@ class MixedPlan:
     rows (batched into one call) and which are multi-query prefill rows (padded among
     themselves), with each group's context lengths and block tables already gathered."""
 
-    __slots__ = ("dec_tokens", "dec_ctx", "dec_bt", "pre_rows", "pre_max_q", "pre_ctx", "pre_bt")
+    __slots__ = ("dec_tokens", "dec_ctx", "dec_bt", "pre_rows", "pre_seqs", "pre_max_q",
+                 "pre_ctx", "pre_bt", "pre_tokens", "pre_cu_q", "pre_cu_k", "pre_max_k")
 
     def __init__(self) -> None:
         self.dec_tokens: Tensor | None = None
         self.dec_ctx: Tensor | None = None
         self.dec_bt: Tensor | None = None
         self.pre_rows: list[tuple[int, int]] = []  # (packed start, query_len) per prefill seq
+        self.pre_seqs: list[int] = []  # batch index of each prefill seq
         self.pre_max_q = 0
         self.pre_ctx: Tensor | None = None
         self.pre_bt: Tensor | None = None
+        # packed-varlen view of the prefill rows (built lazily by `packed_prefill`):
+        self.pre_tokens: Tensor | None = None  # packed token indices of the prefill rows
+        self.pre_cu_q: Tensor | None = None  # [P+1] int32
+        self.pre_cu_k: Tensor | None = None  # [P+1] int32 over the full contexts
+        self.pre_max_k = 0
 
     @classmethod
     def build(cls, meta: AttnMetadata, device: torch.device) -> "MixedPlan":
@@ -118,14 +125,13 @@ class MixedPlan:
         bt = block_tables_nonneg(meta)
         dec_tokens: list[int] = []
         dec_seqs: list[int] = []
-        pre_seqs: list[int] = []
         start = 0
         for i, n in enumerate(meta.query_lens):
             if n == 1:
                 dec_tokens.append(start)
                 dec_seqs.append(i)
             else:
-                pre_seqs.append(i)
+                plan.pre_seqs.append(i)
                 plan.pre_rows.append((start, n))
             start += n
         if dec_seqs:
@@ -133,12 +139,32 @@ class MixedPlan:
             plan.dec_tokens = torch.tensor(dec_tokens, dtype=torch.long, device=device)
             plan.dec_ctx = ctx.index_select(0, idx)
             plan.dec_bt = bt.index_select(0, idx)
-        if pre_seqs:
-            idx = torch.tensor(pre_seqs, dtype=torch.long, device=device)
+        if plan.pre_seqs:
+            idx = torch.tensor(plan.pre_seqs, dtype=torch.long, device=device)
             plan.pre_max_q = max(n for _, n in plan.pre_rows)
             plan.pre_ctx = ctx.index_select(0, idx)
             plan.pre_bt = bt.index_select(0, idx)
         return plan
+
+    def packed_prefill(self, meta: AttnMetadata, device: torch.device) -> None:
+        """Fill the varlen view of the prefill rows: `pre_tokens` (their packed token
+        indices, in order), `pre_cu_q`, and `pre_cu_k`/`pre_max_k` over each row's FULL
+        context (cached prefix + this step's tokens), for a backend that gathers the
+        context out of the paged cache and runs a packed varlen kernel (block sizes
+        flash's paged path cannot take)."""
+        if self.pre_tokens is not None:
+            return
+        toks: list[int] = []
+        cu_q = [0]
+        cu_k = [0]
+        for (start, n), i in zip(self.pre_rows, self.pre_seqs):
+            toks.extend(range(start, start + n))
+            cu_q.append(cu_q[-1] + n)
+            cu_k.append(cu_k[-1] + meta.context_lens[i])
+        self.pre_tokens = torch.tensor(toks, dtype=torch.long, device=device)
+        self.pre_cu_q = torch.tensor(cu_q, dtype=torch.int32, device=device)
+        self.pre_cu_k = torch.tensor(cu_k, dtype=torch.int32, device=device)
+        self.pre_max_k = max(meta.context_lens[i] for i in self.pre_seqs)
 
 
 class PagedFlashAttentionBackend(AttentionBackend):
