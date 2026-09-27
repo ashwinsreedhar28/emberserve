@@ -87,8 +87,16 @@ Reading: block 16 costs nothing over block 256 in the Triton kernel (same time a
 shape), which is the point. The kernel is correct (max err 5e-4 vs paged_torch) but ~4x
 behind flash-attn at large batch and has a ~0.15 ms floor at small batch that came from
 splitting the context whenever `B*Hkv < 512` (the reduce launch dominates). The split
-heuristic is now occupancy-based (see `default_num_splits`); A/B it with
-`PAGEDSERVE_TRITON_SPLITS=1 python scripts/bench_kernels.py`.
+heuristic is now occupancy-based (see `default_num_splits`). Knobs for A/B runs:
+
+```bash
+python scripts/bench_kernels.py --variant sum            # CUDA-core path (default, validated)
+python scripts/bench_kernels.py --variant dot            # tensor-core path: tl.dot for QK^T and PV
+python scripts/bench_kernels.py --splits 1               # no split-K
+PAGEDSERVE_TRITON_VARIANT=dot PAGEDSERVE_TRITON_SPLITS=1 python scripts/gpu_smoke.py   # same knobs, engine-wide
+```
+
+Each run prints a triton/flash ratio table; 1.0x is parity.
 
 ## If CUDA-graph capture fails
 

@@ -102,7 +102,7 @@ def _kernels() -> dict:
         tiles_per_split,
         GROUPS: tl.constexpr, GROUPS_PAD: tl.constexpr,
         BLOCK_SIZE: tl.constexpr, TILE: tl.constexpr, D: tl.constexpr,
-        SPLIT_K: tl.constexpr,
+        SPLIT_K: tl.constexpr, USE_DOT: tl.constexpr,
     ):
         b = tl.program_id(0)
         kvh = tl.program_id(1)
@@ -117,8 +117,12 @@ def _kernels() -> dict:
         heads = kvh * GROUPS + g  # query heads served by this KV head
 
         q_off = b * stride_qb + heads[:, None] * stride_qh + d[None, :]
-        q = tl.load(q_ptr + q_off, mask=g_valid[:, None], other=0.0).to(tl.float32)  # [G, D]
-        q = q * scale
+        if USE_DOT:
+            # tensor-core path: keep q in its storage dtype, scale the fp32 scores instead
+            q = tl.load(q_ptr + q_off, mask=g_valid[:, None], other=0.0)  # [G, D]
+        else:
+            q = tl.load(q_ptr + q_off, mask=g_valid[:, None], other=0.0).to(tl.float32)  # [G, D]
+            q = q * scale
 
         m_i = tl.full([GROUPS_PAD], float("-inf"), tl.float32)
         l_i = tl.zeros([GROUPS_PAD], tl.float32)
@@ -136,17 +140,24 @@ def _kernels() -> dict:
             in_blk = (t % TILES_PER_BLOCK) * TILE + s  # offsets inside the physical block
             valid = pos < ctx
             kv_off = phys * stride_kb + in_blk[:, None] * stride_ks + kv_head_off + d[None, :]
-            k = tl.load(k_ptr + kv_off, mask=valid[:, None], other=0.0).to(tl.float32)  # [T, D]
-            v = tl.load(v_ptr + kv_off, mask=valid[:, None], other=0.0).to(tl.float32)  # [T, D]
-
-            scores = tl.sum(q[:, None, :] * k[None, :, :], axis=2)  # [G, T]
+            if USE_DOT:
+                k = tl.load(k_ptr + kv_off, mask=valid[:, None], other=0.0)  # [T, D] storage dtype
+                v = tl.load(v_ptr + kv_off, mask=valid[:, None], other=0.0)  # [T, D]
+                scores = tl.dot(q, tl.trans(k.to(q.dtype))) * scale  # [G, T], fp32 accumulate
+            else:
+                k = tl.load(k_ptr + kv_off, mask=valid[:, None], other=0.0).to(tl.float32)  # [T, D]
+                v = tl.load(v_ptr + kv_off, mask=valid[:, None], other=0.0).to(tl.float32)  # [T, D]
+                scores = tl.sum(q[:, None, :] * k[None, :, :], axis=2)  # [G, T]
             scores = tl.where(valid[None, :], scores, float("-inf"))
 
             m_new = tl.maximum(m_i, tl.max(scores, axis=1))
             alpha = tl.exp(m_i - m_new)
             p = tl.exp(scores - m_new[:, None])  # [G, T]
             l_i = l_i * alpha + tl.sum(p, axis=1)
-            acc = acc * alpha[:, None] + tl.sum(p[:, :, None] * v[None, :, :], axis=1)
+            if USE_DOT:
+                acc = acc * alpha[:, None] + tl.dot(p.to(v.dtype), v)  # [G, D]
+            else:
+                acc = acc * alpha[:, None] + tl.sum(p[:, :, None] * v[None, :, :], axis=1)
             m_i = m_new
 
         if SPLIT_K:
@@ -271,9 +282,28 @@ class _Scratch:
 _SCRATCH = _Scratch()
 
 
+VARIANTS = ("sum", "dot")
+
+
+def default_variant() -> str:
+    """`PAGEDSERVE_TRITON_VARIANT=sum|dot`; default `sum` (validated on the pod first).
+
+    `sum`: broadcast-multiply + tl.sum on CUDA cores, GROUPS padded to a power of two,
+           the [G, TILE, D] fp32 temporary limits TILE to 16-32.
+    `dot`: tl.dot on tensor cores for QK^T and PV, GROUPS padded up to >= 16, K/V stay in
+           storage dtype, larger TILE (up to 64). P is cast to the V dtype before PV (same
+           as flash-attn), so fp16 caches lose ~1e-3 relative in P.
+    """
+    v = os.environ.get("PAGEDSERVE_TRITON_VARIANT", "sum").lower()
+    if v not in VARIANTS:
+        raise ValueError(f"PAGEDSERVE_TRITON_VARIANT must be one of {VARIANTS}, got {v!r}")
+    return v
+
+
 def paged_attention_decode(q: Tensor, k_cache: Tensor, v_cache: Tensor, block_tables: Tensor,
                            context_lens: Tensor, scale: float, *, num_splits: int | None = None,
-                           out: Tensor | None = None, num_warps: int = 4) -> Tensor:
+                           out: Tensor | None = None, num_warps: int = 4,
+                           variant: str | None = None) -> Tensor:
     """One-token-per-sequence paged attention.
 
     q [B, H, D]; k_cache/v_cache [num_blocks, block_size, Hkv, D]; block_tables
@@ -294,8 +324,16 @@ def paged_attention_decode(q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ta
     assert q.stride(2) == 1 and k_cache.stride(3) == 1 and v_cache.stride(3) == 1
     assert block_tables.stride(1) == 1 and context_lens.stride(0) == 1
     groups = H // Hkv
-    groups_pad = _next_pow2(groups)
-    tile = _tile_for(block_size, D, groups_pad)
+    variant = variant or default_variant()
+    assert variant in VARIANTS, variant
+    use_dot = variant == "dot"
+    if use_dot:
+        assert q.dtype == k_cache.dtype, f"dot variant needs q dtype == cache dtype ({q.dtype} vs {k_cache.dtype})"
+        groups_pad = max(16, _next_pow2(groups))
+        tile = min(block_size, 64)
+    else:
+        groups_pad = _next_pow2(groups)
+        tile = _tile_for(block_size, D, groups_pad)
     max_blocks = block_tables.shape[1]
     max_context = max_blocks * block_size
     num_tiles_max = max(1, -(-max_context // tile))
@@ -323,7 +361,7 @@ def paged_attention_decode(q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ta
         tiles_per_split,
         GROUPS=groups, GROUPS_PAD=groups_pad,
         BLOCK_SIZE=block_size, TILE=tile, D=D,
-        SPLIT_K=num_splits > 1,
+        SPLIT_K=num_splits > 1, USE_DOT=use_dot,
         num_warps=num_warps,
     )
     if num_splits > 1:
@@ -344,7 +382,7 @@ class PagedTritonAttentionBackend(AttentionBackend):
     """PagedAttention over a PagedKVCache: Triton decode kernel, delegated prefill."""
 
     def __init__(self, config: ModelConfig, cache: PagedKVCache,
-                 num_splits: int | None = None) -> None:
+                 num_splits: int | None = None, variant: str | None = None) -> None:
         assert cache.num_kv_heads == config.num_key_value_heads
         assert cache.head_dim == config.head_dim
         if cache.device.type != "cuda" and not interpreter_enabled():
@@ -366,6 +404,7 @@ class PagedTritonAttentionBackend(AttentionBackend):
         self.head_dim = config.head_dim
         self.scale = 1.0 / math.sqrt(self.head_dim)
         self.num_splits = num_splits  # None -> shape heuristic
+        self.variant = variant or default_variant()
         self._prefill = self._make_prefill_delegate()
 
     def _make_prefill_delegate(self) -> AttentionBackend:
@@ -404,7 +443,7 @@ class PagedTritonAttentionBackend(AttentionBackend):
         return paged_attention_decode(
             q.contiguous(), self.cache.k_cache[layer_idx], self.cache.v_cache[layer_idx],
             block_tables_nonneg(meta), context_lens_tensor(meta, self.cache.device),
-            self.scale, num_splits=self.num_splits,
+            self.scale, num_splits=self.num_splits, variant=self.variant,
         )
 
     # ---- prefill: delegate's helpers, K/V already written ----------------------------

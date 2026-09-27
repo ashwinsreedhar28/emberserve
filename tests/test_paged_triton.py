@@ -338,3 +338,61 @@ def test_backend_rejects_bad_block_size_and_reset():
     assert h.bm.has_sequence(0) and h.cache.k_cache[0].abs().sum() > 0
     h.backend.reset()
     assert all(t.abs().sum() == 0 for t in h.cache.k_cache + h.cache.v_cache)
+
+
+# ---- tl.dot variant --------------------------------------------------------------------
+def _decode_args(seed: int, lens=(5, 19, 40)):
+    h = Harness(num_blocks=8, seed=seed)
+    scramble_free_list(h)
+    seqs = list(range(1, len(lens) + 1))
+    meta = h.build_meta(seqs, list(lens), is_prefill=True)
+    k, v = h.rand(sum(lens), HKV), h.rand(sum(lens), HKV)
+    h.cache.write(0, k, v, meta.slot_mapping)
+    q = h.rand(len(seqs), H)
+    bt = meta.block_tables.clamp_min(0).contiguous()
+    ctx = torch.tensor(meta.context_lens, dtype=torch.int32)
+    return h, q, k, v, bt, ctx, lens
+
+
+def test_kernel_dot_variant_matches_sum_variant():
+    """Tensor-core path (GROUPS padded to 16, tl.dot for QK^T and PV) == CUDA-core path."""
+    h, q, k, v, bt, ctx, lens = _decode_args(11)
+    args = (q, h.cache.k_cache[0], h.cache.v_cache[0], bt, ctx, D ** -0.5)
+    ref = paged_attention_decode(*args, num_splits=1, variant="sum")
+    dot = paged_attention_decode(*args, num_splits=1, variant="dot")
+    torch.testing.assert_close(dot, ref, atol=1e-5, rtol=0)
+    for splits in (2, 5):
+        torch.testing.assert_close(paged_attention_decode(*args, num_splits=splits, variant="dot"),
+                                   ref, atol=1e-5, rtol=0)
+
+
+def test_kernel_dot_variant_against_reference():
+    h, q, k, v, bt, ctx, lens = _decode_args(12)
+    out = paged_attention_decode(q, h.cache.k_cache[0], h.cache.v_cache[0], bt, ctx, D ** -0.5,
+                                 num_splits=1, variant="dot")
+    off = 0
+    for i, n in enumerate(lens):
+        ref = causal_softmax_attention(q[i:i + 1], k[off:off + n], v[off:off + n], 1)
+        torch.testing.assert_close(out[i:i + 1], ref, atol=ATOL, rtol=0)
+        off += n
+
+
+def test_variant_env_knob(monkeypatch):
+    from pagedserve.attn.paged_triton import default_variant
+    monkeypatch.setenv("PAGEDSERVE_TRITON_VARIANT", "dot")
+    assert default_variant() == "dot"
+    monkeypatch.setenv("PAGEDSERVE_TRITON_VARIANT", "nope")
+    with pytest.raises(ValueError):
+        default_variant()
+    monkeypatch.delenv("PAGEDSERVE_TRITON_VARIANT")
+    assert default_variant() == "sum"
+
+
+def test_backend_dot_variant_matches_paged_torch():
+    """Backend with variant="dot": prefill then 3 decode steps checked against the reference
+    (Harness.step compares every sequence to causal_softmax_attention)."""
+    h = Harness(num_blocks=6, seed=8, variant="dot")
+    assert h.backend.variant == "dot"
+    h.step([0, 1], [40, 9], is_prefill=True)
+    for _ in range(3):
+        h.step([0, 1], [1, 1], is_prefill=False)

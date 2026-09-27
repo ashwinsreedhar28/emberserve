@@ -79,7 +79,8 @@ def make_case(batch: int, ctx: int, block: int, seed: int = 0):
     return cache, meta, q
 
 
-def make_backend(name: str, cache: PagedKVCache):
+def make_backend(name: str, cache: PagedKVCache, splits: int | None = None,
+                 variant: str | None = None):
     if name == "paged_torch":
         return PagedTorchAttentionBackend(CFG, cache)
     if name == "paged_flash":
@@ -87,7 +88,7 @@ def make_backend(name: str, cache: PagedKVCache):
         return PagedFlashAttentionBackend(CFG, cache)
     if name == "paged_triton":
         from pagedserve.attn.paged_triton import PagedTritonAttentionBackend
-        return PagedTritonAttentionBackend(CFG, cache)
+        return PagedTritonAttentionBackend(CFG, cache, num_splits=splits, variant=variant)
     raise ValueError(name)
 
 
@@ -133,6 +134,24 @@ def markdown_table(results: list[dict], batches: list[int], ctxs: list[int]) -> 
     return "\n".join(lines)
 
 
+def ratio_table(results: list[dict], batches: list[int], ctxs: list[int]) -> str:
+    """triton_ms / flash_ms per (block, ctx, B): 1.0 = parity, >1 = Triton slower."""
+    by = {(r["backend"], r["block_size"], r["batch"], r["ctx"]): r["ms"] for r in results}
+    if not any(k[0] == "paged_flash" for k in by):
+        return ""
+    lines = ["", "triton / flash time ratio (lower is better; 1.0 = parity)", "",
+             "| triton block | ctx | " + " | ".join(f"B={b}" for b in batches) + " |",
+             "|---|---|" + "---|" * len(batches)]
+    for block in sorted({k[1] for k in by if k[0] == "paged_triton"}):
+        for c in ctxs:
+            cells = []
+            for b in batches:
+                t, f = by.get(("paged_triton", block, b, c)), by.get(("paged_flash", 256, b, c))
+                cells.append(f"{t / f:.2f}x" if t and f else "-")
+            lines.append(f"| {block} | {c} | " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--batches", default="1,8,32,128")
@@ -140,6 +159,10 @@ def main() -> int:
     ap.add_argument("--iters", type=int, default=20)
     ap.add_argument("--warmup", type=int, default=5)
     ap.add_argument("--out", default="results/kernels.json")
+    ap.add_argument("--splits", type=int, default=None,
+                    help="force the Triton split-K factor (default: shape heuristic)")
+    ap.add_argument("--variant", choices=["sum", "dot"], default=None,
+                    help="Triton kernel variant (default: PAGEDSERVE_TRITON_VARIANT or sum)")
     args = ap.parse_args()
     if not torch.cuda.is_available():
         print("no CUDA: skipping")
@@ -162,13 +185,14 @@ def main() -> int:
                 if not available[name]:
                     continue
                 cache, meta, q = make_case(b, c, block, seed=b * 31 + c)
-                backend = make_backend(name, cache)
+                backend = make_backend(name, cache, args.splits, args.variant)
                 max_err = 0.0 if name == "paged_torch" else check_against_torch(backend, q, meta, cache)
                 ms = time_decode(backend, q, meta, args.iters, args.warmup)
                 gbps = kv_bytes(b, c) / (ms * 1e-3) / 1e9
                 results.append({"backend": name, "block_size": block, "batch": b, "ctx": c,
                                 "ms": ms, "gbps": gbps, "kv_bytes": kv_bytes(b, c),
-                                "max_abs_err_vs_paged_torch": max_err})
+                                "max_abs_err_vs_paged_torch": max_err,
+                                "splits": args.splits, "variant": args.variant})
                 print(f"  {name:12s} block={block:3d} B={b:3d} ctx={c:4d}: {ms:8.3f} ms "
                       f"{gbps:7.0f} GB/s  err={max_err:.2e}", file=sys.stderr)
                 del cache, backend, q, meta
@@ -176,8 +200,11 @@ def main() -> int:
 
     table = markdown_table(results, batches, ctxs)
     print(f"\ndecode attention, H={H} Hkv={HKV} D={D} {DTYPE}, median of {args.iters} "
-          f"(K+V bytes = B*ctx*Hkv*D*2*2)\n")
+          f"(K+V bytes = B*ctx*Hkv*D*2*2)"
+          f"{'' if args.variant is None else f', triton variant={args.variant}'}"
+          f"{'' if args.splits is None else f', splits={args.splits}'}\n")
     print(table)
+    print(ratio_table(results, batches, ctxs))
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({
