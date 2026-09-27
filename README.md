@@ -33,17 +33,20 @@ output median 131), seed 0, same trace for every row. Raw files in `results/`.
 | | RTX 4090 | A100 SXM 80 GB |
 |---|---:|---:|
 | naive per-sequence cache, 8 req/s | 343 tok/s | |
-| paged_flash + CUDA graphs, 8 req/s | 1,441 tok/s, TPOT p50 3.8 ms | 1,369 tok/s, TPOT p50 2.9 ms (HTTP) |
-| paged_flash + CUDA graphs, all 200 at t=0 | 5,459 tok/s (in-process) | **10,584 tok/s** (HTTP) |
+| paged_flash + CUDA graphs, 8 req/s | 1,441 tok/s, TPOT p50 3.8 ms | 1,374 tok/s, TPOT p50 2.6 ms (HTTP) |
+| paged_flash + CUDA graphs, all 200 at t=0 | 5,459 tok/s (in-process) | **13,945 tok/s** (HTTP, engine in its own process) |
 | vLLM, same trace, same GPU, 8 req/s | | 1,377 tok/s, TPOT p50 2.1 ms |
 | vLLM, all 200 at t=0 | | 16,269 tok/s |
 | Triton decode kernel vs flash-attn, B=128 / ctx 2048 | 4.2x slower (first version) | **1.16x** slower (835 vs 972 GB/s) |
 | KV-cache slot utilization, block 16 vs 256 | | **98% vs 76%** |
 
-Against vLLM on the A100: throughput parity to 16 req/s (99%), TPOT within 0.2 ms of
-vLLM's at 1 req/s, 65% of its throughput at saturation, up from 23% at the first
-measurement the same night. The [gap analysis](#the-gap-against-vllm) has the per-phase
-profile and the five fixes it drove, in order.
+Against vLLM on the A100 with Qwen2.5-0.5B: throughput parity to 16 req/s (99%), TPOT within
+0.2 ms of vLLM's at 1 req/s and *below* it at saturation (6.2 vs 8.1 ms), 86% of its
+saturation throughput, up from 23% at the first measurement the same night. At 7–8B
+parameters (Qwen2.5-7B, DeepSeek-R1-Distill-Llama-8B) both engines sit on the weight-read
+floor and pagedserve is at 89% of vLLM at saturation before the engine-process change.
+The [gap analysis](#the-gap-against-vllm) has the per-phase profile and the six fixes it
+drove, in order; [Models](#models) has the per-model table.
 
 ## How it works
 
@@ -226,18 +229,19 @@ pagedserve: `paged_flash`, block 256, CUDA graphs. vLLM from its own venv, defau
 | 1 | 177 | 177 | 12.9 ms | 16.8 ms | 2.0 / 2.3 | 2.2 / 2.8 |
 | 2 | 354 | 354 | 11.9 | 16.1 | 2.0 / 2.2 | 2.3 / 2.8 |
 | 4 | 701 | 699 | 11.6 | 16.2 | 2.1 / 2.2 | 2.5 / 3.2 |
-| 8 | 1,377 | 1,369 | 12.0 | 16.7 | 2.1 / 2.3 | 2.9 / 3.9 |
-| 16 | 2,659 | 2,629 | 12.0 | 17.4 | 2.2 / 2.4 | 3.9 / 5.9 |
-| all at t=0 | **16,269** | **10,584** | 421 | 347 | 8.1 / 12.8 | 10.2 / 20.1 |
+| 8 | 1,377 | 1,374 | 12.0 | 16.7 | 2.1 / 2.3 | 2.6 / 3.2 |
+| 16 | 2,659 | 2,644 | 12.0 | 16.6 | 2.2 / 2.4 | 3.1 / 4.7 |
+| all at t=0 | **16,269** | **13,945** | 421 | 505 | 8.1 / 12.8 | **6.2** / 12.0 |
 
-pagedserve rows 1–4 are from `pagedserve_flash_v4.json` and 8–inf from `_v5.json` (the
-commit between them changed only per-sequence CPU costs, invisible below 8 req/s).
+pagedserve rows 1–4 are from `pagedserve_flash_v4.json` and 8–inf from `_v6.json` (engine in
+its own process; the commits between them changed per-sequence and per-process CPU costs,
+invisible below 8 req/s).
 
 ![throughput vs offered load](results/plots/throughput_vs_rate.png)
 ![TPOT vs offered load](results/plots/tpot_vs_rate.png)
 
 (`results/pagedserve_flash_final.json` is those v4/v5 rows merged; regenerate the figures with
-`python -m pagedserve.bench.plot results/vllm.json results/pagedserve_flash.json results/pagedserve_flash_final.json --labels "vLLM,pagedserve (first run),pagedserve (after 5 fixes)" --ablation results/ablation_a100.json`.)
+`python -m pagedserve.bench.plot results/vllm.json results/pagedserve_flash.json results/pagedserve_flash_final.json --labels "vLLM,pagedserve (first run),pagedserve (after 6 fixes)" --ablation results/ablation_a100.json`.)
 
 Rates 1–8 are latency comparisons (throughput equals offered load for both); 16 and the
 saturation row compare capacity. The `paged_triton` server at block 16 matches these to
@@ -269,15 +273,16 @@ The same night, in order, each fix chosen from the profile and re-measured over 
 | `404bcd2` | **per-token CPU work that scaled with output length**: the detokenizer re-decoded a request's entire output every step, and the SSE loop polled `request.is_disconnected()` per token per stream. Sliding-window incremental detokenization (vLLM/TGI's two-offset scheme); sse-starlette already cancels on disconnect | 6,417 | 9.6 |
 | `d82393e` | **a 3.9 ms forward at batch 1 inside a CUDA graph**: graphs remove launch overhead, but every kernel still costs 3–4 us of GPU time and the model ran ~42 per layer (unfused RMSNorm is 8 on its own). Fused `qkv_proj` / `gate_up_proj` weights, decoder in (hidden, residual) form, Triton RMSNorm+residual, RoPE and SiLU-mul: ~13 kernels per layer | 8,356 | 4.2 |
 | `3805000` | **per-step host->device traffic and per-request decode calls**: six small `torch.tensor(..., device=cuda)` copies plus a per-row block-table build became two pinned copies; two `tokenizer.decode` calls per request became two Rust `decode_batch` calls per step | 10,584 | 3.9 |
+| `94bdca3` | **the server and the engine shared one GIL**: at 200 streams the in-process step was 6.1 ms but 10.2 ms seen through the server, because SSE delivery and the step loop serialized on the interpreter lock. The engine core now runs in its own process (`--engine-process`, default on CUDA): token ids cross a pipe, the API process keeps the tokenizer, batched detokenization and stop strings, and the two overlap | **13,945** | 3.1 |
 
-What is left after that is architectural. vLLM runs its scheduler in a separate process
-from the API server and overlaps step N+1's CPU work with step N on the GPU; pagedserve
-runs scheduling, sampling, detokenization and SSE delivery on one interpreter, so at 200
-streams the server's per-token work and the engine's per-step work serialize on the GIL:
-the in-process step at batch 200 is 6.1 ms, the same step measured through the server is
-10.2 ms. That is the remaining factor between 10.6k and 16.3k tok/s, and the batch-1
-forward at 1.9 ms sits within ~2x of the weight-read floor (~1 GB of fp16 weights plus
-the 272 MB `lm_head` per step on a 1.5 TB/s part).
+What is left is smaller and mostly known. At saturation TTFT is 505 vs 421 ms: vLLM's
+chunked prefill admits prompts in smaller pieces, so its first tokens come out earlier while
+its TPOT p50 pays for it (8.1 vs our 6.2 ms). At 16 req/s TPOT is 3.1 vs 2.2 ms: the
+remaining per-sequence CPU in the core (0.5 ms of input building and 1.2 ms of
+postprocessing at batch 200) sits on the critical path, and vLLM overlaps step N+1's CPU
+work with step N on the GPU (async scheduling), which pagedserve does not yet. The batch-1
+forward at 1.9 ms sits within ~2x of the weight-read floor (~1 GB of fp16 weights plus the
+272 MB `lm_head` per step on a 1.5 TB/s part); at 7B the forward *is* the floor.
 
 ### What the numbers taught us
 
@@ -299,6 +304,30 @@ the 272 MB `lm_head` per step on a 1.5 TB/s part).
   shared system prompts, which this trace does not have.
 * **Chunked prefill needs long prompts.** On a 208-token-median trace it changes nothing
   measurable; the long-prompt trace (1.5–2k tokens at a higher rate) is queued.
+
+## Models
+
+Three families run through the same decoder block (`model/qwen2.py`), with `ModelConfig`
+carrying the differences: `qwen2` (attention bias, rope_theta 1e6), `llama` and `mistral`
+(no bias, list-valued eos ids, Llama 3's RoPE frequency scaling). The golden gate is run
+per model on the A100 in fp16 (`golden/<model>/`), the profile is `scripts/profile_step.py`
+at batch 1, and the sweeps are the same 200-request trace with prompt ids drawn from each
+model's own vocabulary.
+
+| model | arch | golden vs HF | batch-1 forward | weight-read floor | saturation tok/s, pagedserve / vLLM | TPOT p50 @ 8 req/s |
+|---|---|---|---:|---:|---:|---:|
+| Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **13,945 / 16,269 (86%)** | 2.6 / 2.1 ms |
+| Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | 2,832 / 3,188 (89%) ¹ | 15.7 / 10.6 ms ¹ |
+| DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | 2,519 / 2,823 (89%) ¹ | 19.0 / 12.2 ms ¹ |
+
+¹ measured before the engine-process change (in-process engine); the 0.5B row is after it.
+
+At 7–8B the decode step is the weight read: 15–16 GB of fp16 at ~1.5 TB/s is 10–11 ms, and
+both engines land there at batch 1. The CPU-side costs that decide the 0.5B result are
+~10% of the step at this size. Any `model_type: qwen2 | llama | mistral` snapshot loads
+with `scripts/download_model.py --repo <hf repo>`; DeepSeek-R1-Distill-Qwen and Mistral-7B
+are the same code paths. DeepSeek-V3-style MoE (Moonshot Moonlight-16B-A3B, DeepSeek-V2-Lite)
+is in progress: the router and expert layer are in `model/moe.py`, MLA attention is next.
 
 ## Run it
 
@@ -383,7 +412,8 @@ results/               every JSON the tables above were built from
 
 ## Roadmap
 
-* Engine core in its own process with async scheduling (the vLLM v1 layout), for the saturation gap.
+* Async scheduling in the engine core (overlap step N+1's CPU work with step N on the GPU).
+* MLA attention + wiring the MoE layer: Moonshot Moonlight-16B-A3B-Instruct and DeepSeek-V2-Lite.
 * Route fresh-prompt prefill for `paged_triton` at block 16 through flash varlen (today it
   falls back to `paged_torch`, costing ~8 ms of TTFT).
 * Chunked-prefill ablation on a long-prompt trace.
