@@ -147,11 +147,22 @@ The MLP after the first layer is a **mixture of experts** (`model/moe.py`): a ro
 64 experts with a sigmoid, adds a per-expert bias that steers *which* experts are chosen
 but not their weights (DeepSeek-V3's aux-loss-free balancing), keeps the top-6, normalizes
 those six sigmoid scores and scales them by 2.446, and adds 2 shared experts every token
-uses. Experts are stored stacked (`[E, 2I, H]` and `[E, H, I]`); the forward gathers each
-expert's tokens, runs one fused SwiGLU per expert that received any, and `index_add_`s the
-weighted results back. The routing is tested against a line-by-line transcription of HF's
-`modeling_deepseek_v3` and the whole attention against a non-absorbed HF-style reference,
-and the real model matches HF greedy on Moonlight.
+uses. Experts are stored stacked (`[E, 2I, H]` and `[E, H, I]`). The reference forward
+loops over the experts that received tokens (gather, one fused SwiGLU, `index_add_` back);
+on CUDA the layer is four launches (`model/moe_triton.py`): a Triton **router** kernel
+(sigmoid, bias, top-k, gather, normalize, scale), a Triton **alignment** kernel that sorts
+the `N x k` (token, expert) assignments into 16-row blocks that each belong to one expert
+without ever asking the host how many tokens an expert got (program per expert: count,
+prefix-sum, rank, scatter), and a **grouped GEMM** kernel run twice (gate/up over all
+experts at once, then down with the routing weight folded in) whose program `(block,
+n-tile)` multiplies its block's rows by *its* expert's weight tile. The loop version was
+correct and 15x too slow on Moonlight: a host sync (`bincount` sizing its output) plus ~6
+launches per active expert per layer made a 63.6 ms batch-1 step against a ~4 ms
+weight-read floor; the fused path is 9.2 ms and, because nothing in it depends on tensor
+values on the host, it captures into CUDA graphs along with the Triton MLA decode kernel.
+The routing is tested against a line-by-line transcription of HF's `modeling_deepseek_v3`,
+the kernels against the loop, the attention against a non-absorbed HF-style reference, and
+the real model matches HF greedy on Moonlight through both the torch and the Triton paths.
 
 ### CUDA graphs
 
@@ -352,7 +363,7 @@ prompt ids drawn from each model's own vocabulary.
 | Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **13,945 / 16,269 (86%)** | 2.6 / 2.1 ms |
 | Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | **3,092 / 3,188 (97%)** | 13.2 / 10.6 ms |
 | DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | 2,519 / 2,823 (89%) ¹ | 19.0 / 12.2 ms ¹ |
-| Moonshot Moonlight-16B-A3B-Instruct | deepseek_v3, 27L, MLA (kv_lora 512 + rope 64), 64 experts top-6 + 2 shared, 3B active | all tokens (bf16; 2 tie-breaks inside noise) | torch reference path | | Triton MLA decode kernel in progress | |
+| Moonshot Moonlight-16B-A3B-Instruct | deepseek_v3, 27L, MLA (kv_lora 512 + rope 64), 64 experts top-6 + 2 shared, 3B active | all tokens (bf16; 2–3 tie-breaks inside noise, both paths) | 9.2 ms (`mla_triton` + fused MoE + graphs; 63.6 with the loop MoE) | ~3 ms (3B active + 0.7 GB lm_head) | pending / 3,223 | pending / 13.4 ms |
 
 ¹ measured with prefill-priority scheduling and the in-process engine; the 0.5B and 7B rows use the current CUDA defaults (engine process, chunked prefill with a 2048-token cap).
 
