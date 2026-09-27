@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.3, pytest-9.1.1, pluggy-1.6.0
+rootdir: /root/pagedserve
+configfile: pyproject.toml
+testpaths: tests
+plugins: timeout-2.4.0, xdist-3.8.0, anyio-4.11.0
+timeout: 600.0s
+timeout method: signal
+timeout func_only: False
+created: 4/4 workers
+4 workers [22 items]
+
+......................                                                   [100%]
+======================== 22 passed, 1 skipped in 15.67s ========================

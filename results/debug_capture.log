@@ -1,0 +1,2 @@
+capturing paged_triton block=16 groups=2 CUDA_LAUNCH_BLOCKING=1
+capture ok: CUDAGraphRunner(buckets=[1, 2, 4, 8, 16, 32, 64], max_blocks=32, scratch_block=63, captured=True)
