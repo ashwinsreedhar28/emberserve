@@ -52,12 +52,14 @@ def _chunk_text(obj: dict) -> str | None:
 
 
 async def _one_request(client: httpx.AsyncClient, model: str, req: TraceRequest,
-                       prompt: str | list[int], stream: bool, ignore_eos: bool,
-                       extra_body: dict[str, Any] | None) -> RequestRecord:
+                       prompt: str | list[int], stream: bool, ignore_eos: bool | None,
+                       extra_body: dict[str, Any] | None, path: str = "/v1/completions") -> RequestRecord:
     body: dict[str, Any] = {
         "model": model, "prompt": prompt, "max_tokens": req.output_len,
-        "temperature": 0.0, "stream": stream, "ignore_eos": ignore_eos,
+        "temperature": 0.0, "stream": stream,
     }
+    if ignore_eos is not None:  # a vLLM/pagedserve extension; None omits it (hosted APIs)
+        body["ignore_eos"] = ignore_eos
     if stream:
         body["stream_options"] = {"include_usage": True}
     if extra_body:
@@ -70,7 +72,7 @@ async def _one_request(client: httpx.AsyncClient, model: str, req: TraceRequest,
     usage_in: int | None = None
     try:
         if stream:
-            async with client.stream("POST", "/v1/completions", json=body) as resp:
+            async with client.stream("POST", path, json=body) as resp:
                 if resp.status_code != 200:
                     text = (await resp.aread()).decode(errors="replace")[:200]
                     raise RuntimeError(f"HTTP {resp.status_code}: {text}")
@@ -92,7 +94,7 @@ async def _one_request(client: httpx.AsyncClient, model: str, req: TraceRequest,
                         first = now
                     last = now
         else:
-            resp = await client.post("/v1/completions", json=body)
+            resp = await client.post(path, json=body)
             if resp.status_code != 200:
                 raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
             now = time.perf_counter()
@@ -115,14 +117,16 @@ async def run_http_benchmark(base_url: str, model: str, trace: list[TraceRequest
                              stream: bool = True, max_concurrency: int | None = None,
                              timeout_s: float = 600.0, api_key: str = "x",
                              transport: httpx.AsyncBaseTransport | None = None,
-                             tokenizer: Any = None, ignore_eos: bool = True,
+                             tokenizer: Any = None, ignore_eos: bool | None = True,
                              extra_body: dict[str, Any] | None = None,
-                             progress: bool = True) -> list[RequestRecord]:
+                             progress: bool = True, path: str = "/v1/completions") -> list[RequestRecord]:
     """Replay `trace` against `base_url` honoring each request's `arrival_s` offset.
 
     `max_concurrency=None` means unbounded (the endpoint's own admission control is
     what's under test). `transport` lets tests inject `httpx.ASGITransport(app=...)`.
     `tokenizer` (optional) renders text prompts; without it token ids are sent.
+    `ignore_eos=None` leaves the field out of the request (hosted OpenAI-compatible APIs
+    do not know it); `path` is the completions route relative to `base_url`.
     """
     sem = asyncio.Semaphore(max_concurrency) if max_concurrency else None
     prompts = [render_prompt(r, tokenizer) for r in trace]
@@ -139,10 +143,10 @@ async def run_http_benchmark(base_url: str, model: str, trace: list[TraceRequest
         if sem is not None:
             async with sem:
                 rec = await _one_request(client, model, req, prompts[i], stream, ignore_eos,
-                                         extra_body)
+                                         extra_body, path)
         else:
             rec = await _one_request(client, model, req, prompts[i], stream, ignore_eos,
-                                     extra_body)
+                                     extra_body, path)
         records[i] = rec
         done += 1
         if progress and (done % 10 == 0 or done == len(trace)):

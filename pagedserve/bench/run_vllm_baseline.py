@@ -14,6 +14,10 @@ the same seeded trace at each request rate through `run_http_benchmark`, writes
     # an endpoint that is already up (e.g. a Runpod vLLM pod)
     python -m pagedserve.bench.run_vllm_baseline --base-url https://<pod>-8000.proxy.runpod.net \
         --model Qwen/Qwen2.5-0.5B-Instruct --name runpod_vllm
+    # a hosted API (OpenRouter): text prompts, no /health, no ignore_eos, its own route
+    OPENAI_API_KEY=sk-or-... python -m pagedserve.bench.run_vllm_baseline --hosted \
+        --base-url https://openrouter.ai/api/v1 --model deepseek/deepseek-chat \
+        --tokenizer models/Qwen2.5-0.5B-Instruct --rates 1,2,4 --trace-n 50 --name openrouter_deepseek
 """
 
 from __future__ import annotations
@@ -117,6 +121,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--vllm-bin", default="vllm",
                    help="path to the vllm executable, e.g. /opt/vllm/bin/vllm when vLLM lives in its own venv")
     p.add_argument("--base-url", default=None, help="use a running endpoint; no subprocess")
+    p.add_argument("--hosted", action="store_true",
+                   help="a hosted OpenAI-compatible API: implies --completions-path /completions, "
+                        "--no-health and --no-ignore-eos (requires --base-url and --tokenizer)")
+    p.add_argument("--completions-path", default=None,
+                   help="completions route relative to --base-url (default /v1/completions)")
+    p.add_argument("--no-health", dest="health", action="store_false",
+                   help="do not poll <base-url>/health before the sweep")
+    p.add_argument("--no-ignore-eos", dest="ignore_eos", action="store_false",
+                   help="leave the vLLM/pagedserve `ignore_eos` field out of requests")
     p.add_argument("--model", required=True, help="model name/dir; also the `model` field sent")
     p.add_argument("--served-model-name", default=None)
     p.add_argument("--dtype", default=None)
@@ -159,23 +172,33 @@ def main(argv: list[str] | None = None) -> int:
 
         tokenizer = Tokenizer(args.tokenizer)
     model_name = args.served_model_name or args.model
-    vocab_size = args.vocab_size or _vocab_size_for(args.model)
+    if args.hosted:
+        if args.base_url is None or tokenizer is None:
+            raise SystemExit("--hosted needs --base-url and --tokenizer (hosted APIs take text prompts)")
+        args.completions_path = args.completions_path or "/completions"
+        args.health = False
+        args.ignore_eos = False
+    path = args.completions_path or "/v1/completions"
+    ignore_eos = True if args.ignore_eos else None
+    vocab_size = args.vocab_size or _vocab_size_for(args.tokenizer if args.hosted else args.model)
     print(f"[baseline] synthetic prompt ids drawn from [2, {vocab_size})", file=sys.stderr)
     proc: subprocess.Popen | None = None
     base_url = args.base_url or f"http://{args.host}:{args.port}"
     try:
         if args.base_url is None:
             proc = launch(server_command(args), out_dir / f"{name}.server.log")
-        print(f"[baseline] waiting for {base_url}/health ...", file=sys.stderr)
-        if not asyncio.run(wait_for_health(base_url, args.startup_timeout_s)):
-            print("[baseline] server never became healthy", file=sys.stderr)
-            return 1
+        if args.health:
+            print(f"[baseline] waiting for {base_url}/health ...", file=sys.stderr)
+            if not asyncio.run(wait_for_health(base_url, args.startup_timeout_s)):
+                print("[baseline] server never became healthy", file=sys.stderr)
+                return 1
         runs: list[dict[str, Any]] = []
         if args.warmup:
             warm = generate_trace(4, seed=1234, max_prompt_len=64, max_output_len=16,
                                   vocab_size=vocab_size)
             asyncio.run(run_http_benchmark(base_url, model_name, warm, tokenizer=tokenizer,
-                                           api_key=args.api_key, progress=False))
+                                           api_key=args.api_key, progress=False, path=path,
+                                           ignore_eos=ignore_eos))
         for rate in parse_rates(args.rates):
             trace = generate_trace(args.trace_n, seed=args.seed, request_rate=rate,
                                    shared_prefix_len=args.shared_prefix_len,
@@ -186,7 +209,8 @@ def main(argv: list[str] | None = None) -> int:
             t0 = time.perf_counter()
             records = asyncio.run(run_http_benchmark(
                 base_url, model_name, trace, max_concurrency=args.max_concurrency,
-                timeout_s=args.timeout_s, api_key=args.api_key, tokenizer=tokenizer))
+                timeout_s=args.timeout_s, api_key=args.api_key, tokenizer=tokenizer,
+                path=path, ignore_eos=ignore_eos))
             wall = time.perf_counter() - t0
             summary = summarize(records, slo_ttft_ms=args.slo_ttft_ms,
                                 slo_tpot_ms=args.slo_tpot_ms)

@@ -326,3 +326,33 @@ def test_http_load_generator_real_stream() -> None:
     finally:
         server.should_exit = True
         thread.join(timeout=5)
+
+
+def test_hosted_request_omits_ignore_eos_and_uses_path():
+    """`ignore_eos=None` leaves the vLLM extension out of the body and `path` picks the
+    route: what `run_vllm_baseline --hosted` sends to an OpenAI-compatible API."""
+    import json as _json
+
+    import httpx
+
+    from pagedserve.bench.load import run_http_benchmark
+    from pagedserve.bench.trace import generate_trace
+
+    seen: list[tuple[str, dict]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, _json.loads(request.content)))
+        lines = ['data: {"choices":[{"text":"hi"}]}', 'data: {"choices":[{"text":"!"}],"usage":'
+                 '{"prompt_tokens":3,"completion_tokens":2}}', "data: [DONE]"]
+        return httpx.Response(200, content="\n\n".join(lines).encode(),
+                              headers={"content-type": "text/event-stream"})
+
+    trace = generate_trace(2, seed=0, request_rate=None, max_prompt_len=8, max_output_len=4,
+                           vocab_size=100)
+    records = asyncio.run(run_http_benchmark(
+        "https://api.example", "m", trace, transport=httpx.MockTransport(handler),
+        ignore_eos=None, path="/completions", progress=False))
+    assert all(r.success for r in records) and len(seen) == 2
+    for path, body in seen:
+        assert path == "/completions"
+        assert "ignore_eos" not in body and body["stream"] is True
