@@ -185,8 +185,18 @@ def build_model(config: ModelConfig) -> nn.Module:
 
 def load_model(model_dir: str | os.PathLike, device: torch.device | str = "cpu",
                dtype: torch.dtype = torch.float32) -> nn.Module:
-    """Build the model for an HF snapshot directory, weights loaded, in eval mode."""
+    """Build the model for an HF snapshot directory, weights loaded, in eval mode.
+
+    Parameters are created directly on `device` in `dtype`: a 16B MoE model built in fp32 on
+    the host first (the obvious `Model(config).to(device, dtype)`) needs 64 GB of RAM before
+    a single weight is read."""
     config = ModelConfig.from_hf_dir(model_dir)
-    model = build_model(config).to(device=device, dtype=dtype)
+    prev = torch.get_default_dtype()
+    torch.set_default_dtype(dtype)
+    try:
+        with torch.device(device):
+            model = build_model(config)
+    finally:
+        torch.set_default_dtype(prev)
     load_hf_weights(model, model_dir, dtype=dtype, device=device)
     return model.eval()

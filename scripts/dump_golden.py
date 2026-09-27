@@ -47,8 +47,13 @@ def main() -> None:
 
     torch.manual_seed(0)
     tok = AutoTokenizer.from_pretrained(args.model, trust_remote_code=args.trust_remote_code)
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float32,
-                                                 trust_remote_code=args.trust_remote_code).eval().to(args.device)
+    # device_map places shards straight on the target device; a 16B model in fp32 is 64 GB
+    # and would otherwise be materialized on the host first.
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model, dtype=torch.float32, trust_remote_code=args.trust_remote_code,
+        device_map=args.device if args.device != "cpu" else None).eval()
+    if args.device == "cpu":
+        model = model.to(args.device)
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
 
