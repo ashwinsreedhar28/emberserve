@@ -64,3 +64,52 @@ def test_many_experts_few_tokens():
     idx, w = moe.gate(x)
     got = fused_moe_forward(x, idx, w, moe.experts_gate_up, moe.experts_down)
     torch.testing.assert_close(got, moe.forward_loop(x, idx, w), atol=1e-4, rtol=1e-4)
+
+
+def _gate_sorted(idx, w):
+    """topk order is unspecified (torch uses sorted=False): sort each row by expert id."""
+    order = idx.argsort(dim=1)
+    return idx.gather(1, order), w.gather(1, order)
+
+
+def _assert_gate_equal(got, want):
+    gi, gw = _gate_sorted(*got)
+    wi, ww = _gate_sorted(*want)
+    assert gi.tolist() == wi.tolist()
+    torch.testing.assert_close(gw, ww, atol=1e-5, rtol=1e-5)  # sigmoid differs by an ulp
+
+
+@pytest.mark.parametrize("n", [1, 5, 33])
+@pytest.mark.parametrize("norm", [True, False])
+def test_topk_gate_matches_torch(n, norm):
+    from pagedserve.model.moe_triton import topk_gate
+
+    moe = seed_module(DeepseekMoE(cfg(n_shared_experts=0, norm_topk_prob=norm)), 70 + n)
+    x = torch.randn(n, H, generator=torch.Generator().manual_seed(n))
+    logits = torch.nn.functional.linear(x, moe.gate.weight)
+    want = moe.gate.select(logits)
+    got = topk_gate(logits, moe.gate.e_score_correction_bias, moe.config.num_experts_per_tok,
+                    norm, moe.config.routed_scaling_factor)
+    assert got[0].dtype == torch.int64 and got[1].dtype == torch.float32
+    _assert_gate_equal(got, want)
+    # the module picks the kernel under the interpreter
+    _assert_gate_equal(moe.gate(x), want)
+
+
+@pytest.mark.parametrize("n", [1, 7, 40, 200])
+def test_align_kernel_matches_torch(n):
+    """The single-launch alignment kernel produces exactly the torch layout."""
+    e, k = 16, 4
+    ids = torch.randint(0, e, (n, k), generator=torch.Generator().manual_seed(n))
+    a = moe_align(ids, num_experts=e, block_m=16, use_kernel=True)
+    b = moe_align(ids, num_experts=e, block_m=16, use_kernel=False)
+    assert a[2] == b[2]
+    assert a[0].tolist() == b[0].tolist()
+    assert a[1].tolist() == b[1].tolist()
+
+
+def test_align_kernel_many_experts_few_tokens():
+    ids = torch.tensor([[63, 0], [63, 5]])
+    a = moe_align(ids, num_experts=64, block_m=16, use_kernel=True)
+    b = moe_align(ids, num_experts=64, block_m=16, use_kernel=False)
+    assert a[0].tolist() == b[0].tolist() and a[1].tolist() == b[1].tolist()

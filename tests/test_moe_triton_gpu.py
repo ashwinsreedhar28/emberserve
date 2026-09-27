@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 import torch
 
@@ -12,7 +14,7 @@ pytest.importorskip("triton")
 
 from pagedserve.config import MoEConfig  # noqa: E402
 from pagedserve.model.moe import DeepseekMoE  # noqa: E402
-from pagedserve.model.moe_triton import fused_moe_forward  # noqa: E402
+from pagedserve.model.moe_triton import fused_moe_forward, moe_align, topk_gate  # noqa: E402
 
 DEV = "cuda"
 
@@ -50,3 +52,32 @@ def test_fused_is_the_module_path_on_cuda():
         manual = (fused_moe_forward(x, idx, w, moe.experts_gate_up, moe.experts_down)
                   + moe.shared_experts(x)).float()
     torch.testing.assert_close(via_module, manual, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("n", [1, 8, 200, 682, 1500])
+def test_align_kernel_matches_torch_layout(n):
+    """Single-launch alignment == the sort-based torch layout, bit for bit (E=64, k=6; 682*6
+    is the last size the kernel takes by default, 1500*6 is above it and forced)."""
+    ids = torch.randint(0, 64, (n, 6), generator=torch.Generator().manual_seed(n)).to(DEV)
+    a = moe_align(ids, num_experts=64, block_m=16, use_kernel=True)
+    b = moe_align(ids, num_experts=64, block_m=16, use_kernel=False)
+    assert a[2] == b[2]
+    assert torch.equal(a[0], b[0]) and torch.equal(a[1], b[1])
+
+
+@pytest.mark.parametrize("n", [1, 8, 200, 4096])
+@pytest.mark.parametrize("norm", [True, False])
+def test_topk_gate_matches_torch(n, norm):
+    moe = _moe(torch.bfloat16, seed=3)
+    moe.config = dataclasses.replace(moe.config, norm_topk_prob=norm)
+    moe.gate.config = moe.config
+    x = (torch.randn(n, 2048, generator=torch.Generator().manual_seed(n)) * 0.5).to(DEV, torch.bfloat16)
+    logits = torch.nn.functional.linear(x.float(), moe.gate.weight.float())
+    wi, ww = moe.gate.select(logits)
+    gi, gw = topk_gate(logits, moe.gate.e_score_correction_bias, 6, norm, 2.446)
+    oi, ow = wi.argsort(1), gi.argsort(1)
+    assert torch.equal(wi.gather(1, oi), gi.gather(1, ow))
+    torch.testing.assert_close(gw.gather(1, ow), ww.gather(1, oi), atol=1e-5, rtol=1e-5)
+    # module path on CUDA is the kernel
+    mi, mw = moe.gate(x)
+    assert torch.equal(mi.gather(1, mi.argsort(1)), gi.gather(1, ow))

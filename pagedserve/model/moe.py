@@ -43,7 +43,31 @@ class MoEGate(nn.Module):
         """`x: [N, H]` -> `(topk_idx [N, k] int64, topk_weight [N, k] float32)`."""
         c = self.config
         n = x.shape[0]
-        logits = F.linear(x.float(), self.weight.float())  # [N, E]
+        logits = F.linear(x.float(), self._weight_f32())  # [N, E]
+        if c.n_group == 1:
+            from pagedserve.model.moe_triton import fused_moe_enabled, topk_gate
+
+            if fused_moe_enabled(x):
+                return topk_gate(logits, self.e_score_correction_bias, c.num_experts_per_tok,
+                                 c.norm_topk_prob, c.routed_scaling_factor)
+        return self.select(logits)
+
+    def _weight_f32(self) -> torch.Tensor:
+        """The router runs in fp32 (HF does too); the cast is cached, weights never change."""
+        if self.weight.dtype == torch.float32:
+            return self.weight
+        key = (self.weight.data_ptr(), self.weight._version, str(self.weight.device))
+        cached = getattr(self, "_w32", None)
+        if cached is None or cached[0] != key:
+            cached = (key, self.weight.detach().float())
+            self._w32 = cached
+        return cached[1]
+
+    def select(self, logits: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Routing from the fp32 logits in torch ops (the reference for `topk_gate`, and
+        the path for group-limited routing, `n_group > 1`)."""
+        c = self.config
+        n = logits.shape[0]
         scores = torch.sigmoid(logits)
         choice = scores + self.e_score_correction_bias.float()
         if c.n_group > 1:
