@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover - depends on the environment
     def _dumps(obj: Any) -> str:
         return json.dumps(obj, separators=(",", ":"))
 
+from pagedserve import diag
 from pagedserve.config import EngineConfig
 from pagedserve.engine import LLMEngine
 from pagedserve.sched.request import RequestOutput
@@ -65,6 +66,7 @@ def create_app(async_engine: "AsyncLLMEngine | AsyncEngineCoreClient", model_nam
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if manage_lifespan:
             async_engine.start()
+        diag.install("api")  # PAGEDSERVE_STEP_LOG (GC pauses) / PAGEDSERVE_GC, once the engine is up
         try:
             yield
         finally:

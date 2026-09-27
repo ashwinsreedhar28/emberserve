@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from multiprocessing.connection import Connection
 from typing import Any
 
+from pagedserve import diag
 from pagedserve.config import EngineConfig
 from pagedserve.sched.request import SamplingParams
 
@@ -91,6 +92,8 @@ def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connectio
     try:
         engine = build_engine(spec)
         engine.keep_stats = False
+        diag.install("core")  # PAGEDSERVE_STEP_LOG / PAGEDSERVE_GC, after the model is built
+        step_log = diag.step_log_path() is not None
         out_conn.send(("ready", {"eos_token_ids": sorted(engine.eos_token_ids),
                                  "max_model_len": engine.config.max_model_len,
                                  "vocab_size": engine.model_config.vocab_size,
@@ -139,7 +142,13 @@ def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connectio
             waiting_before = {r.request_id for r in sched.waiting}
             idle_before = not sched.running
             try:
+                if step_log:
+                    t_step = time.perf_counter()
+                    n_seqs = sched.num_running
                 outputs = engine.step()
+                if step_log:
+                    diag.record_step(t_step, time.perf_counter() - t_step, n_seqs,
+                                     sum(len(o.new_token_ids) for o in outputs))
             except Exception as exc:  # noqa: BLE001 - every in-flight request is told
                 if engine.tp.size > 1:
                     # A failed step may have left a worker inside a collective the driver

@@ -246,6 +246,33 @@ without `--enable-cuda-graphs` first to separate the sharding from the capture: 
 collectives are captured inside the graphs (torch's NCCL process group supports capture
 once the communicator exists, which the warmup guarantees).
 
+## Saturation stalls: the step log and the GC knob
+
+Eight repeats of the 0.5B saturation point spread 17.0–20.8k tok/s (vLLM's: within 1%),
+with TPOT p99 doubling in the slow runs. `PAGEDSERVE_STEP_LOG=<path>` makes the engine
+core write every step (start, duration, running sequences, tokens) and both processes
+write their GC pauses (`<path>.gc-core`, `<path>.gc-api`); `scripts/stall_report.py`
+prints step and inter-step-gap percentiles, the worst stalls with the GC pauses that
+overlap them, and each process's GC totals. `PAGEDSERVE_GC=tune` is the first candidate
+fix: `gc.freeze()` after startup plus raised thresholds (50,000 / 20 / 25), so the
+collector stops walking the model, tokenizer and stream state every few thousand
+allocations. (On the CPU tiny model one gen-2 pass in the API process took 108 ms.) The
+A/B, three repeats each, server-side numbers from `/metrics`:
+
+```bash
+T="--tokenizer models/Qwen2.5-0.5B-Instruct --sharegpt data/ShareGPT_V3_unfiltered_cleaned_split.json --max-model-len 4096 --rates inf,inf,inf --trace-n 200 --client-procs 4"
+S="--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs"
+PAGEDSERVE_STEP_LOG=results/steps_sat_default.tsv python -m pagedserve.bench.run_vllm_baseline --server pagedserve \
+  --model models/Qwen2.5-0.5B-Instruct --dtype float16 $T --server-args "$S" --name pagedserve_flash_text_sat_gcdefault
+PAGEDSERVE_GC=tune PAGEDSERVE_STEP_LOG=results/steps_sat_gctune.tsv python -m pagedserve.bench.run_vllm_baseline --server pagedserve \
+  --model models/Qwen2.5-0.5B-Instruct --dtype float16 $T --server-args "$S" --name pagedserve_flash_text_sat_gctune
+python scripts/stall_report.py results/steps_sat_default.tsv; python scripts/stall_report.py results/steps_sat_gctune.tsv
+```
+
+The step log covers the whole server lifetime (all three repeats), which is what the
+report expects; the `gap` stalls are time the core spent outside `step()` (draining the
+command pipe, sending outputs), the `step` stalls inside it.
+
 ## Block size 256 with `paged_flash`
 
 Upstream flash-attn (2.6.3 through 2.8.3.post1 and `main`) hard-checks
