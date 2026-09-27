@@ -433,6 +433,13 @@ python -m pagedserve.cli serve --model models/Qwen2.5-0.5B-Instruct --device cud
   --attn-backend paged_triton --block-size 16 --enable-cuda-graphs --enable-prefix-caching
 ```
 
+### On Runpod Serverless
+
+`deploy/runpod/` has a worker (`handler.py`: one engine per worker, every job the worker
+holds in the same continuous batch, streamed chunks) and a Dockerfile that bakes a model
+into the image; `deploy/runpod/README.md` has the build, endpoint and `curl` steps. The
+job contract is tested on the CPU engine (`tests/test_runpod_handler.py`).
+
 ### Benchmarks
 
 ```bash
@@ -478,6 +485,7 @@ scripts/               download_model, dump_golden, check_golden, gpu_smoke, ben
                        gpu_debug_capture, pod_setup.sh
 tests/                 one file per component; *_gpu.py need CUDA; test_engine.py holds the end-to-end gates
 results/               every JSON the tables above were built from
+deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 ```
 
 ## Roadmap
@@ -486,7 +494,7 @@ results/               every JSON the tables above were built from
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Piecewise CUDA graphs so mixed (chunked-prefill) steps are captured too; chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
-* Speculative decoding; Runpod Serverless deployment.
+* Speculative decoding. (Runpod Serverless: worker + Dockerfile in `deploy/runpod/`, endpoint not yet deployed.)
 
 ## License
 
