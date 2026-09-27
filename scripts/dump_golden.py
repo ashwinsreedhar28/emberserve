@@ -39,12 +39,13 @@ def main() -> None:
     ap.add_argument("--model", default="models/Qwen2.5-0.5B-Instruct")
     ap.add_argument("--out", default="golden")
     ap.add_argument("--max-new-tokens", type=int, default=MAX_NEW_TOKENS)
+    ap.add_argument("--device", default="cpu", help="cpu (default) or cuda; fp32 either way")
     args = ap.parse_args()
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     torch.manual_seed(0)
     tok = AutoTokenizer.from_pretrained(args.model)
-    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float32).eval()
+    model = AutoModelForCausalLM.from_pretrained(args.model, dtype=torch.float32).eval().to(args.device)
     out_dir = Path(args.out)
     out_dir.mkdir(exist_ok=True)
 
@@ -60,14 +61,14 @@ def main() -> None:
     golden = []
     with torch.inference_mode():
         for i, e in enumerate(entries):
-            ids = torch.tensor([e["prompt_ids"]])
+            ids = torch.tensor([e["prompt_ids"]], device=args.device)
             # Pure greedy. Qwen2.5's generation_config.json sets repetition_penalty=1.05,
             # top_k=20, top_p=0.8, temperature=0.7 and do_sample=False does NOT clear the
             # penalty, so override every sampling knob explicitly.
             gen = model.generate(ids, max_new_tokens=args.max_new_tokens, do_sample=False,
                                  repetition_penalty=1.0, temperature=None, top_k=None, top_p=None,
                                  eos_token_id=tok.eos_token_id, pad_token_id=tok.eos_token_id)
-            out_ids = gen[0, ids.shape[1]:].tolist()
+            out_ids = gen[0, ids.shape[1]:].cpu().tolist()
             golden.append({"prompt_ids": e["prompt_ids"], "output_ids": out_ids})
             print(f"[{i}] {len(e['prompt_ids'])} -> {len(out_ids)} tokens: "
                   f"{tok.decode(out_ids)[:80]!r}")
