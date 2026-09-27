@@ -217,7 +217,7 @@ Every backend at its own minimum block size (`paged_flash` 256, the rest 16):
 
 The Triton path at block 16 keeps up with flash at block 256 (1,394 vs 1,407 tok/s) with
 22 points more slot utilization; its +8 ms TTFT is the gather-path prefill fallback, not
-the kernel. Chunked prefill changes nothing on a 208-token-median trace, as expected.
+the kernel. Chunked prefill changes nothing at 0.5B, where a prefill is ~8 ms; at 7B it is the difference between 24.8 and 17.5 ms TPOT (see [Models](#models)).
 
 ### A100, pagedserve over HTTP vs vLLM (`results/vllm.json`, `results/pagedserve_*.json`)
 
@@ -302,8 +302,11 @@ forward at 1.9 ms sits within ~2x of the weight-read floor (~1 GB of fp16 weight
 * **Prefix caching needs prefixes.** With ShareGPT-like traces and no system prompt it is a
   no-op; with a 512-token shared prefix it saves ~1 ms of an ~9 ms TTFT. It pays on long
   shared system prompts, which this trace does not have.
-* **Chunked prefill needs long prompts.** On a 208-token-median trace it changes nothing
-  measurable; the long-prompt trace (1.5–2k tokens at a higher rate) is queued.
+* **Chunked prefill needs expensive prefills, not long prompts.** At 0.5B a prefill is
+  ~8 ms and chunking changes nothing on a 208-token-median trace; at 7B the same prompt is
+  ~30 ms of compute and prefill-priority scheduling was the whole gap to vLLM at 16 req/s.
+  The knob that matters is prefill cost relative to a decode step, which grows with model
+  size.
 
 ## Models
 
@@ -317,14 +320,24 @@ model's own vocabulary.
 | model | arch | golden vs HF | batch-1 forward | weight-read floor | saturation tok/s, pagedserve / vLLM | TPOT p50 @ 8 req/s |
 |---|---|---|---:|---:|---:|---:|
 | Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **13,945 / 16,269 (86%)** | 2.6 / 2.1 ms |
-| Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | 2,832 / 3,188 (89%) ¹ | 15.7 / 10.6 ms ¹ |
+| Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | **2,896 / 3,188 (91%)** | 13.1 / 10.6 ms |
 | DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | 2,519 / 2,823 (89%) ¹ | 19.0 / 12.2 ms ¹ |
 
-¹ measured before the engine-process change (in-process engine); the 0.5B row is after it.
+¹ measured with prefill-priority scheduling and the in-process engine; the 0.5B and 7B rows use the current CUDA defaults (engine process, chunked prefill with a 512-token cap).
 
 At 7–8B the decode step is the weight read: 15–16 GB of fp16 at ~1.5 TB/s is 10–11 ms, and
 both engines land there at batch 1. The CPU-side costs that decide the 0.5B result are
-~10% of the step at this size. Any `model_type: qwen2 | llama | mistral` snapshot loads
+~10% of the step at this size, and moving the engine to its own process changed nothing
+measurable at 7B (2,832 → 2,859 tok/s). What did matter at 7B was *scheduling*: a 7B
+prefill of a 270-token prompt is ~30 ms of compute-bound work, and prefill-priority runs
+one for every arrival while every decoder waits, so TPOT at 16 req/s was 24.8 ms against
+vLLM's 11.5. Chunked prefill (512-token cap, decode rows and the chunk in one step) brings
+that to 17.5 ms, saturation TPOT p99 from 99.6 to 41.6 ms (vLLM: 112), and throughput to
+91% of vLLM. The first chunked run measured 2x *slower*: the mixed-step attention path
+padded every sequence's queries to the chunk length (100k padded queries per layer at 200
+decodes plus one chunk); the fix batches the decode rows and pads only the chunk rows. The
+residual at 16 req/s is that a mixed step runs eagerly, outside CUDA graphs; vLLM's
+piecewise graphs keep everything but attention captured. Any `model_type: qwen2 | llama | mistral` snapshot loads
 with `scripts/download_model.py --repo <hf repo>`; DeepSeek-R1-Distill-Qwen and Mistral-7B
 are the same code paths. DeepSeek-V3-style MoE (Moonshot Moonlight-16B-A3B, DeepSeek-V2-Lite)
 is in progress: the router and expert layer are in `model/moe.py`, MLA attention is next.
@@ -416,7 +429,7 @@ results/               every JSON the tables above were built from
 * MLA attention + wiring the MoE layer: Moonshot Moonlight-16B-A3B-Instruct and DeepSeek-V2-Lite.
 * Route fresh-prompt prefill for `paged_triton` at block 16 through flash varlen (today it
   falls back to `paged_torch`, costing ~8 ms of TTFT).
-* Chunked-prefill ablation on a long-prompt trace.
+* Piecewise CUDA graphs so mixed (chunked-prefill) steps are captured too; chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
 * Speculative decoding; Runpod Serverless deployment.
 

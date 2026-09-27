@@ -18,25 +18,35 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--block-size", type=int, default=16)
     p.add_argument("--num-blocks", type=int, default=None)
     p.add_argument("--max-num-seqs", type=int, default=256)
-    p.add_argument("--max-num-batched-tokens", type=int, default=8192)
+    p.add_argument("--max-num-batched-tokens", type=int, default=None,
+                   help="prefill token budget per step (default 8192; 512 when chunked prefill is on)")
     p.add_argument("--max-model-len", type=int, default=4096)
     p.add_argument("--enable-prefix-caching", action="store_true")
     p.add_argument("--enable-cuda-graphs", action="store_true")
-    p.add_argument("--enable-chunked-prefill", action="store_true",
-                   help="mix decode tokens and prompt chunks in every step; "
-                        "--max-num-batched-tokens becomes the per-step cap (try 512-2048)")
+    p.add_argument("--enable-chunked-prefill", dest="enable_chunked_prefill", action="store_true",
+                   default=None,
+                   help="mix decode tokens and prompt chunks in every step; --max-num-batched-tokens "
+                        "becomes the per-step cap. Default: on for --device cuda (with a 512-token "
+                        "cap unless --max-num-batched-tokens is given), off otherwise")
+    p.add_argument("--no-chunked-prefill", dest="enable_chunked_prefill", action="store_false")
 
 
 def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
+    chunked = args.enable_chunked_prefill
+    if chunked is None:
+        chunked = args.device.startswith("cuda")
+    budget = args.max_num_batched_tokens
+    if budget is None:
+        budget = 512 if chunked else 8192
     return EngineConfig(model_dir=args.model, device=args.device,
                         dtype=EngineConfig.dtype_from_str(args.dtype),
                         block_size=args.block_size, num_gpu_blocks=args.num_blocks,
                         max_num_seqs=args.max_num_seqs,
-                        max_num_batched_tokens=args.max_num_batched_tokens,
+                        max_num_batched_tokens=budget,
                         max_model_len=args.max_model_len, attn_backend=args.attn_backend,
                         enable_prefix_caching=args.enable_prefix_caching,
                         enable_cuda_graphs=args.enable_cuda_graphs,
-                        enable_chunked_prefill=args.enable_chunked_prefill)
+                        enable_chunked_prefill=chunked)
 
 
 def build_parser() -> argparse.ArgumentParser:
