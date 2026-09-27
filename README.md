@@ -126,6 +126,32 @@ length *after* the write.
 64-token shared prefix never fills a block and gets zero cache hits, and KV utilization drops
 to 76%. The Triton kernel makes block 16 usable on the GPU.
 
+### Latent attention and MoE
+
+DeepSeek-V2/V3 (and Moonshot's Moonlight, which uses that architecture) replace per-head K/V
+with **multi-head latent attention**: each token is projected to a 512-dim compressed latent
+`c` plus a 64-dim rope key `k_pe` shared by all heads, and per-head keys and values are
+`W_UK[h] c` and `W_UV[h] c`, never stored. The cache row is `[c | k_pe]`, 576 values per
+token per layer (`kv/cache.py: PagedLatentCache`): Moonlight caches 31 KB per token where
+its GQA equivalent would need ~220 KB. pagedserve runs the *absorbed* form
+(`attn/mla_torch.py`): `W_UK` is folded into the query (`q_c = W_UK[h]^T q_nope`, a
+512-dim query per head) so scores are dot products against the raw cache rows, and `W_UV`
+is applied after the softmax. Attention becomes MQA over the latent, 16 query heads
+against one 576-wide key row, which is exactly what the Triton decode kernel is shaped for
+and what flash-attn cannot do (its head dim tops out at 256). DeepSeek's RoPE pairs
+dimensions (2i, 2i+1) rather than (i, i+D/2); the model permutes q_pe/k_pe once so the
+same rotate-half kernel applies.
+
+The MLP after the first layer is a **mixture of experts** (`model/moe.py`): a router scores
+64 experts with a sigmoid, adds a per-expert bias that steers *which* experts are chosen
+but not their weights (DeepSeek-V3's aux-loss-free balancing), keeps the top-6, normalizes
+those six sigmoid scores and scales them by 2.446, and adds 2 shared experts every token
+uses. Experts are stored stacked (`[E, 2I, H]` and `[E, H, I]`); the forward gathers each
+expert's tokens, runs one fused SwiGLU per expert that received any, and `index_add_`s the
+weighted results back. The routing is tested against a line-by-line transcription of HF's
+`modeling_deepseek_v3` and the whole attention against a non-absorbed HF-style reference,
+and the real model matches HF greedy on Moonlight.
+
 ### CUDA graphs
 
 `--enable-cuda-graphs` captures the decode forward once per batch bucket (1, 2, 4, ..., 256)
@@ -310,25 +336,31 @@ forward at 1.9 ms sits within ~2x of the weight-read floor (~1 GB of fp16 weight
 
 ## Models
 
-Three families run through the same decoder block (`model/qwen2.py`), with `ModelConfig`
-carrying the differences: `qwen2` (attention bias, rope_theta 1e6), `llama` and `mistral`
-(no bias, list-valued eos ids, Llama 3's RoPE frequency scaling). The golden gate is run
-per model on the A100 in fp16 (`golden/<model>/`), the profile is `scripts/profile_step.py`
-at batch 1, and the sweeps are the same 200-request trace with prompt ids drawn from each
-model's own vocabulary.
+Three dense families run through the same decoder block (`model/qwen2.py`), with
+`ModelConfig` carrying the differences: `qwen2` (attention bias, rope_theta 1e6), `llama`
+and `mistral` (no bias, list-valued eos ids, Llama 3's RoPE frequency scaling). The
+DeepSeek-V2/V3 family (`model/deepseek.py`: multi-head latent attention + mixture of
+experts) is its own block; see [Latent attention and MoE](#latent-attention-and-moe). The
+golden gate is run per model on the A100 (`golden/<model>/`), the profile is
+`scripts/profile_step.py` at batch 1, and the sweeps are the same 200-request trace with
+prompt ids drawn from each model's own vocabulary.
 
 | model | arch | golden vs HF | batch-1 forward | weight-read floor | saturation tok/s, pagedserve / vLLM | TPOT p50 @ 8 req/s |
 |---|---|---|---:|---:|---:|---:|
 | Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **13,945 / 16,269 (86%)** | 2.6 / 2.1 ms |
 | Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | **3,092 / 3,188 (97%)** | 13.2 / 10.6 ms |
 | DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | 2,519 / 2,823 (89%) ¹ | 19.0 / 12.2 ms ¹ |
+| Moonshot Moonlight-16B-A3B-Instruct | deepseek_v3, 27L, MLA (kv_lora 512 + rope 64), 64 experts top-6 + 2 shared, 3B active | all tokens (bf16; 2 tie-breaks inside noise) | torch reference path | | Triton MLA decode kernel in progress | |
 
 ¹ measured with prefill-priority scheduling and the in-process engine; the 0.5B and 7B rows use the current CUDA defaults (engine process, chunked prefill with a 2048-token cap).
 
 At 7–8B the decode step is the weight read: 15–16 GB of fp16 at ~1.5 TB/s is 10–11 ms, and
 both engines land there at batch 1. The CPU-side costs that decide the 0.5B result are
 ~10% of the step at this size, and moving the engine to its own process changed nothing
-measurable at 7B (2,832 → 2,859 tok/s). What did matter at 7B was *scheduling*: a 7B
+measurable at 7B (2,832 → 2,859 tok/s). Moonlight is the DeepSeek-V3 architecture (Kimi's
+lab's 16B/3B-active model): it runs through the from-scratch MLA + MoE path and matches
+HF's greedy tokens; its serving numbers wait on the Triton latent-attention kernel, since
+flash-attn cannot take the 576-wide absorbed key. What did matter at 7B was *scheduling*: a 7B
 prefill of a 270-token prompt is ~30 ms of compute-bound work, and prefill-priority runs
 one for every arrival while every decoder waits, so TPOT at 16 req/s was 24.8 ms against
 vLLM's 11.5. Chunked prefill (decode rows and a prompt chunk in one step) brings that to
@@ -338,10 +370,9 @@ for a 42 ms tail. The first chunked run measured 2x *slower*: the mixed-step att
 padded every sequence's queries to the chunk length (100k padded queries per layer at 200
 decodes plus one chunk); the fix batches the decode rows and pads only the chunk rows. The
 residual at 16 req/s is that a mixed step runs eagerly, outside CUDA graphs; vLLM's
-piecewise graphs keep everything but attention captured. Any `model_type: qwen2 | llama | mistral` snapshot loads
-with `scripts/download_model.py --repo <hf repo>`; DeepSeek-R1-Distill-Qwen and Mistral-7B
-are the same code paths. DeepSeek-V3-style MoE (Moonshot Moonlight-16B-A3B, DeepSeek-V2-Lite)
-is in progress: the router and expert layer are in `model/moe.py`, MLA attention is next.
+piecewise graphs keep everything but attention captured. Any `model_type: qwen2 | llama | mistral | deepseek_v2 | deepseek_v3` snapshot loads with
+`scripts/download_model.py --repo <hf repo>`; DeepSeek-R1-Distill-Qwen, Mistral-7B and
+DeepSeek-V2-Lite are the same code paths as the rows above.
 
 ## Run it
 
@@ -427,7 +458,7 @@ results/               every JSON the tables above were built from
 ## Roadmap
 
 * Async scheduling in the engine core (overlap step N+1's CPU work with step N on the GPU).
-* MLA attention + wiring the MoE layer: Moonshot Moonlight-16B-A3B-Instruct and DeepSeek-V2-Lite.
+* Triton MLA decode kernel + flash-varlen prefill for the DeepSeek/Moonlight path, then its vLLM sweep.
 * Route fresh-prompt prefill for `paged_triton` at block 16 through flash varlen (today it
   falls back to `paged_torch`, costing ~8 ms of TTFT).
 * Piecewise CUDA graphs so mixed (chunked-prefill) steps are captured too; chunked-prefill ablation on a long-prompt trace.

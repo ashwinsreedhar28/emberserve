@@ -30,6 +30,28 @@ scp -i ~/.ssh/runpod -P <port> -r root@<ip>:/root/pagedserve/results/ .   # from
 The engine reserves 90% of free GPU memory for the KV cache at startup, so one GPU job at a
 time; `nvidia-smi --query-gpu=memory.used --format=csv` should read ~0 MiB before a run.
 
+## Serving defaults on CUDA
+
+`pagedserve serve --device cuda` now defaults to the engine in its own process
+(`--engine-process`; `--no-engine-process` for the single-process path) and chunked prefill
+with a 2048-token per-step cap (`--no-chunked-prefill`; `--max-num-batched-tokens 512` for
+a tighter TPOT tail at ~6% throughput). Both were measured on the A100: the process split
+took Qwen2.5-0.5B from 10.6k to 13.9k tok/s at saturation, chunked prefill took Qwen2.5-7B
+from 89% to 97% of vLLM.
+
+## DeepSeek / Moonlight checkpoints
+
+`scripts/download_model.py` fetches the repo's own tokenizer/modeling code and tiktoken
+files; the golden dump needs `pip install tiktoken blobfile` and `--trust-remote-code` for
+Moonlight's tokenizer (the model itself loads through transformers' native DeepSeek-V3).
+The 16B model is built directly on the GPU in bf16 (32 GB); the fp32 HF reference is 64 GB,
+so run the dump first, then the check:
+
+```bash
+python scripts/dump_golden.py --model models/Moonlight-16B-A3B-Instruct --out golden/moonlight --device cuda --trust-remote-code
+python scripts/check_golden.py --model models/Moonlight-16B-A3B-Instruct --golden golden/moonlight --device cuda --dtype bfloat16 --backends mla_torch --block-size 16
+```
+
 ## vLLM goes in its own venv
 
 `pip install vllm` replaces torch with the version vLLM pins (2.13/cu130 on Sep 27, 2026),
