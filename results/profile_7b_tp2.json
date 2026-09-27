@@ -1,0 +1,61 @@
+{
+ "kind": "profile_step",
+ "device": "cuda",
+ "dtype": "float16",
+ "attn_backend": "paged_flash",
+ "block_size": 256,
+ "cuda_graphs": true,
+ "prompt_len": 256,
+ "quantization": null,
+ "tensor_parallel_size": 2,
+ "steps": 30,
+ "torch": "2.8.0+cu128",
+ "gpu": "NVIDIA A100-SXM4-80GB",
+ "rows": [
+  {
+   "schedule": 0.007333777224024137,
+   "build_inputs": 0.44686803594231606,
+   "forward": 7.0473915586868925,
+   "sample": 0.09273363587756951,
+   "postprocess": 0.02806020590166251,
+   "total": 7.652846304699779,
+   "unaccounted": 0.030459091067314148,
+   "n": 1,
+   "ms_per_seq": NaN
+  },
+  {
+   "schedule": 0.014926400035619736,
+   "build_inputs": 0.4260210630794366,
+   "forward": 7.548249730219443,
+   "sample": 0.09652888402342796,
+   "postprocess": 0.18031077149013677,
+   "total": 8.299970859661698,
+   "unaccounted": 0.033934010813634785,
+   "n": 8,
+   "ms_per_seq": 0.09244636499455997
+  },
+  {
+   "schedule": 0.038081128150224686,
+   "build_inputs": 0.5261935914556185,
+   "forward": 7.642821191499631,
+   "sample": 0.10921756426493327,
+   "postprocess": 0.33888337202370167,
+   "total": 8.694496673221389,
+   "unaccounted": 0.03929982582728009,
+   "n": 32,
+   "ms_per_seq": 0.033601624791019684
+  },
+  {
+   "schedule": 0.12868309083084264,
+   "build_inputs": 0.7514125822732846,
+   "forward": 11.213304878522953,
+   "sample": 0.22833269710342088,
+   "postprocess": 0.9069047402590513,
+   "total": 13.284010967860619,
+   "unaccounted": 0.05537297887106618,
+   "n": 128,
+   "ms_per_seq": 0.04433987923748693
+  }
+ ],
+ "kernels": {}
+}
