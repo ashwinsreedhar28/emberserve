@@ -57,6 +57,8 @@ def main() -> int:
     ap.add_argument("--client-procs", type=int, default=4)
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--port", type=int, default=0)
+    ap.add_argument("--cprofile", default=None, metavar="OUT",
+                    help="cProfile the server's event-loop thread; prints the top functions and saves the stats")
     args = ap.parse_args()
     port = args.port
     if not port:
@@ -68,7 +70,22 @@ def main() -> int:
     client = AsyncEngineCoreClient(EngineSpec(ecfg, tiny=True, fake_step_ms=args.step_ms), _StubTokenizer())
     app = create_app(client, "fake")
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
-    threading.Thread(target=server.run, daemon=True).start()
+    prof = None
+    if args.cprofile:
+        import cProfile
+
+        prof = cProfile.Profile()
+
+        def run_profiled() -> None:
+            prof.enable()
+            try:
+                server.run()
+            finally:
+                prof.disable()
+
+        threading.Thread(target=run_profiled, daemon=True).start()
+    else:
+        threading.Thread(target=server.run, daemon=True).start()
     base = f"http://127.0.0.1:{port}"
     if not asyncio.run(wait_for_health(base, 60)):
         print("server did not start", file=sys.stderr)
@@ -102,7 +119,13 @@ def main() -> int:
     if m:
         print(f"server: generated {m.get('generated_tokens_total')} tokens over {m.get('steps_total')} steps")
     server.should_exit = True
-    time.sleep(1.0)
+    time.sleep(1.5)
+    if prof is not None:
+        import pstats
+
+        prof.dump_stats(args.cprofile)
+        st = pstats.Stats(prof)
+        st.sort_stats("tottime").print_stats(30)
     return 0
 
 
