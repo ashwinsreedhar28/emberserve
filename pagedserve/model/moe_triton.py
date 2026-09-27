@@ -97,7 +97,9 @@ def moe_align(topk_ids: Tensor, num_experts: int, block_m: int = BLOCK_M) -> tup
     flat = topk_ids.reshape(-1)
     order = torch.argsort(flat, stable=True)
     sorted_e = flat[order]
-    counts = torch.bincount(flat, minlength=num_experts)  # [E]
+    # scatter_add, not bincount: bincount on CUDA syncs to size its output (input.max()).
+    counts = torch.zeros(num_experts, dtype=torch.long, device=dev).scatter_add_(
+        0, flat.long(), torch.ones_like(flat, dtype=torch.long))  # [E]
     padded = (counts + block_m - 1) // block_m * block_m
     pad_starts = torch.cumsum(padded, 0) - padded
     unpadded_starts = torch.cumsum(counts, 0) - counts

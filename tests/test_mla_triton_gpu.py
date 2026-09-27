@@ -63,10 +63,10 @@ def test_kernel_matches_reference(dtype, ctx_lens):
         torch.testing.assert_close(got, want, **tol)
 
 
-def _engine(model, backend: str, dtype) -> LLMEngine:
+def _engine(model, backend: str, dtype, graphs: bool = False) -> LLMEngine:
     ecfg = EngineConfig(device=DEV, dtype=dtype, block_size=BLOCK, num_gpu_blocks=256,
                         max_num_seqs=16, max_num_batched_tokens=512, max_model_len=256,
-                        attn_backend=backend)
+                        attn_backend=backend, enable_cuda_graphs=graphs)
     return LLMEngine(model, model.config, ecfg, tokenizer=None)
 
 
@@ -81,6 +81,10 @@ def test_tiny_model_same_tokens_through_both_backends(dtype):
     ref = LLM.from_engine(_engine(model, "mla_torch", dtype)).generate(prompts, sp)
     got = LLM.from_engine(_engine(model, "mla_triton", dtype)).generate(prompts, sp)
     for r, g in zip(ref, got):
+        assert r.output_token_ids == g.output_token_ids
+    # and with CUDA graphs capturing the decode step (Triton MLA kernel + fused MoE inside)
+    graphed = LLM.from_engine(_engine(model, "mla_triton", dtype, graphs=True)).generate(prompts, sp)
+    for r, g in zip(ref, graphed):
         assert r.output_token_ids == g.output_token_ids
 
 

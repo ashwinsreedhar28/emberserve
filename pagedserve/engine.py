@@ -52,7 +52,7 @@ class StepStats:
 
 # Backends whose decode step reads only static device tensors (meta.context_lens_t /
 # meta.block_tables_nonneg) and can therefore be captured into a CUDA graph.
-GRAPH_CAPABLE_BACKENDS = ("paged_flash", "paged_triton")
+GRAPH_CAPABLE_BACKENDS = ("paged_flash", "paged_triton", "mla_triton")
 
 
 def default_num_blocks(model_config: ModelConfig, engine_config: EngineConfig,
