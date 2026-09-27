@@ -41,7 +41,8 @@ def build_engine(args: argparse.Namespace) -> LLMEngine:
                         max_num_seqs=args.max_num_seqs, max_model_len=args.max_model_len,
                         max_num_batched_tokens=args.max_num_batched_tokens,
                         num_gpu_blocks=args.num_blocks,
-                        quantization=getattr(args, "quantization", None))
+                        quantization=getattr(args, "quantization", None),
+                        tensor_parallel_size=getattr(args, "tensor_parallel_size", 1))
     if args.tiny:
         from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
 
@@ -213,6 +214,8 @@ def main() -> int:
     ap.add_argument("--enable-prefix-caching", action="store_true")
     ap.add_argument("--quantization", default=None, choices=["int8"],
                     help="weight-only int8 (per-channel) for every 2-D projection")
+    ap.add_argument("--tensor-parallel-size", type=int, default=1,
+                    help="shard the dense model across cuda:0..N-1 (dist.py)")
     ap.add_argument("--max-num-seqs", type=int, default=256)
     ap.add_argument("--max-num-batched-tokens", type=int, default=8192)
     ap.add_argument("--max-model-len", type=int, default=4096)
@@ -265,11 +268,13 @@ def main() -> int:
         meta = {"kind": "profile_step", "device": args.device, "dtype": args.dtype,
                 "attn_backend": args.attn_backend, "block_size": args.block_size,
                 "cuda_graphs": args.enable_cuda_graphs, "prompt_len": args.prompt_len,
+                "quantization": args.quantization, "tensor_parallel_size": args.tensor_parallel_size,
                 "steps": args.steps, "torch": torch.__version__,
                 "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
                 "rows": rows, "kernels": {str(k): v[:60] for k, v in kernels.items()}}
         Path(args.out).write_text(json.dumps(meta, indent=1))
         print(f"wrote {args.out}")
+    engine.shutdown()  # tensor-parallel workers, if any
     return 0
 
 

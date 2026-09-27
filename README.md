@@ -241,6 +241,38 @@ compute-bound, the gain shrinks to nothing. Numbers pending (next pod session:
 `README_GPU.md`, "Weight-only int8"). `PAGEDSERVE_INT8_KERNEL=0` routes through the
 torch reference for A/B and the CPU tests.
 
+### Tensor parallelism
+
+`--tensor-parallel-size 2` (`dist.py`) splits the dense model across two GPUs the Megatron
+way: each decoder layer is cut along the dimension that needs no communication inside the
+block, so a rank owns `num_heads / 2` query heads and `num_kv_heads / 2` KV heads (the
+q/k/v rows of `qkv_proj` are column-parallel, `o_proj` row-parallel) and half of the MLP's
+intermediate width (`gate_up_proj` column-parallel, `down_proj` row-parallel). The two
+row-parallel projections each end in one all-reduce of `[num_tokens, hidden]`, and that is
+the whole communication of a layer; embeddings and norms are replicated, the `lm_head` is
+vocabulary-parallel with one all-gather of the logits at the end. The paged KV cache is
+split the same way (a rank caches its own KV heads), so a 7B model that fills one A100
+has 7.5 GB of weights and twice the KV blocks per GPU, and the batch-1 decode step, which
+is the weight read, streams half the bytes.
+
+The process model is vLLM's driver + workers: rank 0 is the engine (scheduler, block
+manager, sampler; the API's engine-core process), the other ranks are
+`python -m pagedserve.dist` subprocesses running `LLMEngine.worker_loop` with no scheduler of
+their own. Per step the driver broadcasts the step plan (the host-side lists
+`_plan_inputs` computes: tokens, positions, slots, block tables) over a gloo group, every
+rank materializes the same device tensors from it, and the driver's `input_ids` (which
+under async scheduling hold tokens gathered on the device from the previous step's
+logits, so no other rank could build them) go out over NCCL; then every rank runs the
+identical forward and only the driver samples. The host-side broadcast never touches the
+device, so async scheduling keeps its overlap, and the collectives are captured into the
+CUDA graphs with the rest of the forward. Checkpoints are sliced as they are read
+(`dist.shard_tensor`), one rank's slice per process, and a worker that loses its driver
+exits on its own. Exactness: the two-process CPU tests (`tests/test_tensor_parallel.py`)
+compare a TP=2 gloo engine token-for-token with the single-process engine through the
+plain, async, chunked-prefill and speculative paths and through the engine-core
+process. Latent attention and MoE are single-GPU for now. Numbers need a 2-GPU pod
+(`README_GPU.md`, "Tensor parallelism").
+
 ## Correctness
 
 ```bash
@@ -588,6 +620,7 @@ pagedserve/
   kv/                  block_manager.py, cache.py (paged K/V and latent tensors), prefix_cache.py
   sched/               request.py, scheduler.py (prefill-priority, preemption, chunked prefill, async lookahead)
   spec.py              speculative decoding: n-gram proposer + draft verification
+  dist.py              tensor parallelism: process group, collectives, checkpoint sharding, worker main
   model/quant.py       weight-only int8: per-channel quantizer, Triton dequant GEMM, Int8Linear
   sampling.py          per-request temperature / top-k / top-p / repetition penalty / seeds / stop
   engine.py            LLMEngine.step(): schedule -> build inputs -> forward -> sample -> postprocess
@@ -612,7 +645,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
 * Speculative decoding: n-gram lookup implemented (`--speculative-ngram`); acceptance rate and speedup on ShareGPT text pending; a draft-model proposer after that.
 * Weight-only int8 implemented (`--quantization int8`, Triton dequant GEMM); 7B golden diff, batch-1 step and sweep pending.
-* Tensor parallelism (2 GPUs).
+* Tensor parallelism implemented (`--tensor-parallel-size 2`, dense models); 7B numbers on a 2-GPU pod pending; MLA/MoE sharding after that.
 * Runpod Serverless: worker + Dockerfile in `deploy/runpod/`, endpoint not yet deployed.
 
 ## License

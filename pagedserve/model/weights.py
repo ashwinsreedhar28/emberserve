@@ -170,42 +170,73 @@ def load_hf_weights(model: nn.Module, model_dir: str | os.PathLike,
     `device` (default: the target parameter's device) during the copy. q/k/v, gate/up and
     per-expert tensors are copied into their slice of the fused / stacked parameter.
     `model.config` must carry the head geometry (a `ModelConfig`) and, when tied, whether
-    `lm_head.weight` may be absent.
+    `lm_head.weight` may be absent. Under tensor parallelism (`dist.get_tp()`), each
+    checkpoint tensor is cut to this rank's slice first (`dist.shard_tensor`).
     """
     files = sorted(Path(model_dir).glob("*.safetensors"))
     if not files:
         raise FileNotFoundError(f"no *.safetensors files in {model_dir}")
 
+    def tensors():
+        for path in files:
+            with safe_open(str(path), framework="pt", device="cpu") as f:
+                for hf_name in f.keys():
+                    yield hf_name, f.get_tensor(hf_name), path.name
+
+    _load_tensors(model, tensors(), dtype, device, str(model_dir))
+
+
+def load_hf_state_dict(model: nn.Module, state_dict: dict[str, torch.Tensor],
+                       dtype: torch.dtype | None = None,
+                       device: torch.device | str | None = None, tp=None) -> None:
+    """`load_hf_weights` from an in-memory HF-layout state dict (e.g. `hf_state_dict()` of a
+    full model, loaded into its tensor-parallel shards in the tests). `tp`: a `TPState`
+    to shard for, default the process group's."""
+    _load_tensors(model, ((k, v, "<state_dict>") for k, v in state_dict.items()),
+                  dtype, device, "<state_dict>", tp)
+
+
+def _load_tensors(model: nn.Module, tensors, dtype, device, source: str, tp=None) -> None:
+    from pagedserve import dist as tpdist
+
+    tp = tp or tpdist.get_tp()
     config = model.config
     state = model.state_dict()
     loaded: set[tuple[str, Shard]] = set()
     with torch.no_grad():
-        for path in files:
-            with safe_open(str(path), framework="pt", device="cpu") as f:
-                for hf_name in f.keys():
-                    m = hf_to_local(hf_name, getattr(config, "model_type", "qwen2"))
-                    if m is None:
-                        continue
-                    local, shard = m
-                    if local not in state:
-                        raise KeyError(f"unexpected checkpoint key {hf_name!r} in {path.name}")
-                    if (local, shard) in loaded:
-                        raise KeyError(f"duplicate checkpoint key {hf_name!r} in {path.name}")
-                    target = _shard_view(config, state[local], shard)
-                    src = f.get_tensor(hf_name)
-                    if src.shape != target.shape:
-                        raise ValueError(
-                            f"shape mismatch for {hf_name!r}: checkpoint {tuple(src.shape)} "
-                            f"vs model {tuple(target.shape)}")
-                    target.copy_(src.to(device=device or target.device,
-                                        dtype=dtype or target.dtype))
-                    loaded.add((local, shard))
+        for hf_name, src, where in tensors:
+            m = hf_to_local(hf_name, getattr(config, "model_type", "qwen2"))
+            if m is None:
+                continue
+            local, shard = m
+            if local not in state:
+                raise KeyError(f"unexpected checkpoint key {hf_name!r} in {where}")
+            if (local, shard) in loaded:
+                raise KeyError(f"duplicate checkpoint key {hf_name!r} in {where}")
+            target = _shard_view(config, state[local], shard)
+            src = tpdist.shard_tensor(hf_name, src, tp.rank, tp.size)
+            if src.shape != target.shape:
+                raise ValueError(
+                    f"shape mismatch for {hf_name!r}: checkpoint {tuple(src.shape)} "
+                    f"vs model {tuple(target.shape)}")
+            target.copy_(src.to(device=device or target.device, dtype=dtype or target.dtype))
+            loaded.add((local, shard))
 
-    tied = getattr(config, "tie_word_embeddings", False)
+        tied = getattr(config, "tie_word_embeddings", False)
+        if tied and ("lm_head.weight", None) not in loaded and tp.size > 1 \
+                and "lm_head.weight" in state:
+            # A shard cannot alias a slice of the (replicated) embedding: copy its rows.
+            emb = state["model.embed_tokens.weight"]
+            head = state["lm_head.weight"]
+            rows = tpdist.shard_tensor("lm_head.weight", emb, tp.rank, tp.size) \
+                if head.shape[0] != emb.shape[0] else emb
+            head.copy_(rows)
+            loaded.add(("lm_head.weight", None))
+
     missing = [_hf_name(k, sh, config) for k, t in state.items() for sh in _expected_shards(k, t)
                if not (tied and k == "lm_head.weight") and (k, sh) not in loaded]
     if missing:
-        raise KeyError(f"parameters never loaded from {model_dir}: {missing}")
+        raise KeyError(f"parameters never loaded from {source}: {missing}")
 
 
 def build_model(config: ModelConfig) -> nn.Module:
@@ -223,8 +254,11 @@ def load_model(model_dir: str | os.PathLike, device: torch.device | str = "cpu",
 
     Parameters are created directly on `device` in `dtype`: a 16B MoE model built in fp32 on
     the host first (the obvious `Model(config).to(device, dtype)`) needs 64 GB of RAM before
-    a single weight is read."""
-    config = ModelConfig.from_hf_dir(model_dir)
+    a single weight is read. Under tensor parallelism the model is this rank's shard
+    (`ModelConfig.shard`) and every checkpoint tensor is sliced as it is read."""
+    from pagedserve import dist as tpdist
+
+    config = ModelConfig.from_hf_dir(model_dir).shard(tpdist.get_tp().size)
     prev = torch.get_default_dtype()
     torch.set_default_dtype(dtype)
     try:

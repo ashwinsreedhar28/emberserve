@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -112,6 +113,9 @@ class ModelConfig:
     moe: MoEConfig | None = None
     first_k_dense_replace: int = 0  # the first k layers use the dense MLP
     moe_layer_freq: int = 1  # every k-th layer (past the dense ones) is MoE
+    # hidden_size / num_attention_heads, filled in by __post_init__; a field (not a property)
+    # so a tensor-parallel shard (`shard()`), which divides the head counts, keeps it.
+    head_dim: int = 0
 
     SUPPORTED_MODEL_TYPES = ("qwen2", "llama", "mistral", "deepseek_v2", "deepseek_v3")
 
@@ -122,14 +126,30 @@ class ModelConfig:
     def __post_init__(self) -> None:
         if not self.eos_token_ids:  # normalize so configs compare equal however they were built
             object.__setattr__(self, "eos_token_ids", (self.eos_token_id,))
+        if not self.head_dim:
+            object.__setattr__(self, "head_dim", self.hidden_size // self.num_attention_heads)
+
+    def shard(self, tp_size: int) -> "ModelConfig":
+        """This model's geometry as one tensor-parallel rank sees it: attention heads, KV
+        heads and the MLP's intermediate width divided by `tp_size` (`head_dim`, `hidden_size`
+        and `vocab_size` unchanged). The dense families only."""
+        if tp_size == 1:
+            return self
+        if self.mla is not None or self.moe is not None:
+            raise ValueError("tensor parallelism is implemented for the dense (qwen2/llama/mistral) "
+                             "families; latent attention and MoE run on one GPU")
+        for name in ("num_attention_heads", "num_key_value_heads", "intermediate_size"):
+            if getattr(self, name) % tp_size:
+                raise ValueError(f"{name}={getattr(self, name)} is not divisible by "
+                                 f"tensor_parallel_size={tp_size}")
+        return dataclasses.replace(
+            self, num_attention_heads=self.num_attention_heads // tp_size,
+            num_key_value_heads=self.num_key_value_heads // tp_size,
+            intermediate_size=self.intermediate_size // tp_size, head_dim=self.head_dim)
 
     @property
     def all_eos_token_ids(self) -> frozenset[int]:
         return frozenset(self.eos_token_ids) | {self.eos_token_id}
-
-    @property
-    def head_dim(self) -> int:
-        return self.hidden_size // self.num_attention_heads
 
     @property
     def num_kv_groups(self) -> int:
@@ -277,6 +297,9 @@ class EngineConfig:
     num_speculative_tokens: int = 0
     # Weight-only quantization applied after loading (model/quant.py): None or "int8".
     quantization: str | None = None
+    # Tensor parallelism (dist.py): the dense model's heads and MLP split across this many
+    # GPUs, one process each; rank 0 runs the engine, the others follow its steps.
+    tensor_parallel_size: int = 1
     seed: int = 0
     extra: dict = field(default_factory=dict)
 

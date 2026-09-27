@@ -3,6 +3,11 @@
 The three families share this block exactly (pre-norm RMSNorm, rotate-half RoPE, GQA,
 SwiGLU); `ModelConfig` carries the differences (attention bias, RoPE scaling, eos ids).
 
+Tensor parallelism (`dist.py`): the module is built from `ModelConfig.shard(tp)` (this
+rank's heads and MLP width) and the two row-parallel projections (`o_proj`, `down_proj`)
+end in an all-reduce; the `lm_head` holds `vocab / tp` rows and its logits are
+all-gathered. At world size 1 the collectives are no-ops and nothing here changes.
+
 Module attribute names mirror HF's `Qwen2ForCausalLM` so safetensors weight names map
 one-to-one (see `model/weights.py`). Every activation uses the packed layout
 `[num_tokens, hidden]`; per-sequence boundaries and RoPE positions come from
@@ -14,6 +19,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from pagedserve import dist as tpdist
 from pagedserve.attn.base import AttentionBackend, AttnMetadata
 from pagedserve.config import ModelConfig
 from pagedserve.model import ops
@@ -51,7 +57,7 @@ class Qwen2MLP(nn.Module):
         self.down_proj = nn.Linear(inter, hidden, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(ops.silu_and_mul(self.gate_up_proj(x)))
+        return tpdist.all_reduce(self.down_proj(ops.silu_and_mul(self.gate_up_proj(x))))
 
 
 class Qwen2Attention(nn.Module):
@@ -96,7 +102,7 @@ class Qwen2Attention(nn.Module):
         return (n, self.num_heads, self.head_dim)
 
     def post_attention(self, out: torch.Tensor) -> torch.Tensor:
-        return self.o_proj(out.reshape(out.shape[0], self.q_size))
+        return tpdist.all_reduce(self.o_proj(out.reshape(out.shape[0], self.q_size)))
 
     def forward(self, hidden: torch.Tensor, backend: AttentionBackend,
                 meta: AttnMetadata) -> torch.Tensor:
@@ -176,13 +182,20 @@ class Qwen2ForCausalLM(nn.Module):
     """Qwen2 with an LM head. Parameters are created in the default dtype on CPU;
     the caller moves them with `.to(device, dtype)` before or after loading weights."""
 
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, tp_size: int | None = None) -> None:
+        """`tp_size`: how many ranks share the lm_head (default: the process group's size);
+        `config` is already this rank's shard for everything else."""
         super().__init__()
         self.config = config
         self.model = Qwen2Model(config)
-        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        if config.tie_word_embeddings:
+        tp_size = tpdist.get_tp().size if tp_size is None else tp_size
+        rows = tpdist.vocab_shard(config.vocab_size, tp_size)
+        self.lm_head_sharded = rows is not None
+        self.lm_head = nn.Linear(config.hidden_size, rows or config.vocab_size, bias=False)
+        if config.tie_word_embeddings and tp_size == 1:
             self.lm_head.weight = self.model.embed_tokens.weight
+        # (a tensor-parallel shard cannot alias a slice of the embedding: the loader copies
+        # the rows into the separate lm_head parameter instead)
 
     def forward(self, input_ids: torch.Tensor, backend: AttentionBackend,
                 meta: AttnMetadata) -> torch.Tensor:
@@ -199,7 +212,8 @@ class Qwen2ForCausalLM(nn.Module):
             else:
                 rows = (meta.cu_seqlens_q[1:] - 1).to(torch.long)
             hidden = hidden.index_select(0, rows)
-        return self.lm_head(hidden)
+        logits = self.lm_head(hidden)
+        return tpdist.all_gather_cols(logits) if self.lm_head_sharded else logits
 
     def forward_logits_all(self, input_ids: torch.Tensor, backend: AttentionBackend,
                            meta: AttnMetadata) -> torch.Tensor:

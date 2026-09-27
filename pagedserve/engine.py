@@ -17,11 +17,12 @@ from __future__ import annotations
 
 import time
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
 
+from pagedserve import dist as tpdist
 from pagedserve.attn.base import AttentionBackend, AttnMetadata
 from pagedserve.attn.naive import NaiveAttentionBackend
 from pagedserve.attn.paged_torch import PagedTorchAttentionBackend
@@ -83,6 +84,29 @@ class _PendingStep:
         return self.sampled_dev.tolist()
 
 
+@dataclass
+class StepPlan:
+    """The host-side description of one step's inputs: what `_plan_inputs` computes from
+    the scheduler's decision and `_materialize` turns into device tensors. Plain lists so it
+    pickles small; under tensor parallelism the driver broadcasts it and every rank
+    materializes the same tensors (`dist.py`)."""
+
+    is_prefill: bool
+    paged: bool
+    seq_ids: list[int]
+    query_lens: list[int]
+    starts: list[int]
+    context_lens: list[int]
+    tokens: list[int]
+    positions: list[int]
+    slots: list[int]
+    cu: list[int]
+    tables: list[list[int]]
+    fill_rows: list[int] = field(default_factory=list)
+    fill_src: list[int] = field(default_factory=list)
+    logit_rows: list[int] = field(default_factory=list)
+
+
 def default_num_blocks(model_config: ModelConfig, engine_config: EngineConfig,
                        model_bytes: int) -> int:
     """How many KV blocks to allocate when the user did not say.
@@ -112,10 +136,21 @@ class LLMEngine:
         self.eos_token_id = tokenizer.eos_token_id if tokenizer else model_config.eos_token_id
         # Every id that ends generation: the config's list plus the tokenizer's own eos.
         self.eos_token_ids: frozenset[int] = model_config.all_eos_token_ids | {self.eos_token_id}
+        # Tensor parallelism (dist.py): this rank's share of the heads decides the KV cache
+        # geometry; `model_config` stays the full model (vocabulary, eos ids) and
+        # `local_config` is what the cache and the attention backend are built from.
+        self.tp = tpdist.get_tp()
+        if engine_config.tensor_parallel_size != self.tp.size:
+            raise ValueError(f"tensor_parallel_size={engine_config.tensor_parallel_size} but the "
+                             f"process group has {self.tp.size} rank(s); build a tensor-parallel "
+                             "engine with LLMEngine.from_pretrained / launch_tp")
+        self.local_config = model_config.shard(self.tp.size)
+        self._tp_workers: list = []
 
         model_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
         num_blocks = engine_config.num_gpu_blocks or default_num_blocks(
-            model_config, engine_config, model_bytes)
+            self.local_config, engine_config, model_bytes)
+        num_blocks = tpdist.all_reduce_min(num_blocks)  # every rank's cache has the same shape
         engine_config.num_gpu_blocks = num_blocks
         if engine_config.attn_backend == "naive":
             # The naive backend has no shared physical blocks, so prefix reuse is impossible.
@@ -187,38 +222,39 @@ class LLMEngine:
     # ---- construction -----------------------------------------------------------
     def _make_backend(self, num_blocks: int) -> AttentionBackend:
         name = self.config.attn_backend
+        cfg = self.local_config
         if self.model_config.mla is not None:
             from pagedserve.kv.cache import PagedLatentCache
 
-            cache = PagedLatentCache(self.model_config, num_blocks, self.config.block_size,
+            cache = PagedLatentCache(cfg, num_blocks, self.config.block_size,
                                      self.device, self.dtype)
             # The dense backend names map onto their latent-attention counterparts so the
             # CLI defaults (paged_flash / paged_triton on CUDA) work unchanged.
             if name in ("mla_triton", "paged_flash", "paged_triton"):
                 from pagedserve.attn.mla_triton import MLATritonBackend
 
-                return MLATritonBackend(self.model_config, cache)  # type: ignore[return-value]
+                return MLATritonBackend(cfg, cache)  # type: ignore[return-value]
             if name in ("mla_torch", "naive", "paged_torch"):
                 from pagedserve.attn.mla_torch import MLATorchBackend
 
-                return MLATorchBackend(self.model_config, cache)  # type: ignore[return-value]
+                return MLATorchBackend(cfg, cache)  # type: ignore[return-value]
             raise ValueError(f"unknown attn_backend {name!r} for a latent-attention model")
         if name == "naive":
-            return NaiveAttentionBackend(self.model_config, self.device, self.dtype)
+            return NaiveAttentionBackend(cfg, self.device, self.dtype)
         if name == "paged_torch":
-            cache = PagedKVCache(self.model_config, num_blocks, self.config.block_size,
+            cache = PagedKVCache(cfg, num_blocks, self.config.block_size,
                                  self.device, self.dtype)
-            return PagedTorchAttentionBackend(self.model_config, cache)
+            return PagedTorchAttentionBackend(cfg, cache)
         if name == "paged_flash":
             from pagedserve.attn.paged_flash import PagedFlashAttentionBackend
-            cache = PagedKVCache(self.model_config, num_blocks, self.config.block_size,
+            cache = PagedKVCache(cfg, num_blocks, self.config.block_size,
                                  self.device, self.dtype)
-            return PagedFlashAttentionBackend(self.model_config, cache)
+            return PagedFlashAttentionBackend(cfg, cache)
         if name == "paged_triton":
             from pagedserve.attn.paged_triton import PagedTritonAttentionBackend
-            cache = PagedKVCache(self.model_config, num_blocks, self.config.block_size,
+            cache = PagedKVCache(cfg, num_blocks, self.config.block_size,
                                  self.device, self.dtype)
-            return PagedTritonAttentionBackend(self.model_config, cache)
+            return PagedTritonAttentionBackend(cfg, cache)
         raise ValueError(f"unknown attn_backend {name!r}")
 
     @classmethod
@@ -228,6 +264,9 @@ class LLMEngine:
         for k, v in overrides.items():
             setattr(engine_config, k, v)
         engine_config.model_dir = str(model_dir)
+        if engine_config.tensor_parallel_size > 1:
+            return cls.launch_tp(tpdist.WorkerSpec(engine_config, model_dir=str(model_dir)),
+                                 load_tokenizer=load_tokenizer)
         model = load_model(model_dir, device=engine_config.device, dtype=engine_config.dtype)
         if engine_config.quantization:
             from pagedserve.model.quant import quantize_model
@@ -241,6 +280,70 @@ class LLMEngine:
             except ImportError:
                 tokenizer = None
         return cls(model, model_config, engine_config, tokenizer)
+
+    @classmethod
+    def launch_tp(cls, spec: "tpdist.WorkerSpec", load_tokenizer: bool = True) -> "LLMEngine":
+        """Build the driver (rank 0) of a tensor-parallel engine in this process: start the
+        worker processes, join the group, load this rank's shard, construct. The workers
+        build the same engine from the same spec and then run `worker_loop`; `shutdown()`
+        (or garbage collection of the driver) stops them."""
+        ecfg = spec.engine_config
+        world = ecfg.tensor_parallel_size
+        init_method = f"tcp://127.0.0.1:{tpdist.free_port()}"
+        procs = tpdist.spawn_workers(spec, world, init_method)
+        ecfg.device = tpdist.rank_device(ecfg.device, 0)
+        try:
+            tpdist.init_tp(0, world, init_method, ecfg.device)
+            model, model_config = tpdist.build_tp_model(spec, ecfg.device, ecfg.dtype)
+            tokenizer = None
+            if spec.model_dir and load_tokenizer and has_tokenizer(spec.model_dir):
+                try:
+                    tokenizer = Tokenizer(spec.model_dir)
+                except ImportError:
+                    tokenizer = None
+            engine = cls(model, model_config, ecfg, tokenizer)
+        except BaseException:
+            for p in procs:
+                p.kill()
+            tpdist.destroy_tp()
+            raise
+        engine._tp_workers = procs
+        return engine
+
+    def shutdown(self) -> None:
+        """Stop the tensor-parallel workers (rank 0) and leave the group. Idempotent."""
+        if self.tp.size > 1 and self.tp.is_driver and tpdist.is_initialized():
+            tpdist.broadcast_object(("stop",))
+            tpdist.stop_workers(self._tp_workers)
+            self._tp_workers = []
+        if tpdist.is_initialized():
+            tpdist.destroy_tp()
+        self.tp = tpdist.get_tp()
+
+    def __del__(self) -> None:
+        try:
+            if getattr(self, "_tp_workers", None):
+                self.shutdown()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def worker_loop(self) -> None:
+        """Rank > 0: follow the driver's steps until it says stop. Each message is a
+        `StepPlan`; the worker materializes it, receives the driver's input ids and runs
+        the same forward (whose collectives pair with the driver's)."""
+        assert self.tp.size > 1 and not self.tp.is_driver
+        with torch.inference_mode():
+            while True:
+                msg = tpdist.broadcast_object(None)
+                if msg[0] == "stop":
+                    return
+                if msg[0] == "reset":
+                    self.backend.reset()
+                    continue
+                plan: StepPlan = msg[1]
+                input_ids, meta = self._materialize(plan)
+                tpdist.broadcast_tensor(input_ids)
+                self._forward(input_ids, meta, plan.is_prefill)
 
     # ---- request API ----------------------------------------------------------------
     def add_request(self, request_id: str, prompt: str | list[int],
@@ -369,8 +472,9 @@ class LLMEngine:
             req.draft_tokens = propose_ngram(req.all_token_ids, self.spec_ngram, k)
 
     def _forward(self, input_ids: torch.Tensor, meta: AttnMetadata,
-                 so: SchedulerOutput) -> torch.Tensor:
-        if self.graph_runner is not None and not so.is_prefill:
+                 so: SchedulerOutput | bool) -> torch.Tensor:
+        is_prefill = so if isinstance(so, bool) else so.is_prefill
+        if self.graph_runner is not None and not is_prefill:
             return self.graph_runner.run(input_ids, meta)
         if self.piecewise_runner is not None:
             return self.piecewise_runner.run(input_ids, meta)
@@ -460,7 +564,18 @@ class LLMEngine:
     def _build_inputs(self, so: SchedulerOutput) -> tuple[torch.Tensor, AttnMetadata]:
         """Per-step tensors in two host->device copies (one int64, one int32) instead of one
         per field: at 200 running sequences the original six `torch.tensor(..., device=cuda)`
-        calls plus a per-row block-table build were ~2 ms of a ~8 ms step."""
+        calls plus a per-row block-table build were ~2 ms of a ~8 ms step. Under tensor
+        parallelism the plan goes to the workers first, and the finished `input_ids` (which
+        may hold tokens gathered on the device) after."""
+        plan = self._plan_inputs(so)
+        if self.tp.size > 1:
+            tpdist.broadcast_object(("step", plan))
+        input_ids, meta = self._materialize(plan)
+        if self.tp.size > 1:
+            tpdist.broadcast_tensor(input_ids)
+        return input_ids, meta
+
+    def _plan_inputs(self, so: SchedulerOutput) -> StepPlan:
         reqs = so.scheduled
         bm = self.block_manager
         bs = self.config.block_size
@@ -508,36 +623,49 @@ class LLMEngine:
                     slots.append(table[start // bs] * bs + start % bs)
                 else:
                     slots.extend(table[p // bs] * bs + p % bs for p in range(start, end))
-        n, b = len(tokens), len(reqs)
+        if not any_drafts:
+            logit_rows = []  # the default (last row per sequence) is computed on the device
+        return StepPlan(is_prefill=so.is_prefill, paged=paged, seq_ids=seq_ids,
+                        query_lens=list(so.query_lens), starts=starts, context_lens=context_lens,
+                        tokens=tokens, positions=positions, slots=slots, cu=cu, tables=tables,
+                        fill_rows=fill_rows, fill_src=fill_src, logit_rows=logit_rows)
+
+    def _materialize(self, plan: StepPlan) -> tuple[torch.Tensor, AttnMetadata]:
+        """The plan's device tensors. Rows whose token is still on the device (`fill_rows`)
+        are gathered from the pending step's sampled tensor on the driver; a worker leaves
+        them and receives the driver's finished `input_ids` instead."""
+        tokens, positions, slots = plan.tokens, plan.positions, plan.slots
+        fill_rows, fill_src, logit_rows = plan.fill_rows, plan.fill_src, plan.logit_rows
+        n, b = len(tokens), len(plan.seq_ids)
         dev = self.device
         pin = dev.type == "cuda"
         # int64 block: [tokens | positions | slots | fill rows | fill sources | logit rows]
-        if not any_drafts:
-            logit_rows = []  # the default (last row per sequence) is computed on the device
         i64 = torch.tensor(tokens + positions + slots + fill_rows + fill_src + logit_rows,
                            dtype=torch.int64, pin_memory=pin)
         i64 = i64.to(dev, non_blocking=pin)
         input_ids, pos = i64[:n], i64[n:2 * n]
         o = 2 * n + len(slots)
         if fill_rows:
-            assert self._pending is not None
             m = len(fill_rows)
-            input_ids.index_copy_(0, i64[o:o + m],
-                                  self._pending.sampled_dev.index_select(0, i64[o + m:o + 2 * m]))
+            if self.tp.is_driver:
+                assert self._pending is not None
+                input_ids.index_copy_(0, i64[o:o + m],
+                                      self._pending.sampled_dev.index_select(0, i64[o + m:o + 2 * m]))
             o += 2 * m
         logit_indices = i64[o:o + len(logit_rows)] if logit_rows else None
         # int32 block: [context_lens | cu_seqlens | block tables (padded with -1)]
+        paged, tables, bs = plan.paged, plan.tables, self.config.block_size
         max_blocks = max((len(t) for t in tables), default=0) if paged else 0
-        flat32 = context_lens + cu
+        flat32 = plan.context_lens + plan.cu
         if paged and max_blocks:
             pad = [-1] * max_blocks
             for t in tables:
                 flat32 += t if len(t) == max_blocks else t + pad[:max_blocks - len(t)]
         i32 = torch.tensor(flat32, dtype=torch.int32, pin_memory=pin).to(dev, non_blocking=pin)
         meta = AttnMetadata(
-            is_prefill=so.is_prefill, seq_ids=seq_ids, query_lens=list(so.query_lens),
-            context_lens=context_lens, positions=pos,
-            num_cached_tokens=starts if so.is_prefill else [],
+            is_prefill=plan.is_prefill, seq_ids=plan.seq_ids, query_lens=list(plan.query_lens),
+            context_lens=plan.context_lens, positions=pos,
+            num_cached_tokens=plan.starts if plan.is_prefill else [],
             cu_seqlens_q=i32[b:2 * b + 1],
         )
         meta.context_lens_t = i32[:b]
@@ -639,6 +767,8 @@ class LLMEngine:
     def reset(self) -> None:
         """Drop all requests and cache state (used between benchmark runs)."""
         self._pending = None
+        if self.tp.size > 1 and self.tp.is_driver:
+            tpdist.broadcast_object(("reset",))
         for rid in [r.request_id for r in list(self.scheduler.running) + list(self.scheduler.waiting)]:
             self.abort_request(rid)
         self.backend.reset()

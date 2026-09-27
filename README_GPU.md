@@ -173,6 +173,34 @@ python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/
 config and a full 7B-shaped projection; `PAGEDSERVE_INT8_KERNEL=0` is the torch path
 (dequantize + matmul) for an A/B of the kernel itself.
 
+### Tensor parallelism
+
+Needs a pod with two GPUs (2x A100 SXM); `nvidia-smi` must list both. The dense 7B on
+two ranks against one, and against vLLM on two:
+
+```bash
+python -m pytest tests/test_tp_gpu.py -p no:cacheprovider -W ignore -q
+python scripts/check_golden.py --model models/Qwen2.5-7B-Instruct --golden golden/Qwen2.5-7B-Instruct \
+  --device cuda --dtype float16 --backends paged_flash --block-size 256 --tensor-parallel-size 2
+python scripts/profile_step.py --model models/Qwen2.5-7B-Instruct --device cuda --dtype float16 \
+  --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --batches 1,8,32,128 --steps 30 \
+  --tensor-parallel-size 2 --out results/profile_7b_tp2.json
+python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-7B-Instruct --dtype float16 \
+  --max-model-len 4096 --rates 1,2,4,8,16,inf --trace-n 200 \
+  --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --tensor-parallel-size 2" \
+  --name pagedserve_7b_flash_tp2
+source /opt/vllm/bin/activate
+python -m pagedserve.bench.run_vllm_baseline --server vllm --model models/Qwen2.5-7B-Instruct --dtype float16 \
+  --max-model-len 4096 --rates 1,2,4,8,16,inf --trace-n 200 --server-args "--tensor-parallel-size 2" --name vllm_7b_tp2
+deactivate
+```
+
+`PAGEDSERVE_TP_LOG_DIR=/tmp` writes each worker's output to `tp_worker_<rank>.log` there
+(otherwise it shares the driver's stderr). If graph capture fails with an NCCL error, run
+without `--enable-cuda-graphs` first to separate the sharding from the capture: the
+collectives are captured inside the graphs (torch's NCCL process group supports capture
+once the communicator exists, which the warmup guarantees).
+
 ## Block size 256 with `paged_flash`
 
 Upstream flash-attn (2.6.3 through 2.8.3.post1 and `main`) hard-checks

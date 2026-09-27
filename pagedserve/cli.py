@@ -49,6 +49,9 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
                         "token. Default: on for --device cuda (A100: 0.5B saturation 13,945 -> "
                         "14,394 tok/s, TPOT at 1 req/s 2.1 -> 1.8 ms), off otherwise")
     p.add_argument("--no-async-scheduling", dest="async_scheduling", action="store_false")
+    p.add_argument("--tensor-parallel-size", type=int, default=1,
+                   help="split the dense model's heads and MLP across this many GPUs (cuda:0..N-1), "
+                        "one process each (dist.py); the KV cache is split the same way")
     p.add_argument("--quantization", choices=["int8"], default=None,
                    help="weight-only quantization after loading: int8 per-output-channel weights "
                         "dequantized inside a Triton GEMM (half the weight bytes per decode step; "
@@ -106,6 +109,7 @@ def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
                         enable_chunked_prefill=chunked,
                         async_scheduling=bool(async_sched),
                         quantization=getattr(args, "quantization", None),
+                        tensor_parallel_size=getattr(args, "tensor_parallel_size", 1),
                         speculative_ngram=int(getattr(args, "speculative_ngram", 0) or 0),
                         num_speculative_tokens=int(getattr(args, "num_speculative_tokens", 0) or 0))
 

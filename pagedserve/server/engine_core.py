@@ -58,6 +58,14 @@ StepRow = tuple[str, list[int], bool, str | None]  # request id, new token ids, 
 def build_engine(spec: EngineSpec):
     from pagedserve.engine import LLMEngine
 
+    if spec.engine_config.tensor_parallel_size > 1:
+        from pagedserve.dist import WorkerSpec
+
+        if spec.tiny and spec.engine_config.num_gpu_blocks is None:
+            spec.engine_config.num_gpu_blocks = 512
+        return LLMEngine.launch_tp(WorkerSpec(spec.engine_config, spec.model_dir, spec.tiny,
+                                              spec.tiny_seed, dict(spec.tiny_overrides)),
+                                   load_tokenizer=False)
     if spec.tiny:
         from pagedserve.config import ModelConfig
         from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
@@ -79,6 +87,7 @@ def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connectio
     per step, ("idle", snapshot) when the queue drains, ("failed", [request_ids], message)
     for requests the engine could not serve, ("fatal", message) if the loop dies."""
     parent = os.getppid()
+    engine = None
     try:
         engine = build_engine(spec)
         engine.keep_stats = False
@@ -155,6 +164,9 @@ def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connectio
         except Exception:  # noqa: BLE001
             pass
         raise
+    finally:
+        if engine is not None:
+            engine.shutdown()  # tensor-parallel workers, if any
 
 
 class EngineCoreProcess:
