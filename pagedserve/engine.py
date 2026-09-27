@@ -327,10 +327,8 @@ class LLMEngine:
                 tpdist.destroy_tp(timeout_s=15.0)
             else:
                 tpdist.broadcast_object(("stop",))
-                # Every rank tears its communicator down at the same time, *before* the
-                # driver waits for the worker processes: NCCL's destroy blocks for good when
-                # a peer has already exited (its peer-to-peer transport waits on the dead
-                # rank), so waiting for the workers first is a guaranteed hang.
+                # Every rank leaves the group at the same time, *before* the driver waits
+                # for the worker processes (`destroy_tp`: NCCL is aborted, not destroyed).
                 tpdist.destroy_tp(timeout_s=60.0)
             tpdist.stop_workers(self._tp_workers)
             self._tp_workers = []

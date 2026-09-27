@@ -69,6 +69,7 @@ class TPState:
 _STATE = TPState()
 _DEVICE_GROUP: Any = None  # NCCL on CUDA (gloo on CPU): the collectives inside the forward
 _CPU_GROUP: Any = None  # gloo: the per-step plan and control messages (never touches the device)
+_BACKEND = [""]  # "nccl" or "gloo" once joined (a list so `destroy_tp` can reset it in place)
 # The driver's idle time between requests is unbounded, so a blocked worker must never time out.
 _TIMEOUT = timedelta(days=30)
 
@@ -98,27 +99,50 @@ def init_tp(rank: int, world_size: int, init_method: str, device: torch.device |
                             timeout=_TIMEOUT)
     _DEVICE_GROUP = dist.group.WORLD
     _CPU_GROUP = dist.new_group(backend="gloo", timeout=_TIMEOUT) if backend != "gloo" else _DEVICE_GROUP
+    _BACKEND[0] = backend
     _STATE = TPState(rank, world_size)
     return _STATE
 
 
 def destroy_tp(timeout_s: float | None = None) -> None:
-    """Leave the group. With `timeout_s` the teardown runs on a helper thread and is
-    abandoned after that long: NCCL's teardown can block for good when a peer died
-    mid-collective, and the failure path that gets here is about to exit anyway."""
+    """Leave the group. A CUDA (NCCL) group is *aborted* rather than destroyed: NCCL's
+    orderly destroy waits for outstanding work and for its peers, and on the pod (torch
+    2.8, NCCL 2.27) it never returned once collectives had been captured into CUDA graphs,
+    nor when a peer had already exited. `ncclCommAbort` waits for nothing; a device sync
+    first means nothing in flight is dropped. The orderly destroy stays for gloo (the CPU
+    tests); `timeout_s` runs it on a helper thread and abandons it after that long, for the
+    failure path, which is about to exit anyway."""
     global _STATE, _DEVICE_GROUP, _CPU_GROUP
     if dist.is_initialized():
-        if timeout_s is None:
+        if _BACKEND[0] == "nccl":
+            torch.cuda.synchronize()
+            from torch.distributed import distributed_c10d as c10d
+
+            abort = getattr(c10d, "_abort_process_group", None)
+            try:
+                if abort is None:
+                    raise RuntimeError("torch has no _abort_process_group")
+                abort()
+            except Exception as e:  # noqa: BLE001 - fall back to a bounded orderly destroy
+                print(f"[pagedserve.dist] abort failed ({e}); destroying with a timeout",
+                      file=sys.stderr, flush=True)
+                _destroy_with_timeout(timeout_s or 30.0)
+        elif timeout_s is None:
             dist.destroy_process_group()
         else:
-            t = threading.Thread(target=dist.destroy_process_group, daemon=True)
-            t.start()
-            t.join(timeout_s)
-            if t.is_alive():
-                print(f"[pagedserve.dist] process group teardown still blocked after "
-                      f"{timeout_s:.0f} s; abandoning it", file=sys.stderr, flush=True)
+            _destroy_with_timeout(timeout_s)
     _STATE = TPState()
     _DEVICE_GROUP = _CPU_GROUP = None
+    _BACKEND[0] = ""
+
+
+def _destroy_with_timeout(timeout_s: float) -> None:
+    t = threading.Thread(target=dist.destroy_process_group, daemon=True)
+    t.start()
+    t.join(timeout_s)
+    if t.is_alive():
+        print(f"[pagedserve.dist] process group teardown still blocked after "
+              f"{timeout_s:.0f} s; abandoning it", file=sys.stderr, flush=True)
 
 
 # torch 2.9 renamed all_gather_into_tensor (and deprecates the old name); the pod runs 2.8.
