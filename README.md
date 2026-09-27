@@ -241,9 +241,17 @@ the fp16 golden run. Embeddings, MLA's `kv_b_proj` (read directly by the attenti
 and the MoE expert stacks (3-D weights, their own grouped GEMM) stay in fp16/bf16. The
 point at 7B is the batch-1 decode step, which is the weight read (15 GB at ~1.5 TB/s,
 ~10 ms); halving the read halves that floor, and at larger batches, where the step turns
-compute-bound, the gain shrinks to nothing. Numbers pending (next pod session:
-`README_GPU.md`, "Weight-only int8"). `PAGEDSERVE_INT8_KERNEL=0` routes through the
-torch reference for A/B and the CPU tests.
+compute-bound, the gain shrinks to nothing. Measured on the 7B (A100, `paged_flash` +
+graphs): the batch-1 step went from 10.09 to 7.78 ms (−23%; the int8 read runs at
+~0.96 TB/s against the fp16 GEMM's ~1.5, so the kernel, not the bytes, is the floor now)
+and TPOT at 1 req/s from 10.2 to 8.4 ms; the golden check reports 2 of 7 prompts exact
+for 64 tokens and the other 5 diverging at a near-tie (top-2 margins 0.05–0.39 logits).
+The first kernel was 2x *behind* cuBLAS at batch ≥ 32 (19.4 vs 10.8 ms at 32, 29.2 vs
+15.1 at 128: one fixed tile shape and a register transpose of the weight tile), which sank
+the sweep above 4 req/s (`results/pagedserve_7b_flash_int8.json`, 1,986 tok/s at
+saturation vs 3,166 fp16); v2 reads the weight tile in the layout `tl.dot` wants and
+autotunes the tile shape per (M bucket, N, K) at load time — its profile is pending.
+`PAGEDSERVE_INT8_KERNEL=0` routes through the torch reference for A/B and the CPU tests.
 
 ### Tensor parallelism
 
