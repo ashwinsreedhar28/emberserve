@@ -93,8 +93,12 @@ class SharedExperts(nn.Module):
         self.gate_up_proj = nn.Linear(hidden_size, 2 * intermediate_size, bias=False)
         self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(ops.silu_and_mul(self.gate_up_proj(x)))
+    def forward(self, x: torch.Tensor, add_to: torch.Tensor | None = None) -> torch.Tensor:
+        """`add_to` (same shape as the output) is folded into the down GEMM's epilogue."""
+        act = ops.silu_and_mul(self.gate_up_proj(x))
+        if add_to is None:
+            return self.down_proj(act)
+        return torch.addmm(add_to, act, self.down_proj.weight.t())
 
 
 class DeepseekMoE(nn.Module):
@@ -125,7 +129,7 @@ class DeepseekMoE(nn.Module):
         else:
             out = self.forward_loop(x, idx, w)
         if self.shared_experts is not None:
-            out = out + self.shared_experts(x)
+            out = self.shared_experts(x, add_to=out)
         return out
 
     def forward_loop(self, x: torch.Tensor, idx: torch.Tensor, w: torch.Tensor) -> torch.Tensor:

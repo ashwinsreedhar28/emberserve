@@ -47,10 +47,10 @@ def _kernel():
 
     @triton.jit
     def _mla_decode_kernel(
-        q_ptr, lat_ptr, out_ptr, bt_ptr, ctx_ptr,
+        qc_ptr, qpe_ptr, lat_ptr, out_ptr, bt_ptr, ctx_ptr,
         m_part_ptr, l_part_ptr, acc_part_ptr,
         scale,
-        stride_qb, stride_qh,
+        stride_qb, stride_qh, stride_pb, stride_ph,
         stride_lb, stride_ls,
         stride_ob, stride_oh,
         stride_bt,
@@ -71,9 +71,10 @@ def _kernel():
         s = tl.arange(0, TILE)
         h_valid = h < H
 
-        q_row = q_ptr + b * stride_qb + h[:, None] * stride_qh
-        q_c = tl.load(q_row + dl[None, :], mask=h_valid[:, None], other=0.0)  # [H, DL]
-        q_pe = tl.load(q_row + DL + dr[None, :], mask=h_valid[:, None], other=0.0)  # [H, DR]
+        q_c = tl.load(qc_ptr + b * stride_qb + h[:, None] * stride_qh + dl[None, :],
+                      mask=h_valid[:, None], other=0.0)  # [H, DL]
+        q_pe = tl.load(qpe_ptr + b * stride_pb + h[:, None] * stride_ph + dr[None, :],
+                       mask=h_valid[:, None], other=0.0)  # [H, DR]
 
         m_i = tl.full([H_PAD], float("-inf"), tl.float32)
         l_i = tl.zeros([H_PAD], tl.float32)
@@ -116,20 +117,32 @@ def _kernel():
     return _KERNEL
 
 
-def mla_decode(q_abs: Tensor, latent_cache: Tensor, block_tables: Tensor, context_lens: Tensor,
-               scale: float, kv_lora_rank: int, *, num_splits: int | None = None,
-               out: Tensor | None = None, num_warps: int = 8) -> Tensor:
-    """`q_abs [B, H, DL + DR]` (absorbed query: [q_c | q_pe]); `latent_cache [num_blocks,
-    block_size, DL + DR]`; `block_tables [B, max_blocks] int32` (non-negative padding);
-    `context_lens [B] int32`. Returns `out_c [B, H, DL]` = softmax(scores) . c in q's dtype."""
-    B, H, D = q_abs.shape
-    num_blocks, block_size, Dl = latent_cache.shape
+def mla_decode(q_abs: Tensor | tuple[Tensor, Tensor], latent_cache: Tensor, block_tables: Tensor,
+               context_lens: Tensor, scale: float, kv_lora_rank: int, *,
+               num_splits: int | None = None, out: Tensor | None = None,
+               num_warps: int = 8) -> Tensor:
+    """`q_abs`: the absorbed query, either one tensor `[B, H, DL + DR]` = `[q_c | q_pe]` or
+    the pair `(q_c [B, H, DL], q_pe [B, H, DR])` (each only needs a unit last stride, so the
+    backend passes the bmm output and the rope'd view straight in, no concat);
+    `latent_cache [num_blocks, block_size, DL + DR]`; `block_tables [B, max_blocks] int32`
+    (non-negative padding); `context_lens [B] int32`. Returns `out_c [B, H, DL]` =
+    softmax(scores) . c in q's dtype."""
     DL = kv_lora_rank
+    if isinstance(q_abs, tuple):
+        q_c, q_pe = q_abs
+        assert q_c.shape[:2] == q_pe.shape[:2] and q_c.shape[2] == DL, (q_c.shape, q_pe.shape)
+        D = DL + q_pe.shape[2]
+    else:
+        q_c, q_pe = q_abs, q_abs[..., DL:]
+        D = q_abs.shape[2]
+    B, H = q_c.shape[:2]
+    num_blocks, block_size, Dl = latent_cache.shape
     DR = D - DL
-    assert Dl == D, (latent_cache.shape, q_abs.shape)
+    assert Dl == D, (latent_cache.shape, D)
     assert DL & (DL - 1) == 0 and DR & (DR - 1) == 0 and DR >= 16, (DL, DR)
-    assert q_abs.dtype == latent_cache.dtype and q_abs.dtype in SUPPORTED_DTYPES, (q_abs.dtype, latent_cache.dtype)
-    assert q_abs.stride(2) == 1 and latent_cache.stride(2) == 1
+    assert q_c.dtype == q_pe.dtype == latent_cache.dtype and q_c.dtype in SUPPORTED_DTYPES, \
+        (q_c.dtype, q_pe.dtype, latent_cache.dtype)
+    assert q_c.stride(2) == 1 and q_pe.stride(2) == 1 and latent_cache.stride(2) == 1
     assert block_tables.dtype == torch.int32 and context_lens.dtype == torch.int32
     assert block_tables.shape[0] == B and context_lens.shape == (B,)
     tile = min(block_size, 16)
@@ -139,21 +152,21 @@ def mla_decode(q_abs: Tensor, latent_cache: Tensor, block_tables: Tensor, contex
     max_context = max_blocks * block_size
     num_tiles_max = max(1, -(-max_context // tile))
     if num_splits is None:
-        num_splits = default_num_splits(B, 1, max_context, q_abs.device)
+        num_splits = default_num_splits(B, 1, max_context, q_c.device)
     num_splits = max(1, min(int(num_splits), num_tiles_max))
     tiles_per_split = -(-num_tiles_max // num_splits)
     if out is None:
-        out = torch.empty((B, H, DL), dtype=q_abs.dtype, device=q_abs.device)
+        out = torch.empty((B, H, DL), dtype=q_c.dtype, device=q_c.device)
     assert out.shape == (B, H, DL) and out.stride(2) == 1
     if num_splits == 1:
         m_p = l_p = acc_p = out
     else:
-        m_p, l_p, acc_p = _SCRATCH.get(num_splits, B, H, DL, q_abs.device)
+        m_p, l_p, acc_p = _SCRATCH.get(num_splits, B, H, DL, q_c.device)
     _kernel()[(B, num_splits)](
-        q_abs, latent_cache, out, block_tables, context_lens,
+        q_c, q_pe, latent_cache, out, block_tables, context_lens,
         m_p, l_p, acc_p,
         float(scale),
-        q_abs.stride(0), q_abs.stride(1),
+        q_c.stride(0), q_c.stride(1), q_pe.stride(0), q_pe.stride(1),
         latent_cache.stride(0), latent_cache.stride(1),
         out.stride(0), out.stride(1),
         block_tables.stride(0),
@@ -213,10 +226,10 @@ class MLATritonBackend:
         return self._prefill_reference(layer_idx, q_nope, q_pe, w_uk, w_uv, scale, meta)
 
     # ---- decode: absorb W_UK into q, kernel over the latent, W_UV after -----------------
-    def _absorb(self, q_nope: Tensor, q_pe: Tensor, w_uk: Tensor) -> Tensor:
+    def _absorb(self, q_nope: Tensor, q_pe: Tensor, w_uk: Tensor) -> tuple[Tensor, Tensor]:
         # q_c[n, h, :] = w_uk[h] @ q_nope[n, h, :]  ->  bmm over heads: [H, N, Dn] x [H, Dn, Dl]
-        q_c = torch.bmm(q_nope.transpose(0, 1), w_uk).transpose(0, 1)  # [N, H, Dl]
-        return torch.cat([q_c, q_pe], dim=-1).contiguous()  # [N, H, Dl + Dr]
+        q_c = torch.bmm(q_nope.transpose(0, 1), w_uk).transpose(0, 1)  # [N, H, Dl], unit last stride
+        return q_c, q_pe  # the kernel reads the two halves from their own pointers: no concat
 
     def _decode(self, layer_idx: int, q_nope: Tensor, q_pe: Tensor, w_uk: Tensor, w_uv: Tensor,
                 scale: float, meta: AttnMetadata) -> Tensor:
