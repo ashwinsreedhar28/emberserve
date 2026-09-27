@@ -67,7 +67,7 @@ def main() -> None:
     if args.device == "cpu":
         model = model.to(args.device)
     out_dir = Path(args.out)
-    out_dir.mkdir(exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     entries = []
     for text in PROMPTS:
