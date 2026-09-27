@@ -12,8 +12,13 @@ reports how many tokens move.
 
 The GEMM (`int8_gemm`, Triton) streams int8 weight tiles, converts them to the activation
 dtype, multiplies on the tensor cores and applies `s` to the fp32 accumulator, so the
-result is `x @ (q * s)^T` computed as `(x @ q^T) * s` (exact rearrangement). The torch
-reference does the same in plain ops (CPU tests); `PAGEDSERVE_INT8_KERNEL=0` forces it.
+result is `x @ (q * s)^T` computed as `(x @ q^T) * s` (exact rearrangement). Tile shapes
+are autotuned per (M bucket, N, K) at load time (`warm_int8_kernels`): the batch-1 step
+wants narrow tiles so the weight streams through many programs, a prefill chunk wants the
+square tiles a dense GEMM uses; the first version used one fixed shape per regime and a
+register transpose of the weight tile, and was 2x behind cuBLAS at M >= 32 on the A100.
+The torch reference does the same in plain ops (CPU tests); `PAGEDSERVE_INT8_KERNEL=0`
+forces it and `PAGEDSERVE_INT8_AUTOTUNE=0` pins the first config of each regime.
 `quantize_model` swaps every `nn.Linear` of the decoder (and the lm_head) for
 `Int8Linear`, one at a time so the fp16 copy is freed before the next one is converted.
 MoE experts (stacked 3-D weights) stay fp16/bf16 for now.
@@ -26,9 +31,6 @@ import os
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
-
-_KERNEL = None
-
 
 def quantize_int8_weight(w: Tensor) -> tuple[Tensor, Tensor]:
     """`w [N, K]` -> (`q [N, K]` int8, `scale [N]` fp32), symmetric per output row."""
@@ -51,10 +53,38 @@ def kernel_enabled(x: Tensor) -> bool:
             and (x.is_cuda or os.environ.get("TRITON_INTERPRET", "0") == "1"))
 
 
-def _kernel():
-    global _KERNEL
-    if _KERNEL is not None:
-        return _KERNEL
+_KERNEL = None  # the plain JIT kernel (fixed config; interpreter and A/B)
+_TUNED = None  # the autotuned launcher (CUDA)
+
+# Tile configs the autotuner picks from, keyed on the M bucket (rows are decode batch
+# sizes or prefill chunks; N and K are one of a handful of projection shapes per model).
+# Small M: a narrow tile per program so the int8 weight streams through many programs
+# (the batch-1 step is the weight read). Large M: square-ish tiles, deep pipeline.
+_CONFIGS_SMALL_M = [  # M <= 16
+    dict(BM=16, BN=64, BK=128, num_warps=4, num_stages=3),
+    dict(BM=16, BN=128, BK=64, num_warps=4, num_stages=4),
+    dict(BM=16, BN=64, BK=256, num_warps=4, num_stages=3),
+    dict(BM=16, BN=32, BK=256, num_warps=2, num_stages=4),
+]
+_CONFIGS_LARGE_M = [
+    dict(BM=64, BN=128, BK=64, num_warps=4, num_stages=4),
+    dict(BM=64, BN=64, BK=64, num_warps=4, num_stages=4),
+    dict(BM=128, BN=128, BK=64, num_warps=8, num_stages=3),
+    dict(BM=128, BN=256, BK=64, num_warps=8, num_stages=3),
+    dict(BM=64, BN=256, BK=32, num_warps=8, num_stages=4),
+    dict(BM=32, BN=128, BK=64, num_warps=4, num_stages=4),
+]
+
+
+def _m_bucket(m: int) -> int:
+    """Autotune key: next power of two of M (capped), so a new prefill size does not
+    re-tune and the decode batch buckets tune once each."""
+    import triton
+
+    return min(triton.next_power_of_2(max(m, 1)), 8192)
+
+
+def _define_kernel():
     import triton
     import triton.language as tl
 
@@ -62,7 +92,8 @@ def _kernel():
     def _int8_gemm_kernel(
         a_ptr, w_ptr, scale_ptr, bias_ptr, out_ptr, M, N, K,
         stride_am, stride_wn, stride_om,
-        HAS_BIAS: tl.constexpr, BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr,
+        M_BUCKET: tl.constexpr, HAS_BIAS: tl.constexpr,
+        BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr,
     ):
         pid_m = tl.program_id(0)
         pid_n = tl.program_id(1)
@@ -71,15 +102,19 @@ def _kernel():
         offs_k = tl.arange(0, BK)
         m_valid = offs_m < M
         n_valid = offs_n < N
+        a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_k[None, :]  # [BM, BK]
+        # the weight is [N, K] row-major; the B operand is read as a [BK, BN] tile straight
+        # from that layout (K contiguous down the tile), so no register transpose is needed
+        w_ptrs = w_ptr + offs_k[:, None] + offs_n[None, :] * stride_wn  # [BK, BN]
         acc = tl.zeros([BM, BN], dtype=tl.float32)
-        for k0 in range(0, K, BK):
-            kk = k0 + offs_k
+        for k0 in range(0, tl.cdiv(K, BK)):
+            kk = k0 * BK + offs_k
             k_valid = kk < K
-            a = tl.load(a_ptr + offs_m[:, None] * stride_am + kk[None, :],
-                        mask=m_valid[:, None] & k_valid[None, :], other=0.0)  # [BM, BK]
-            w = tl.load(w_ptr + offs_n[:, None] * stride_wn + kk[None, :],
-                        mask=n_valid[:, None] & k_valid[None, :], other=0)  # [BN, BK] int8
-            acc += tl.dot(a, tl.trans(w.to(a.dtype)))
+            a = tl.load(a_ptrs, mask=m_valid[:, None] & k_valid[None, :], other=0.0)
+            w = tl.load(w_ptrs, mask=k_valid[:, None] & n_valid[None, :], other=0)  # int8
+            acc = tl.dot(a, w.to(a.dtype), acc)
+            a_ptrs += BK
+            w_ptrs += BK
         scale = tl.load(scale_ptr + offs_n, mask=n_valid, other=0.0)
         out = acc * scale[None, :]
         if HAS_BIAS:
@@ -88,8 +123,43 @@ def _kernel():
         tl.store(out_ptr + offs_m[:, None] * stride_om + offs_n[None, :],
                  out.to(out_ptr.dtype.element_ty), mask=m_valid[:, None] & n_valid[None, :])
 
-    _KERNEL = _int8_gemm_kernel
+    return _int8_gemm_kernel
+
+
+def _kernel():
+    global _KERNEL
+    if _KERNEL is None:
+        _KERNEL = _define_kernel()
     return _KERNEL
+
+
+def _tuned():
+    """The autotuned launcher: one benchmark per (M bucket, N, K), then cached."""
+    global _TUNED
+    if _TUNED is None:
+        import triton
+
+        configs = [triton.Config({"BM": c["BM"], "BN": c["BN"], "BK": c["BK"]},
+                                 num_warps=c["num_warps"], num_stages=c["num_stages"])
+                   for c in _CONFIGS_SMALL_M + _CONFIGS_LARGE_M]
+
+        def prune(configs, named_args, **kwargs):
+            small = named_args["M_BUCKET"] <= 16
+            keep = [c for c in configs if (c.kwargs["BM"] == 16) == small]
+            return keep or configs
+
+        kw = dict(configs=configs, key=["M_BUCKET", "N", "K"],
+                  prune_configs_by={"early_config_prune": prune})
+        try:  # short benchmarks: ~70 keys are tuned at load time (warm_int8_kernels)
+            _TUNED = triton.autotune(**kw, warmup=5, rep=20)(_define_kernel())
+        except TypeError:  # a Triton without the warmup/rep knobs
+            _TUNED = triton.autotune(**kw)(_define_kernel())
+    return _TUNED
+
+
+def autotune_enabled(x: Tensor) -> bool:
+    return (x.is_cuda and os.environ.get("PAGEDSERVE_INT8_AUTOTUNE", "1") != "0"
+            and os.environ.get("TRITON_INTERPRET", "0") != "1")
 
 
 def int8_gemm(x: Tensor, q: Tensor, scale: Tensor, bias: Tensor | None = None) -> Tensor:
@@ -102,18 +172,43 @@ def int8_gemm(x: Tensor, q: Tensor, scale: Tensor, bias: Tensor | None = None) -
     out = torch.empty((m, n), dtype=x.dtype, device=x.device)
     if m == 0:
         return out
-    bm = 16 if m <= 16 else (64 if m <= 64 else 128)
-    bn = 64 if m <= 16 else 128
-    bk = 128 if m <= 16 else 64
-    bk = min(bk, max(16, triton.next_power_of_2(k)))
-    grid = (triton.cdiv(m, bm), triton.cdiv(n, bn))
-    _kernel()[grid](
-        x, q, scale, bias if bias is not None else scale, out, m, n, k,
-        x.stride(0), q.stride(0), out.stride(0),
-        HAS_BIAS=bias is not None, BM=bm, BN=bn, BK=bk,
-        num_warps=4 if bm <= 64 else 8, num_stages=3,
-    )
+    bucket = _m_bucket(m)
+    args = (x, q, scale, bias if bias is not None else scale, out, m, n, k,
+            x.stride(0), q.stride(0), out.stride(0))
+    if autotune_enabled(x):
+        grid = lambda meta: (triton.cdiv(m, meta["BM"]), triton.cdiv(n, meta["BN"]))  # noqa: E731
+        _tuned()[grid](*args, M_BUCKET=bucket, HAS_BIAS=bias is not None)
+        return out
+    cfg = _CONFIGS_SMALL_M[0] if m <= 16 else _CONFIGS_LARGE_M[0]
+    bk = min(cfg["BK"], max(16, triton.next_power_of_2(k)))
+    grid = (triton.cdiv(m, cfg["BM"]), triton.cdiv(n, cfg["BN"]))
+    _kernel()[grid](*args, M_BUCKET=bucket, HAS_BIAS=bias is not None,
+                    BM=cfg["BM"], BN=cfg["BN"], BK=bk,
+                    num_warps=cfg["num_warps"], num_stages=cfg["num_stages"])
     return out
+
+
+def warm_int8_kernels(model: nn.Module, max_m: int = 8192) -> int:
+    """Run every `Int8Linear` shape once per M bucket so the autotuner's benchmarks happen
+    at load time, not inside the first request (or a CUDA-graph warmup). Returns the number
+    of launches."""
+    shapes: dict[tuple[int, int, bool, torch.dtype, torch.device], Int8Linear] = {}
+    for mod in model.modules():
+        if isinstance(mod, Int8Linear):
+            key = (mod.in_features, mod.out_features, mod.bias is not None,
+                   mod.act_dtype, mod.weight_q.device)
+            shapes.setdefault(key, mod)
+    count = 0
+    with torch.inference_mode():
+        for (k, _n, _b, dtype, device), mod in shapes.items():
+            if not autotune_enabled(mod.weight_q):
+                continue
+            m = 1
+            while m <= max_m:
+                mod(torch.zeros((m, k), dtype=dtype, device=device))
+                count += 1
+                m *= 2
+    return count
 
 
 class Int8Linear(nn.Module):
@@ -172,6 +267,7 @@ def quantize_model(model: nn.Module, method: str = "int8", skip: tuple[str, ...]
                 count += 1
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+        warm_int8_kernels(model)
     return count
 
 

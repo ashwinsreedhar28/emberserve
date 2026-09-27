@@ -22,7 +22,7 @@ DEV = "cuda"
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-@pytest.mark.parametrize("m", [1, 8, 200, 2048])
+@pytest.mark.parametrize("m", [1, 8, 33, 200, 2048])
 @pytest.mark.parametrize("n,k", [(4608, 3584), (3584, 18944)])
 def test_kernel_matches_reference(dtype, m, n, k):
     g = torch.Generator().manual_seed(m)
@@ -35,6 +35,34 @@ def test_kernel_matches_reference(dtype, m, n, k):
     want = int8_gemm_torch(x, q, s, b).float()
     tol = 2e-2 if dtype == torch.float16 else 8e-2
     torch.testing.assert_close(got, want, atol=tol, rtol=tol)
+
+
+def test_fixed_configs_match_autotuned(monkeypatch):
+    """Every tile config the autotuner can pick computes the same thing (the [BK, BN]
+    weight-tile read is exercised by each), and the load-time warmup runs every bucket."""
+    from pagedserve.model import quant
+
+    g = torch.Generator().manual_seed(3)
+    q, s = quantize_int8_weight(torch.randn(3584, 4608, generator=g) * 0.02)
+    q, s = q.to(DEV), s.to(DEV)
+    for m in (1, 16, 17, 64, 300):
+        x = (torch.randn(m, 4608, generator=g) * 0.5).to(DEV, torch.float16)
+        want = int8_gemm_torch(x, q, s).float()
+        torch.testing.assert_close(int8_gemm(x, q, s).float(), want, atol=2e-2, rtol=2e-2)
+        cfgs = quant._CONFIGS_SMALL_M if m <= 16 else quant._CONFIGS_LARGE_M
+        for cfg in cfgs:
+            import triton
+
+            out = torch.empty((m, 3584), dtype=torch.float16, device=DEV)
+            grid = (triton.cdiv(m, cfg["BM"]), triton.cdiv(3584, cfg["BN"]))
+            quant._kernel()[grid](x, q, s, s, out, m, 3584, 4608, x.stride(0), q.stride(0), out.stride(0),
+                                  M_BUCKET=quant._m_bucket(m), HAS_BIAS=False, BM=cfg["BM"], BN=cfg["BN"],
+                                  BK=cfg["BK"], num_warps=cfg["num_warps"], num_stages=cfg["num_stages"])
+            torch.testing.assert_close(out.float(), want, atol=2e-2, rtol=2e-2), cfg
+    lin = torch.nn.Linear(4608, 3584, bias=False).to(DEV, torch.float16)
+    model = torch.nn.Sequential(lin)
+    quantize_model(model)
+    assert quant.warm_int8_kernels(model, max_m=1024) == 11  # 1, 2, ..., 1024
 
 
 def test_quantized_engine_kernel_equals_torch_path(monkeypatch):
