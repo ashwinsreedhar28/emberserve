@@ -112,7 +112,9 @@ class MLAAttention(nn.Module):
         w = self.kv_b_proj.weight.view(self.num_heads, self.qk_nope + self.v_head_dim, self.kv_lora_rank)
         return w[:, :self.qk_nope, :], w[:, self.qk_nope:, :]
 
-    def forward(self, hidden: torch.Tensor, backend, meta: AttnMetadata) -> torch.Tensor:
+    def pre_attention(self, hidden: torch.Tensor,
+                      positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Projections and rope: `(q_nope [n, H, Dn], q_pe [n, H, Dr], latent [n, Dl + Dr])`."""
         n = hidden.shape[0]
         qkv = self.qkv_a_proj(hidden)
         q, ckv = qkv.split([self.q_size, self.kv_lora_rank + self.qk_rope], dim=-1)
@@ -123,16 +125,29 @@ class MLAAttention(nn.Module):
         c, k_pe = ckv.split([self.kv_lora_rank, self.qk_rope], dim=-1)
         c = self.kv_a_layernorm(c)
         if self.rope_folded:  # the projections already emit halves order: rope on the views
-            q_pe, k_pe = self.rotary_emb(q_pe, k_pe.unsqueeze(1), meta.positions)
+            q_pe, k_pe = self.rotary_emb(q_pe, k_pe.unsqueeze(1), positions)
         else:
             q_pe, k_pe = self.rotary_emb(interleave_to_halves(q_pe).contiguous(),
                                          interleave_to_halves(k_pe).unsqueeze(1).contiguous(),
-                                         meta.positions)
+                                         positions)
         latent = torch.cat([c, k_pe.squeeze(1)], dim=-1)  # [n, Dl + Dr]
+        return q_nope, q_pe, latent
+
+    def attend(self, pre: tuple[torch.Tensor, ...], backend, meta: AttnMetadata) -> torch.Tensor:
+        q_nope, q_pe, latent = pre
         w_uk, w_uv = self.up_projections()
-        out = backend.forward(self.layer_idx, q_nope, q_pe, latent, w_uk, w_uv,
-                              self.softmax_scale, meta, kv_b_weight=self.kv_b_proj.weight)  # [n, H, Dv]
-        return self.o_proj(out.reshape(n, self.num_heads * self.v_head_dim))
+        return backend.forward(self.layer_idx, q_nope, q_pe, latent, w_uk, w_uv,
+                               self.softmax_scale, meta, kv_b_weight=self.kv_b_proj.weight)  # [n, H, Dv]
+
+    def attn_out_shape(self, n: int) -> tuple[int, int, int]:
+        return (n, self.num_heads, self.v_head_dim)
+
+    def post_attention(self, out: torch.Tensor) -> torch.Tensor:
+        return self.o_proj(out.reshape(out.shape[0], self.num_heads * self.v_head_dim))
+
+    def forward(self, hidden: torch.Tensor, backend, meta: AttnMetadata) -> torch.Tensor:
+        pre = self.pre_attention(hidden, meta.positions)
+        return self.post_attention(self.attend(pre, backend, meta))
 
 
 class DeepseekDecoderLayer(nn.Module):
@@ -150,16 +165,29 @@ class DeepseekDecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
 
-    def forward(self, hidden: torch.Tensor, residual: torch.Tensor | None, backend,
-                meta: AttnMetadata) -> tuple[torch.Tensor, torch.Tensor]:
+    # Same three-piece layout as `Qwen2DecoderLayer` (see attn/piecewise_graphs.py).
+    def pre(self, hidden: torch.Tensor, residual: torch.Tensor | None,
+            positions: torch.Tensor) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
         if residual is None:
             residual = hidden
             hidden = self.input_layernorm(hidden)
         else:
             hidden, residual = self.input_layernorm.forward_with_residual(hidden, residual)
-        hidden = self.self_attn(hidden, backend, meta)
+        return self.self_attn.pre_attention(hidden, positions), residual
+
+    def attend(self, pre: tuple[torch.Tensor, ...], backend, meta: AttnMetadata) -> torch.Tensor:
+        return self.self_attn.attend(pre, backend, meta)
+
+    def post(self, attn_out: torch.Tensor,
+             residual: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden = self.self_attn.post_attention(attn_out)
         hidden, residual = self.post_attention_layernorm.forward_with_residual(hidden, residual)
         return self.mlp(hidden), residual
+
+    def forward(self, hidden: torch.Tensor, residual: torch.Tensor | None, backend,
+                meta: AttnMetadata) -> tuple[torch.Tensor, torch.Tensor]:
+        pre, residual = self.pre(hidden, residual, meta.positions)
+        return self.post(self.attend(pre, backend, meta), residual)
 
 
 class DeepseekModel(nn.Module):

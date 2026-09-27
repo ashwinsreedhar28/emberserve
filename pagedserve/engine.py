@@ -142,6 +142,17 @@ class LLMEngine:
                 block_size=engine_config.block_size, scratch_block=self.scratch_block,
                 max_batch=engine_config.max_num_seqs, device=self.device)
             self.graph_runner.capture()
+        self.piecewise_runner = None
+        if use_graphs and engine_config.piecewise_cuda_graphs:
+            from pagedserve.attn.piecewise_graphs import PiecewiseGraphRunner
+            self.piecewise_runner = PiecewiseGraphRunner(
+                self.model, self.backend,
+                max_tokens=max(engine_config.max_num_batched_tokens, engine_config.max_num_seqs),
+                device=self.device)
+            self.piecewise_runner.capture()
+        elif engine_config.piecewise_cuda_graphs:
+            warnings.warn("piecewise_cuda_graphs ignored: needs enable_cuda_graphs on CUDA",
+                          stacklevel=2)
         self._next_seq_id = 0
         self._final_text: dict[str, str] = {}
         self._step_count = 0
@@ -296,6 +307,8 @@ class LLMEngine:
                  so: SchedulerOutput) -> torch.Tensor:
         if self.graph_runner is not None and not so.is_prefill:
             return self.graph_runner.run(input_ids, meta)
+        if self.piecewise_runner is not None:
+            return self.piecewise_runner.run(input_ids, meta)
         hidden = self.model(input_ids, self.backend, meta)
         return self.model.compute_logits(hidden, meta)
 

@@ -73,17 +73,35 @@ class Qwen2Attention(nn.Module):
         # Shared with every other layer; it holds no parameters, only cached cos/sin tables.
         self.rotary_emb = rotary_emb
 
-    def forward(self, hidden: torch.Tensor, backend: AttentionBackend,
-                meta: AttnMetadata) -> torch.Tensor:
+    def pre_attention(self, hidden: torch.Tensor,
+                      positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Everything before the attention kernel: `(q, k, v)`, rope applied. Row-wise, so
+        it can run on padded rows (piecewise CUDA graphs)."""
         n = hidden.shape[0]
         qkv = self.qkv_proj(hidden)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
         q = q.view(n, self.num_heads, self.head_dim)
         k = k.view(n, self.num_kv_heads, self.head_dim)
         v = v.view(n, self.num_kv_heads, self.head_dim)
-        q, k = self.rotary_emb(q, k, meta.positions)
-        out = backend.forward(self.layer_idx, q, k, v, meta)  # [n, H, D]
-        return self.o_proj(out.reshape(n, self.q_size))
+        q, k = self.rotary_emb(q, k, positions)
+        return q, k, v
+
+    def attend(self, pre: tuple[torch.Tensor, ...], backend: AttentionBackend,
+               meta: AttnMetadata) -> torch.Tensor:
+        """The attention kernel over the real rows: `[n, H, D]`."""
+        q, k, v = pre
+        return backend.forward(self.layer_idx, q, k, v, meta)
+
+    def attn_out_shape(self, n: int) -> tuple[int, int, int]:
+        return (n, self.num_heads, self.head_dim)
+
+    def post_attention(self, out: torch.Tensor) -> torch.Tensor:
+        return self.o_proj(out.reshape(out.shape[0], self.q_size))
+
+    def forward(self, hidden: torch.Tensor, backend: AttentionBackend,
+                meta: AttnMetadata) -> torch.Tensor:
+        pre = self.pre_attention(hidden, meta.positions)
+        return self.post_attention(self.attend(pre, backend, meta))
 
 
 class Qwen2DecoderLayer(nn.Module):
@@ -101,16 +119,34 @@ class Qwen2DecoderLayer(nn.Module):
         self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
 
-    def forward(self, hidden: torch.Tensor, residual: torch.Tensor | None,
-                backend: AttentionBackend, meta: AttnMetadata) -> tuple[torch.Tensor, torch.Tensor]:
+    # The layer is written as three pieces so `attn/piecewise_graphs.py` can capture `pre`
+    # and `post` (row-wise, shape-stable) into CUDA graphs and run `attend` eagerly between
+    # them; `forward` is the three in a row.
+    def pre(self, hidden: torch.Tensor, residual: torch.Tensor | None,
+            positions: torch.Tensor) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
+        """Input norm (+ residual add) and the attention projections: `(pre, residual)`."""
         if residual is None:  # first layer: the embedding is the residual stream
             residual = hidden
             hidden = self.input_layernorm(hidden)
         else:
             hidden, residual = self.input_layernorm.forward_with_residual(hidden, residual)
-        hidden = self.self_attn(hidden, backend, meta)
+        return self.self_attn.pre_attention(hidden, positions), residual
+
+    def attend(self, pre: tuple[torch.Tensor, ...], backend: AttentionBackend,
+               meta: AttnMetadata) -> torch.Tensor:
+        return self.self_attn.attend(pre, backend, meta)
+
+    def post(self, attn_out: torch.Tensor,
+             residual: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Output projection, post-attention norm (+ residual add), MLP: `(hidden, residual)`."""
+        hidden = self.self_attn.post_attention(attn_out)
         hidden, residual = self.post_attention_layernorm.forward_with_residual(hidden, residual)
         return self.mlp(hidden), residual
+
+    def forward(self, hidden: torch.Tensor, residual: torch.Tensor | None,
+                backend: AttentionBackend, meta: AttnMetadata) -> tuple[torch.Tensor, torch.Tensor]:
+        pre, residual = self.pre(hidden, residual, meta.positions)
+        return self.post(self.attend(pre, backend, meta), residual)
 
 
 class Qwen2Model(nn.Module):

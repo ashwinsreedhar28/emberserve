@@ -63,11 +63,12 @@ def test_kernel_matches_reference(dtype, ctx_lens):
         torch.testing.assert_close(got, want, **tol)
 
 
-def _engine(model, backend: str, dtype, graphs: bool = False, chunk: int | None = None) -> LLMEngine:
+def _engine(model, backend: str, dtype, graphs: bool = False, chunk: int | None = None,
+            piecewise: bool = False) -> LLMEngine:
     ecfg = EngineConfig(device=DEV, dtype=dtype, block_size=BLOCK, num_gpu_blocks=256,
                         max_num_seqs=16, max_num_batched_tokens=chunk or 512, max_model_len=256,
                         attn_backend=backend, enable_cuda_graphs=graphs,
-                        enable_chunked_prefill=chunk is not None)
+                        enable_chunked_prefill=chunk is not None, piecewise_cuda_graphs=piecewise)
     return LLMEngine(model, model.config, ecfg, tokenizer=None)
 
 
@@ -132,5 +133,21 @@ def test_rope_fold_matches_unfolded_on_cuda(dtype):
     ref = LLM.from_engine(_engine(model, "mla_triton", dtype)).generate(prompts, sp)
     model.fold_rope_permutation()
     got = LLM.from_engine(_engine(model, "mla_triton", dtype, graphs=True)).generate(prompts, sp)
+    for r, g in zip(ref, got):
+        assert r.output_token_ids == g.output_token_ids
+
+
+def test_piecewise_graphs_on_the_mla_moe_model():
+    """Per-layer graphs around the eager MLA attention, MoE layers included, with chunked
+    prefill: same tokens as mla_torch."""
+    dtype = torch.bfloat16
+    model = tiny_model(seed=25).to(DEV, dtype)
+    prompts = [torch.randint(2, 256, (n,), generator=torch.Generator().manual_seed(n + 11)).tolist()
+               for n in (6, 21, 33, 14)]
+    sp = SamplingParams.greedy(10, ignore_eos=True)
+    ref = LLM.from_engine(_engine(model, "mla_torch", dtype, chunk=16)).generate(prompts, sp)
+    eng = _engine(model, "mla_triton", dtype, graphs=True, chunk=16, piecewise=True)
+    assert eng.piecewise_runner is not None
+    got = LLM.from_engine(eng).generate(prompts, sp)
     for r, g in zip(ref, got):
         assert r.output_token_ids == g.output_token_ids

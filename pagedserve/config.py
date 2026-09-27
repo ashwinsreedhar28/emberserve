@@ -250,6 +250,11 @@ class EngineConfig:
     # Feature flags (later phases).
     enable_prefix_caching: bool = False
     enable_cuda_graphs: bool = False
+    # Piecewise CUDA graphs for the steps the full-step graph cannot take (prefill and
+    # mixed chunked-prefill steps): every layer's projections/norms/MLP replay from graphs
+    # per token bucket, attention runs eagerly between them (attn/piecewise_graphs.py).
+    # Needs enable_cuda_graphs.
+    piecewise_cuda_graphs: bool = False
     # Chunked prefill (Sarathi-Serve / vLLM): every step carries one token per decoding
     # request plus as many prompt tokens as fit in the remaining `max_num_batched_tokens`,
     # so a long prompt is split across steps instead of stalling every decode for one

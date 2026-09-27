@@ -26,7 +26,7 @@ BLOCK = 256
 
 def make_engine(graphs: bool, num_blocks: int = 64, max_num_seqs: int = 64,
                 max_model_len: int = 512, async_scheduling: bool = False,
-                chunked: bool = False, max_batched: int = 4096) -> LLMEngine:
+                chunked: bool = False, max_batched: int = 4096, piecewise: bool = False) -> LLMEngine:
     model = Qwen2ForCausalLM(CFG)
     reset_parameters_deterministic(model, 0)
     model = model.to("cuda", torch.float16)
@@ -34,7 +34,8 @@ def make_engine(graphs: bool, num_blocks: int = 64, max_num_seqs: int = 64,
                         num_gpu_blocks=num_blocks, max_num_seqs=max_num_seqs,
                         max_num_batched_tokens=max_batched, max_model_len=max_model_len,
                         attn_backend="paged_flash", enable_cuda_graphs=graphs,
-                        async_scheduling=async_scheduling, enable_chunked_prefill=chunked)
+                        async_scheduling=async_scheduling, enable_chunked_prefill=chunked,
+                        piecewise_cuda_graphs=piecewise)
     return LLMEngine(model, CFG, ecfg, tokenizer=None)
 
 
@@ -95,4 +96,17 @@ def test_async_scheduling_matches_sync_on_cuda(graphs):
     got = [r.output_token_ids for r in LLM.from_engine(eng).generate(ps, sps)]
     for r, sp, g in zip(ref, sps, got):
         assert g == r[: r.index(sp.stop_token_ids[0]) + 1]
+    assert eng.block_manager.num_free_blocks == eng.block_manager.num_blocks
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_piecewise_graphs_match_eager(chunked):
+    """Prefill and mixed steps replayed piecewise (per-layer graphs, eager attention) give
+    the same greedy tokens as the eager engine; decode steps still use the full graph."""
+    ps = prompts(11, seed=6)
+    ref = gen(make_engine(False, chunked=chunked, max_batched=40 if chunked else 4096), ps)
+    eng = make_engine(True, chunked=chunked, max_batched=40 if chunked else 4096, piecewise=True,
+                      async_scheduling=True)
+    assert eng.piecewise_runner is not None and eng.piecewise_runner.buckets[-1] == max(64, 40 if chunked else 4096)
+    assert gen(eng, ps) == ref
     assert eng.block_manager.num_free_blocks == eng.block_manager.num_blocks

@@ -187,6 +187,17 @@ rows pointed at one reserved scratch block. Graphs are worth more than any kerne
 model size: the kernels themselves take a couple of milliseconds across 24 layers and the rest was launch overhead,
 so TPOT fell from 9.1 to 3.8 ms on the 4090.
 
+Prefill and mixed (chunked-prefill) steps have variable shapes, so they ran eagerly, and at
+0.5B that made chunked prefill cost 11% at saturation. `--piecewise-cuda-graphs`
+(`attn/piecewise_graphs.py`, vLLM v1's approach) captures everything *except* attention:
+each decoder layer is three pieces, `pre` (input norm + residual add, projections, RoPE),
+`attend` (the kernel, eager on the real rows with the step's real metadata) and `post`
+(output projection, post norm, MLP); `pre` and `post` are row-wise, so they replay from
+per-layer graphs on rows padded up to a token bucket, and padded rows never reach the KV
+cache. A mixed step is then two replays plus the attention launches per layer. CPU-tested
+against the eager forward for both model families; the A100 measurement is pending, so it
+is off by default.
+
 ## Correctness
 
 ```bash
@@ -541,7 +552,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 
 ## Roadmap
 
-* Piecewise CUDA graphs for mixed steps, so chunked prefill stops costing 11% at 0.5B and can be the default everywhere.
+* Piecewise CUDA graphs for mixed steps: implemented (`--piecewise-cuda-graphs`), A100 measurement pending; if it removes the 11% chunked-prefill cost at 0.5B, chunked prefill becomes the default everywhere.
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.

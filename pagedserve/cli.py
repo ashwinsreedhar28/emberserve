@@ -25,6 +25,9 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--max-model-len", type=int, default=4096)
     p.add_argument("--enable-prefix-caching", action="store_true")
     p.add_argument("--enable-cuda-graphs", action="store_true")
+    p.add_argument("--piecewise-cuda-graphs", action="store_true",
+                   help="also replay prefill / mixed (chunked-prefill) steps from per-layer graphs "
+                        "with attention run eagerly between them (needs --enable-cuda-graphs)")
     p.add_argument("--enable-chunked-prefill", dest="enable_chunked_prefill", action="store_true",
                    default=None,
                    help="mix decode tokens and prompt chunks in every step; --max-num-batched-tokens "
@@ -77,6 +80,7 @@ def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
                         max_model_len=args.max_model_len, attn_backend=args.attn_backend,
                         enable_prefix_caching=args.enable_prefix_caching,
                         enable_cuda_graphs=args.enable_cuda_graphs,
+                        piecewise_cuda_graphs=bool(getattr(args, "piecewise_cuda_graphs", False)),
                         enable_chunked_prefill=chunked,
                         async_scheduling=bool(async_sched))
 

@@ -57,6 +57,20 @@ python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/
 (`tests/test_cuda_graphs_gpu.py::test_async_scheduling_matches_sync_on_cuda`) check token
 parity with and without graphs first.
 
+### Piecewise CUDA graphs A/B
+
+`--piecewise-cuda-graphs` (with `--enable-cuda-graphs`) replays prefill and mixed steps
+from per-layer graphs with attention eager in between (README, "CUDA graphs"). GPU parity
+tests first, then the 0.5B chunked sweep against `pagedserve_flash_v7.json` (12,786 tok/s,
+chunked without piecewise) and `_v7b.json` (14,394, prefill-priority):
+
+```bash
+python -m pytest tests/test_cuda_graphs_gpu.py tests/test_mla_triton_gpu.py -q -k piecewise
+python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 \
+  --max-model-len 4096 --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --enable-chunked-prefill --piecewise-cuda-graphs" \
+  --rates 1,2,4,8,16,inf --trace-n 200 --name pagedserve_flash_v8
+```
+
 ## DeepSeek / Moonlight checkpoints
 
 `scripts/download_model.py` fetches the repo's own tokenizer/modeling code and tiktoken
