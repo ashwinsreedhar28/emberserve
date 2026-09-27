@@ -278,8 +278,8 @@ def build_tp_model(spec: WorkerSpec, device: str, dtype: torch.dtype):
         if tp.size == 1:
             return full.to(device, dtype).eval(), full_cfg
         with torch.device(device):
-            model = Qwen2ForCausalLM(full_cfg.shard(tp.size))
-        W.load_hf_state_dict(model, W.hf_state_dict(full), dtype=dtype, device=device)
+            model = Qwen2ForCausalLM(full_cfg.shard(tp.size)).to(dtype)  # (`copy_` keeps the
+        W.load_hf_state_dict(model, W.hf_state_dict(full), dtype=dtype, device=device)  # param dtype)
         return model.eval(), full_cfg
     if spec.model_dir is None:
         raise ValueError("WorkerSpec needs model_dir or tiny=True")
