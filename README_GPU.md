@@ -152,9 +152,10 @@ same amount. Results record `trace.source = "sharegpt"`.
 ### Speculative decoding on text
 
 Only meaningful on real text (random ids never repeat an n-gram). Same trace, with and
-without drafts; the JSON's `spec_accepted_total / spec_drafted_total` from `/metrics` is
-the acceptance rate, TPOT at low rates the speedup (at saturation the extra query rows
-compete with real work, so expect little there):
+without drafts; the runner snapshots the server's `/metrics` around every rate and writes
+this run's `spec_drafted_total` / `spec_accepted_total` (`server_counters`) and the
+acceptance rate (`spec_acceptance`) into the sweep JSON; TPOT at low rates is the speedup
+(at saturation the extra query rows compete with real work, so expect little there):
 
 ```bash
 T="--tokenizer models/Qwen2.5-7B-Instruct --sharegpt data/ShareGPT_V3_unfiltered_cleaned_split.json --max-model-len 4096 --rates 1,2,4,8,inf --trace-n 200"

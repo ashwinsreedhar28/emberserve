@@ -34,7 +34,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from pagedserve.bench.load import run_http_benchmark, wait_for_health
+from pagedserve.bench.load import fetch_metrics, run_http_benchmark, wait_for_health
 from pagedserve.bench.metrics import records_to_json, summarize
 from pagedserve.bench.trace import generate_trace, sharegpt_trace, trace_summary
 
@@ -217,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
                                        max_output_len=args.max_output_len, vocab_size=vocab_size)
             label = "inf" if rate is None else f"{rate:g}"
             print(f"[baseline] {name} @ rate={label} req/s, n={len(trace)}", file=sys.stderr)
+            before = asyncio.run(fetch_metrics(base_url)) if args.server == "pagedserve" else None
             t0 = time.perf_counter()
             records = asyncio.run(run_http_benchmark(
                 base_url, model_name, trace, max_concurrency=args.max_concurrency,
@@ -229,6 +230,17 @@ def main(argv: list[str] | None = None) -> int:
             run = {"request_rate": rate, "wall_s": wall, "summary": summary.to_dict(),
                    "trace": {**trace_summary(trace),
                              "source": "sharegpt" if args.sharegpt else "synthetic"}}
+            after = asyncio.run(fetch_metrics(base_url)) if before is not None else None
+            if after is not None:
+                # this run's share of the server's counters (speculation drafted/accepted...)
+                run["server_counters"] = {k: after[k] - before.get(k, 0) for k in after
+                                          if k.endswith("_total") and isinstance(after[k], (int, float))}
+                d, a = run["server_counters"].get("spec_drafted_total", 0), \
+                    run["server_counters"].get("spec_accepted_total", 0)
+                if d:
+                    run["spec_acceptance"] = a / d
+                    print(f"[baseline] speculation: {a}/{d} drafts accepted ({a / d:.1%})",
+                          file=sys.stderr)
             if args.save_records:
                 run["records"] = records_to_json(records)
             runs.append(run)

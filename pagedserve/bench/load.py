@@ -164,6 +164,21 @@ async def run_http_benchmark(base_url: str, model: str, trace: list[TraceRequest
     return [r for r in records if r is not None]
 
 
+async def fetch_metrics(base_url: str, path: str = "/metrics",
+                        transport: httpx.AsyncBaseTransport | None = None) -> dict | None:
+    """The server's `/metrics` JSON (pagedserve), or None when the server has no such
+    route or it is not JSON (vLLM's is Prometheus text; hosted APIs have none)."""
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=5.0, transport=transport) as c:
+            r = await c.get(path)
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            return data if isinstance(data, dict) else None
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
 async def wait_for_health(base_url: str, timeout_s: float = 600.0, path: str = "/health",
                           transport: httpx.AsyncBaseTransport | None = None) -> bool:
     """Poll `base_url + path` until it answers 200 or the timeout elapses."""

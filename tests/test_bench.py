@@ -232,8 +232,12 @@ def _fake_app(n_chunks: int = 5, delay_s: float = 0.01) -> Starlette:
     async def health(_: Request):
         return JSONResponse({"status": "ok"})
 
+    async def metrics(_: Request):
+        return JSONResponse({"requests_finished_total": 3, "spec_drafted_total": 40,
+                             "spec_accepted_total": 25, "num_running": 0})
+
     return Starlette(routes=[Route("/v1/completions", completions, methods=["POST"]),
-                             Route("/health", health)])
+                             Route("/health", health), Route("/metrics", metrics)])
 
 
 def test_http_load_generator_asgi() -> None:
@@ -253,6 +257,15 @@ def test_http_load_generator_asgi() -> None:
     s = summarize(recs)
     assert s.completed == 6 and s.throughput_tok_s > 0
     assert s.tpot_ms.p50 > 0
+
+
+def test_fetch_metrics_json_or_none() -> None:
+    from pagedserve.bench.load import fetch_metrics
+
+    transport = httpx.ASGITransport(app=_fake_app())
+    m = asyncio.run(fetch_metrics("http://test", transport=transport))
+    assert m["spec_drafted_total"] == 40 and m["spec_accepted_total"] == 25
+    assert asyncio.run(fetch_metrics("http://test", path="/nope", transport=transport)) is None
 
 
 def test_http_load_generator_records_errors() -> None:
