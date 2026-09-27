@@ -91,6 +91,30 @@ Then any OpenAI client works: `openai.OpenAI(base_url="http://localhost:8000/v1"
 
 See `README_GPU.md` (flash-attn requires paged block size 256; that is itself an ablation).
 
+## Results (RTX 4090, Qwen2.5-0.5B-Instruct fp16, 200 requests, seed 0)
+
+Same trace for every row; `results/*.json`. Prompt median 208 tokens, output median 131.
+
+**Open-loop, 8 req/s** (arrivals span 24.3 s — a config that keeps up finishes in ~25 s):
+
+| config | tok/s | run | TTFT p50/p99 ms | TPOT p50/p99 ms |
+|---|---:|---:|---:|---:|
+| naive (per-seq torch.cat cache) | 343 | ~108 s | – | – |
+| static batching | 595 | ~62 s | – | – |
+| paged_torch (gather) | 700 | 52.8 s | 12 / 28 | 86 / 141 |
+| paged_flash | 1,329 | 27.8 s | 8.7 / 10.0 | 9.1 / 9.9 |
+| paged_flash + CUDA graphs | 1,441 | 25.6 s | 8.7 / 10.6 | **3.8 / 4.8** |
+
+**Saturation, all 200 at t=0:** paged_torch 738 → paged_flash 3,043 → +graphs **5,459 tok/s**.
+
+Two things the numbers taught us. Prefix caching with a 64-token shared prefix did
+nothing at block size 256 (no full block is ever shared); at 512 tokens it only moved
+TTFT p99 from 10.3 to 9.5 ms because prefill on a 0.5B model is ~8 ms to begin with.
+And CUDA graphs are worth more than any kernel at this model size: decode is ~2 ms of
+kernels and the rest was launch overhead, so graphs cut TPOT by 2.4x.
+
+Decode-kernel micro-benchmark and the Triton kernel's standing are in `README_GPU.md`.
+
 ## Benchmark
 
 ```bash
@@ -104,4 +128,4 @@ python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/
 python -m pagedserve.bench.plot results/vllm.json results/pagedserve.json --ablation results/ablation.json --out-dir results/plots
 ```
 
-Results table and the gap analysis go here once the GPU runs are in.
+The vLLM comparison is the remaining run; the gap analysis lands with it.
