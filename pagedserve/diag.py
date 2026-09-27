@@ -64,11 +64,15 @@ _SAMPLES: dict[str, int] = {}
 _SAMPLER_STOP = threading.Event()
 
 
-def _sampler(interval_s: float) -> None:
+def _sampler(interval_s: float, flush) -> None:
     import sys
 
     my_ident = threading.get_ident()  # (the sampler's own thread, not the caller's)
+    n = 0
     while not _SAMPLER_STOP.wait(interval_s):
+        n += 1
+        if n % int(5.0 / interval_s) == 0:
+            flush()  # every ~5 s: a process that is SIGKILLed still leaves its profile
         for ident, frame in sys._current_frames().items():
             if ident == my_ident:
                 continue
@@ -87,17 +91,20 @@ def start_sampler(path: str, role: str, interval_s: float = 0.004) -> None:
     collapsed stacks (`frame;frame;... count`, the py-spy raw format) to
     `<path>.<role>` at exit; `scripts/pyspy_summary.py` reads it. The sampler needs the
     GIL to run, so C code that holds it is under-counted; Python-side cost is what it shows."""
-    threading.Thread(target=_sampler, args=(interval_s,), daemon=True, name="pagedserve-sampler").start()
-
-    def flush() -> None:
-        _SAMPLER_STOP.set()
+    def write() -> None:
         try:
             with open(f"{path}.{role}", "w") as f:
-                for k, n in sorted(_SAMPLES.items(), key=lambda kv: -kv[1]):
+                for k, n in sorted(list(_SAMPLES.items()), key=lambda kv: -kv[1]):
                     f.write(f"{k} {n}\n")
         except OSError:
             pass
 
+    def flush() -> None:
+        _SAMPLER_STOP.set()
+        write()
+
+    threading.Thread(target=_sampler, args=(interval_s, write), daemon=True,
+                     name="pagedserve-sampler").start()
     atexit.register(flush)
     _flushers.append(flush)
 
