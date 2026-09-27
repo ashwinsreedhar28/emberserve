@@ -64,5 +64,6 @@ def test_sampling_params_mapping() -> None:
                                  "seed": 7, "stop": "END", "stop_token_ids": [3], "ignore_eos": True})
     assert (sp.max_tokens, sp.temperature, sp.top_p, sp.top_k, sp.seed) == (5, 0.5, 0.9, 40, 7)
     assert sp.stop == ["END"] and sp.stop_token_ids == [3] and sp.ignore_eos
-    cfg = mod.engine_config()
-    assert cfg.device == "cuda" and cfg.attn_backend == "paged_flash" and cfg.enable_chunked_prefill
+    cfg = mod.engine_config(None)  # no checkpoint -> small-model defaults
+    assert cfg.device == "cuda" and cfg.attn_backend == "paged_flash"
+    assert cfg.async_scheduling and not cfg.enable_chunked_prefill

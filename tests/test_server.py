@@ -298,3 +298,26 @@ def test_client_disconnect_aborts(live: LiveServer) -> None:
         time.sleep(0.02)
     assert m["requests_running"] == 0 and m["requests_aborted_total"] >= 1
     assert m["kv_blocks_free"] == m["kv_blocks_total"]
+
+
+def test_cli_defaults_by_device_and_checkpoint_size(tmp_path):
+    """CUDA defaults: async scheduling on; chunked prefill only for checkpoints >= 4 GB
+    (measured +8% at 7B, -11% at 0.5B); explicit flags always win."""
+    from pagedserve.cli import build_parser, engine_config_from_args
+
+    def cfg(*extra):
+        return engine_config_from_args(build_parser().parse_args(["serve", "--model", str(tmp_path), *extra]))
+
+    (tmp_path / "model.safetensors").write_bytes(b"\0" * 1024)  # a tiny checkpoint
+    c = cfg("--device", "cuda")
+    assert c.async_scheduling and not c.enable_chunked_prefill and c.max_num_batched_tokens == 8192
+    c = cfg("--device", "cpu")
+    assert not c.async_scheduling and not c.enable_chunked_prefill
+    c = cfg("--device", "cuda", "--enable-chunked-prefill", "--no-async-scheduling")
+    assert c.enable_chunked_prefill and c.max_num_batched_tokens == 2048 and not c.async_scheduling
+    # a big checkpoint (sparse file: size without the bytes) turns chunked prefill on
+    big = tmp_path / "model-00002.safetensors"
+    with open(big, "wb") as f:
+        f.truncate(5 * 1024 ** 3)
+    c = cfg("--device", "cuda")
+    assert c.enable_chunked_prefill and c.max_num_batched_tokens == 2048

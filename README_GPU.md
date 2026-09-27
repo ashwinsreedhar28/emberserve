@@ -32,27 +32,30 @@ time; `nvidia-smi --query-gpu=memory.used --format=csv` should read ~0 MiB befor
 
 ## Serving defaults on CUDA
 
-`pagedserve serve --device cuda` now defaults to the engine in its own process
-(`--engine-process`; `--no-engine-process` for the single-process path) and chunked prefill
-with a 2048-token per-step cap (`--no-chunked-prefill`; `--max-num-batched-tokens 512` for
-a tighter TPOT tail at ~6% throughput). Both were measured on the A100: the process split
-took Qwen2.5-0.5B from 10.6k to 13.9k tok/s at saturation, chunked prefill took Qwen2.5-7B
-from 89% to 97% of vLLM.
+`pagedserve serve --device cuda` defaults to the engine in its own process
+(`--engine-process`; `--no-engine-process` for the single-process path), async scheduling
+(`--no-async-scheduling` to compare), and chunked prefill with a 2048-token per-step cap for
+checkpoints of 4 GB and up (`--enable-chunked-prefill` / `--no-chunked-prefill` to force;
+`--max-num-batched-tokens 512` for a tighter TPOT tail at ~6% throughput). All measured on
+the A100: the process split took Qwen2.5-0.5B from 10.6k to 13.9k tok/s at saturation and
+async scheduling to 14.4k; chunked prefill took Qwen2.5-7B from 89% to 97% of vLLM but
+costs 11% at 0.5B, where an eager mixed step loses to a graph-replayed decode step.
 
 ### Async scheduling A/B
 
 `--async-scheduling` overlaps each step's CPU work with the previous step's GPU work
-(README, "Scheduler"). It is off by default until the A100 sweep says otherwise:
+(README, "Scheduler"); default on. The A/B that made it the default (v6 → v7b: 13,945 →
+14,394 tok/s at saturation, TPOT 2.1 → 1.8 ms at 1 req/s):
 
 ```bash
 python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 \
-  --max-model-len 4096 --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --async-scheduling" \
-  --rates 1,2,4,8,16,inf --trace-n 200 --name pagedserve_flash_v7
+  --max-model-len 4096 --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs" \
+  --rates 1,2,4,8,16,inf --trace-n 200 --name pagedserve_flash_v7b
 ```
 
-Compare with `results/pagedserve_flash_v6.json` (13,945 tok/s at saturation). The tiny-model
-GPU tests (`tests/test_cuda_graphs_gpu.py::test_async_scheduling_matches_sync_on_cuda`)
-check token parity with and without graphs first.
+(`--no-async-scheduling` for the other arm.) The tiny-model GPU tests
+(`tests/test_cuda_graphs_gpu.py::test_async_scheduling_matches_sync_on_cuda`) check token
+parity with and without graphs first.
 
 ## DeepSeek / Moonlight checkpoints
 

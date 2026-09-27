@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from pathlib import Path
 
 from pagedserve.config import EngineConfig
 
@@ -27,24 +28,47 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--enable-chunked-prefill", dest="enable_chunked_prefill", action="store_true",
                    default=None,
                    help="mix decode tokens and prompt chunks in every step; --max-num-batched-tokens "
-                        "becomes the per-step cap. Default: on for --device cuda (with a 2048-token "
-                        "cap unless --max-num-batched-tokens is given), off otherwise")
+                        "becomes the per-step cap. Default: on for --device cuda when the checkpoint "
+                        "is >= 4 GB (about 2B params; +8%% at 7B), off below that (mixed steps run "
+                        "eagerly, and at 0.5B that cost 11%% at saturation); 2048-token cap unless "
+                        "--max-num-batched-tokens is given")
     p.add_argument("--no-chunked-prefill", dest="enable_chunked_prefill", action="store_false")
-    p.add_argument("--async-scheduling", dest="async_scheduling", action="store_true", default=False,
+    p.add_argument("--async-scheduling", dest="async_scheduling", action="store_true", default=None,
                    help="launch step N+1 before reading step N's tokens back (vLLM v1 style): the "
                         "CPU work of a step overlaps the GPU work of the previous one. Outputs of "
                         "a step arrive one step() later; EOS-ended requests compute one discarded "
-                        "token. Default: off")
+                        "token. Default: on for --device cuda (A100: 0.5B saturation 13,945 -> "
+                        "14,394 tok/s, TPOT at 1 req/s 2.1 -> 1.8 ms), off otherwise")
     p.add_argument("--no-async-scheduling", dest="async_scheduling", action="store_false")
 
 
+CHUNKED_PREFILL_MIN_BYTES = 4 * 1024 ** 3  # checkpoint size above which chunked prefill is the default
+
+
+def checkpoint_bytes(model_dir: str | None) -> int:
+    """Total size of the snapshot's *.safetensors files (0 if unknown)."""
+    if not model_dir:
+        return 0
+    try:
+        return sum(f.stat().st_size for f in Path(model_dir).glob("*.safetensors"))
+    except OSError:
+        return 0
+
+
 def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
+    cuda = args.device.startswith("cuda")
     chunked = args.enable_chunked_prefill
     if chunked is None:
-        chunked = args.device.startswith("cuda")
+        # Mixed steps run eagerly (no CUDA graphs), so chunked prefill pays only when a
+        # prefill is expensive next to a decode step: measured +8% at 7B (3,092 vs 2,859
+        # tok/s at saturation) and -11% at 0.5B (12,786 vs 14,394) on the A100.
+        chunked = cuda and checkpoint_bytes(args.model) >= CHUNKED_PREFILL_MIN_BYTES
     budget = args.max_num_batched_tokens
     if budget is None:
         budget = 2048 if chunked else 8192
+    async_sched = args.async_scheduling
+    if async_sched is None:
+        async_sched = cuda
     return EngineConfig(model_dir=args.model, device=args.device,
                         dtype=EngineConfig.dtype_from_str(args.dtype),
                         block_size=args.block_size, num_gpu_blocks=args.num_blocks,
@@ -54,7 +78,7 @@ def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
                         enable_prefix_caching=args.enable_prefix_caching,
                         enable_cuda_graphs=args.enable_cuda_graphs,
                         enable_chunked_prefill=chunked,
-                        async_scheduling=bool(getattr(args, "async_scheduling", False)))
+                        async_scheduling=bool(async_sched))
 
 
 def build_parser() -> argparse.ArgumentParser:
