@@ -33,8 +33,10 @@ from __future__ import annotations
 
 import argparse
 import base64
+import faulthandler
 import os
 import pickle
+import signal
 import socket
 import subprocess
 import sys
@@ -90,6 +92,8 @@ def init_tp(rank: int, world_size: int, init_method: str, device: torch.device |
     backend = "nccl" if device.type == "cuda" else "gloo"
     if device.type == "cuda":
         torch.cuda.set_device(device)
+    if hasattr(signal, "SIGUSR1"):  # `kill -USR1 <pid>` dumps every thread's Python stack
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=True)
     dist.init_process_group(backend, init_method=init_method, rank=rank, world_size=world_size,
                             timeout=_TIMEOUT)
     _DEVICE_GROUP = dist.group.WORLD
@@ -98,10 +102,21 @@ def init_tp(rank: int, world_size: int, init_method: str, device: torch.device |
     return _STATE
 
 
-def destroy_tp() -> None:
+def destroy_tp(timeout_s: float | None = None) -> None:
+    """Leave the group. With `timeout_s` the teardown runs on a helper thread and is
+    abandoned after that long: NCCL's teardown can block for good when a peer died
+    mid-collective, and the failure path that gets here is about to exit anyway."""
     global _STATE, _DEVICE_GROUP, _CPU_GROUP
     if dist.is_initialized():
-        dist.destroy_process_group()
+        if timeout_s is None:
+            dist.destroy_process_group()
+        else:
+            t = threading.Thread(target=dist.destroy_process_group, daemon=True)
+            t.start()
+            t.join(timeout_s)
+            if t.is_alive():
+                print(f"[pagedserve.dist] process group teardown still blocked after "
+                      f"{timeout_s:.0f} s; abandoning it", file=sys.stderr, flush=True)
     _STATE = TPState()
     _DEVICE_GROUP = _CPU_GROUP = None
 

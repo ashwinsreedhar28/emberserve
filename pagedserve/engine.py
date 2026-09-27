@@ -146,6 +146,10 @@ class LLMEngine:
                              "engine with LLMEngine.from_pretrained / launch_tp")
         self.local_config = model_config.shard(self.tp.size)
         self._tp_workers: list = []
+        # True from the plan broadcast until this rank's forward has been launched: a step
+        # that raises in between leaves the workers waiting on collectives that will never
+        # come, and `shutdown()` must kill them rather than wait on a broadcast of its own.
+        self._tp_step_open = False
 
         model_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
         num_blocks = engine_config.num_gpu_blocks or default_num_blocks(
@@ -313,12 +317,21 @@ class LLMEngine:
 
     def shutdown(self) -> None:
         """Stop the tensor-parallel workers (rank 0) and leave the group. Idempotent."""
+        clean = True
         if self.tp.size > 1 and self.tp.is_driver and tpdist.is_initialized():
-            tpdist.broadcast_object(("stop",))
+            if self._tp_step_open:
+                # A step raised after its plan went out: the workers are (or will be) blocked
+                # in collectives nothing pairs with, so a "stop" broadcast would hang here
+                # and hide the exception. Kill them and tear the group down with a timeout.
+                clean = False
+                for p in self._tp_workers:
+                    p.kill()
+            else:
+                tpdist.broadcast_object(("stop",))
             tpdist.stop_workers(self._tp_workers)
             self._tp_workers = []
         if tpdist.is_initialized():
-            tpdist.destroy_tp()
+            tpdist.destroy_tp(timeout_s=None if clean else 15.0)
         self.tp = tpdist.get_tp()
 
     def __del__(self) -> None:
@@ -476,11 +489,14 @@ class LLMEngine:
                  so: SchedulerOutput | bool) -> torch.Tensor:
         is_prefill = so if isinstance(so, bool) else so.is_prefill
         if self.graph_runner is not None and not is_prefill:
-            return self.graph_runner.run(input_ids, meta)
-        if self.piecewise_runner is not None:
-            return self.piecewise_runner.run(input_ids, meta)
-        hidden = self.model(input_ids, self.backend, meta)
-        return self.model.compute_logits(hidden, meta)
+            logits = self.graph_runner.run(input_ids, meta)
+        elif self.piecewise_runner is not None:
+            logits = self.piecewise_runner.run(input_ids, meta)
+        else:
+            hidden = self.model(input_ids, self.backend, meta)
+            logits = self.model.compute_logits(hidden, meta)
+        self._tp_step_open = False  # every collective of this step is enqueued
+        return logits
 
     @staticmethod
     def _advance(so: SchedulerOutput) -> None:
@@ -570,6 +586,7 @@ class LLMEngine:
         may hold tokens gathered on the device) after."""
         plan = self._plan_inputs(so)
         if self.tp.size > 1:
+            self._tp_step_open = True
             tpdist.broadcast_object(("step", plan))
         input_ids, meta = self._materialize(plan)
         if self.tp.size > 1:

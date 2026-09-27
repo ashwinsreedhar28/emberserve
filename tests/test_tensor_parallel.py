@@ -132,6 +132,33 @@ def test_tp2_matches_single_process(mode):
     assert all(p.returncode == 0 for p in procs), [p.returncode for p in procs]
 
 
+def test_driver_failure_mid_step_does_not_hang_shutdown():
+    """A step that raises on the driver after the plan went out leaves the worker waiting
+    on collectives; `shutdown()` must kill it and return instead of blocking forever in a
+    "stop" broadcast (which would also hide the original exception)."""
+    import time
+
+    eng = LLMEngine.launch_tp(WorkerSpec(ecfg(2), tiny=True, tiny_seed=0))
+    procs = list(eng._tp_workers)
+    orig = eng._forward
+
+    def boom(input_ids, meta, so):
+        raise RuntimeError("kernel failed")
+
+    eng._forward = boom
+    try:
+        with pytest.raises(RuntimeError, match="kernel failed"):
+            LLM.from_engine(eng).generate(prompts(2, seed=3), SamplingParams.greedy(4, ignore_eos=True))
+        assert eng._tp_step_open
+    finally:
+        eng._forward = orig
+        t0 = time.monotonic()
+        eng.shutdown()
+        took = time.monotonic() - t0
+    assert took < 20.0, took
+    assert not tpdist.is_initialized() and all(p.returncode is not None for p in procs)
+
+
 def test_tp2_through_the_engine_core_process():
     """The core process (itself daemonic) starts the worker as a subprocess and stops it."""
     from pagedserve.server.async_engine import AsyncEngineCoreClient
