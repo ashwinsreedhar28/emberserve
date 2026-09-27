@@ -81,7 +81,7 @@ class MLAAttention(nn.Module):
         latent = torch.cat([c, k_pe.squeeze(1)], dim=-1)  # [n, Dl + Dr]
         w_uk, w_uv = self.up_projections()
         out = backend.forward(self.layer_idx, q_nope.contiguous(), q_pe, latent, w_uk, w_uv,
-                              self.softmax_scale, meta)  # [n, H, Dv]
+                              self.softmax_scale, meta, kv_b_weight=self.kv_b_proj.weight)  # [n, H, Dv]
         return self.o_proj(out.reshape(n, self.num_heads * self.v_head_dim))
 
 

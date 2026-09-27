@@ -124,15 +124,21 @@ class LLMEngine:
     def _make_backend(self, num_blocks: int) -> AttentionBackend:
         name = self.config.attn_backend
         if self.model_config.mla is not None:
-            from pagedserve.attn.mla_torch import MLATorchBackend
             from pagedserve.kv.cache import PagedLatentCache
 
-            if name not in ("mla_torch", "naive", "paged_torch"):
-                raise ValueError(f"attn_backend {name!r} does not support latent attention yet; "
-                                 f"use mla_torch")
             cache = PagedLatentCache(self.model_config, num_blocks, self.config.block_size,
                                      self.device, self.dtype)
-            return MLATorchBackend(self.model_config, cache)  # type: ignore[return-value]
+            # The dense backend names map onto their latent-attention counterparts so the
+            # CLI defaults (paged_flash / paged_triton on CUDA) work unchanged.
+            if name in ("mla_triton", "paged_flash", "paged_triton"):
+                from pagedserve.attn.mla_triton import MLATritonBackend
+
+                return MLATritonBackend(self.model_config, cache)  # type: ignore[return-value]
+            if name in ("mla_torch", "naive", "paged_torch"):
+                from pagedserve.attn.mla_torch import MLATorchBackend
+
+                return MLATorchBackend(self.model_config, cache)  # type: ignore[return-value]
+            raise ValueError(f"unknown attn_backend {name!r} for a latent-attention model")
         if name == "naive":
             return NaiveAttentionBackend(self.model_config, self.device, self.dtype)
         if name == "paged_torch":

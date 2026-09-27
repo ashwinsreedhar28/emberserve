@@ -61,7 +61,8 @@ class MLATorchBackend:
         self.kv_lora_rank = config.mla.kv_lora_rank
 
     def forward(self, layer_idx: int, q_nope: Tensor, q_pe: Tensor, latent: Tensor,
-                w_uk: Tensor, w_uv: Tensor, scale: float, meta: AttnMetadata) -> Tensor:
+                w_uk: Tensor, w_uv: Tensor, scale: float, meta: AttnMetadata,
+                kv_b_weight: Tensor | None = None) -> Tensor:
         assert meta.slot_mapping is not None and meta.block_tables is not None
         self.cache.write(layer_idx, latent, meta.slot_mapping)
         outs = []

@@ -13,7 +13,7 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--model", required=True, help="HF snapshot directory")
     p.add_argument("--dtype", choices=["float32", "float16", "bfloat16"], default="float32")
     p.add_argument("--device", default="cpu")
-    p.add_argument("--attn-backend", choices=["naive", "paged_torch", "paged_flash", "paged_triton"],
+    p.add_argument("--attn-backend", choices=["naive", "paged_torch", "paged_flash", "paged_triton", "mla_torch", "mla_triton"],
                    default="paged_torch")
     p.add_argument("--block-size", type=int, default=16)
     p.add_argument("--num-blocks", type=int, default=None)

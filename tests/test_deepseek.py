@@ -22,7 +22,7 @@ from pagedserve.sched.request import SamplingParams
 
 torch.set_num_threads(2)
 
-H, HID, NOPE, ROPE, VH, KVR = 4, 64, 16, 8, 16, 32
+H, HID, NOPE, ROPE, VH, KVR = 4, 64, 16, 16, 16, 32
 
 
 def tiny_cfg(q_lora_rank: int | None = None, layers: int = 3, moe: bool = True) -> ModelConfig:
