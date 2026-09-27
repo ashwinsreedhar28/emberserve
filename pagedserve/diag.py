@@ -24,6 +24,7 @@ import atexit
 import gc
 import os
 import signal
+import threading
 import time
 from typing import Any
 
@@ -58,13 +59,69 @@ def _gc_callback(phase: str, info: dict[str, Any]) -> None:
         _GC_LOG.append((_GC_START[0], now - _GC_START[0], int(info.get("generation", -1))))
 
 
+# ---- in-process sampling profiler (py-spy cannot ptrace inside the Runpod container) ------
+_SAMPLES: dict[str, int] = {}
+_SAMPLER_STOP = threading.Event()
+
+
+def _sampler(interval_s: float) -> None:
+    import sys
+
+    my_ident = threading.get_ident()  # (the sampler's own thread, not the caller's)
+    while not _SAMPLER_STOP.wait(interval_s):
+        for ident, frame in sys._current_frames().items():
+            if ident == my_ident:
+                continue
+            parts = []
+            f = frame
+            while f is not None:
+                code = f.f_code
+                parts.append(f"{code.co_filename.rsplit('/', 1)[-1]}:{code.co_name}")
+                f = f.f_back
+            key = ";".join(reversed(parts))
+            _SAMPLES[key] = _SAMPLES.get(key, 0) + 1
+
+
+def start_sampler(path: str, role: str, interval_s: float = 0.004) -> None:
+    """Sample every thread's Python stack `1/interval_s` times a second and write the
+    collapsed stacks (`frame;frame;... count`, the py-spy raw format) to
+    `<path>.<role>` at exit; `scripts/pyspy_summary.py` reads it. The sampler needs the
+    GIL to run, so C code that holds it is under-counted; Python-side cost is what it shows."""
+    threading.Thread(target=_sampler, args=(interval_s,), daemon=True, name="pagedserve-sampler").start()
+
+    def flush() -> None:
+        _SAMPLER_STOP.set()
+        try:
+            with open(f"{path}.{role}", "w") as f:
+                for k, n in sorted(_SAMPLES.items(), key=lambda kv: -kv[1]):
+                    f.write(f"{k} {n}\n")
+        except OSError:
+            pass
+
+    atexit.register(flush)
+    _flushers.append(flush)
+
+
+_flushers: list = []
+
+
 def install(role: str) -> None:
     """Enable what the environment asks for in this process (`role`: "core" or "api")."""
     global _INSTALLED
     if _INSTALLED:
         return
     _INSTALLED = True
+    prof = os.environ.get("PAGEDSERVE_SAMPLE_PROFILE")
+    if prof:
+        start_sampler(prof, role)
     path = step_log_path()
+    if prof and role == "core" and not path:
+        def _on_term_prof(signum, frame):  # noqa: ARG001
+            for fl in _flushers:
+                fl()
+            os._exit(0)
+
+        signal.signal(signal.SIGTERM, _on_term_prof)
     if path:
         gc.callbacks.append(_gc_callback)
         atexit.register(_flush, path, role)
@@ -73,6 +130,8 @@ def install(role: str) -> None:
             # would end the core before its exit hooks: flush, then leave.
             def _on_term(signum, frame):  # noqa: ARG001
                 _flush(path, role)
+                for fl in _flushers:
+                    fl()
                 os._exit(0)
 
             signal.signal(signal.SIGTERM, _on_term)
