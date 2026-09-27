@@ -34,6 +34,7 @@ class TraceRequest:
     arrival_s: float
     prompt_ids: list[int] | None = None
     shared_prefix_len: int = 0
+    prompt_text: str | None = None  # real text (ShareGPT); sent as-is, tokenized by the server
 
 
 @dataclass(frozen=True)
@@ -71,12 +72,7 @@ def generate_trace(n: int, seed: int = 0,
     lo = max(MIN_LEN, shared_prefix_len + 1) if shared_prefix_len else MIN_LEN
     prompt_lens = np.clip(np.rint(prompt_len_dist.sample(rng, n)), lo, max_prompt_len)
     output_lens = np.clip(np.rint(output_len_dist.sample(rng, n)), MIN_LEN, max_output_len)
-    if request_rate is None or request_rate == float("inf") or request_rate <= 0:
-        arrivals = np.zeros(n)
-    else:
-        gaps = rng.exponential(scale=1.0 / request_rate, size=n)
-        gaps[0] = 0.0
-        arrivals = np.cumsum(gaps)
+    arrivals = poisson_arrivals(rng, n, request_rate)
     prefix = rng.integers(2, vocab_size, size=shared_prefix_len).tolist()
     out: list[TraceRequest] = []
     for i in range(n):
@@ -89,11 +85,65 @@ def generate_trace(n: int, seed: int = 0,
     return out
 
 
-def render_prompt(req: TraceRequest, tokenizer: Any = None) -> str | list[int]:
-    """The prompt to send. With a tokenizer (anything with `.encode(str) -> list[int]`
-    and `.decode(list[int]) -> str`) build TEXT of about `prompt_len` tokens; the shared
-    prefix is the same leading text for every request. Without one, return the token ids.
+def poisson_arrivals(rng: np.random.Generator, n: int, request_rate: float | None) -> np.ndarray:
+    """Arrival offsets: Poisson at `request_rate` req/s, or all at t=0 for None / inf / <= 0."""
+    if request_rate is None or request_rate == float("inf") or request_rate <= 0:
+        return np.zeros(n)
+    gaps = rng.exponential(scale=1.0 / request_rate, size=n)
+    gaps[0] = 0.0
+    return np.cumsum(gaps)
+
+
+def sharegpt_trace(path: str, n: int, tokenizer: Any, seed: int = 0,
+                   request_rate: float | None = None, min_len: int = MIN_LEN,
+                   max_prompt_len: int = 1024, max_output_len: int = 2048,
+                   max_total_len: int = 2048) -> list[TraceRequest]:
+    """`n` real conversations from a ShareGPT dump (`ShareGPT_V3_unfiltered_cleaned_split.json`
+    layout: `[{"conversations": [{"from": "human"|"gpt", "value": ...}, ...]}, ...]`).
+
+    The prompt is the first human turn, sent as TEXT; `output_len` is the length of the
+    first assistant reply in `tokenizer`'s tokens (the run uses `ignore_eos`, so every
+    system generates exactly that many). Same filters as vLLM's `benchmark_serving`:
+    prompt and reply at least `min_len` tokens, prompt at most `max_prompt_len`, prompt +
+    reply at most `max_total_len`. The sample is fixed by `seed`; arrivals by `request_rate`.
     """
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    pairs: list[tuple[str, str]] = []
+    for conv in data:
+        turns = conv.get("conversations") or []
+        if len(turns) >= 2 and turns[0].get("from") == "human" and turns[1].get("from") == "gpt":
+            pairs.append((turns[0]["value"], turns[1]["value"]))
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(len(pairs))
+    out: list[TraceRequest] = []
+    lens: list[tuple[int, int]] = []
+    for idx in order:
+        if len(out) >= n:
+            break
+        prompt, reply = pairs[int(idx)]
+        plen = len(tokenizer.encode(prompt))
+        olen = min(len(tokenizer.encode(reply)), max_output_len)
+        if plen < min_len or olen < min_len or plen > max_prompt_len or plen + olen > max_total_len:
+            continue
+        out.append(TraceRequest(request_id=f"req-{len(out):05d}", prompt_len=plen, output_len=olen,
+                                arrival_s=0.0, prompt_text=prompt))
+        lens.append((plen, olen))
+    if len(out) < n:
+        raise ValueError(f"only {len(out)} usable conversations in {path} (asked for {n})")
+    for req, t in zip(out, poisson_arrivals(rng, n, request_rate)):
+        req.arrival_s = float(t)
+    return out
+
+
+def render_prompt(req: TraceRequest, tokenizer: Any = None) -> str | list[int]:
+    """The prompt to send. Real text (`prompt_text`) goes as is. Otherwise, with a
+    tokenizer (anything with `.encode(str) -> list[int]` and `.decode(list[int]) -> str`)
+    build TEXT of about `prompt_len` tokens; the shared prefix is the same leading text
+    for every request. Without one, return the token ids.
+    """
+    if req.prompt_text is not None:
+        return req.prompt_text
     if tokenizer is None:
         assert req.prompt_ids is not None, "trace has no prompt ids; pass a tokenizer"
         return req.prompt_ids

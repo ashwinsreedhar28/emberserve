@@ -356,3 +356,34 @@ def test_hosted_request_omits_ignore_eos_and_uses_path():
     for path, body in seen:
         assert path == "/completions"
         assert "ignore_eos" not in body and body["stream"] is True
+
+
+def test_sharegpt_trace_samples_and_filters(tmp_path):
+    from pagedserve.bench.trace import render_prompt, sharegpt_trace
+
+    class Tok:  # one token per character
+        def encode(self, s):
+            return [ord(c) for c in s]
+
+    convs = []
+    for i in range(30):
+        prompt = "p" * (5 + i * 3)          # 5..92 chars
+        reply = "r" * (4 + (i * 7) % 40)     # 4..43
+        convs.append({"conversations": [{"from": "human", "value": prompt}, {"from": "gpt", "value": reply}]})
+    convs.append({"conversations": [{"from": "gpt", "value": "starts with the model"}]})
+    convs.append({"conversations": [{"from": "human", "value": "hi"}, {"from": "gpt", "value": "x"}]})  # too short
+    path = tmp_path / "sg.json"
+    path.write_text(json.dumps(convs))
+    tr = sharegpt_trace(str(path), 10, Tok(), seed=1, request_rate=2.0, max_prompt_len=50)
+    assert len(tr) == 10
+    assert all(4 <= r.prompt_len <= 50 and r.output_len >= 4 for r in tr)
+    assert all(r.prompt_len == len(r.prompt_text) and r.output_len == (4 + (int((r.prompt_len - 5) / 3) * 7) % 40)
+               for r in tr)
+    assert render_prompt(tr[0]) == tr[0].prompt_text
+    assert tr[0].arrival_s == 0.0 and tr[-1].arrival_s > 0
+    # same seed -> same sample, different rate -> same requests, different arrivals
+    tr2 = sharegpt_trace(str(path), 10, Tok(), seed=1, request_rate=None, max_prompt_len=50)
+    assert [r.prompt_text for r in tr2] == [r.prompt_text for r in tr]
+    assert all(r.arrival_s == 0.0 for r in tr2)
+    with pytest.raises(ValueError):
+        sharegpt_trace(str(path), 100, Tok(), seed=1)

@@ -512,6 +512,12 @@ python -m pagedserve.bench.ablation --model models/Qwen2.5-0.5B-Instruct --devic
   --trace-n 200 --request-rate 8 --shared-prefix-len 64 --block-size 16 --out results/ablation.json
 python -m pagedserve.bench.ablation ... --request-rate inf --out results/ablation_sat.json      # saturation
 
+# real-text traces (ShareGPT conversations; the synthetic trace draws random token ids)
+python scripts/download_sharegpt.py                                  # ~670 MB, once
+python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 \
+  --max-model-len 4096 --tokenizer models/Qwen2.5-0.5B-Instruct --sharegpt data/ShareGPT_V3_unfiltered_cleaned_split.json \
+  --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs" --name pagedserve_flash_text
+
 # HTTP rate sweeps, same trace, vLLM then pagedserve
 python -m pagedserve.bench.run_vllm_baseline --server vllm --vllm-bin /opt/vllm/bin/vllm \
   --model Qwen/Qwen2.5-0.5B-Instruct --dtype float16 --max-model-len 4096 --rates 1,2,4,8,16,inf --trace-n 200 --name vllm

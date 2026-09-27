@@ -36,7 +36,7 @@ from typing import Any
 
 from pagedserve.bench.load import run_http_benchmark, wait_for_health
 from pagedserve.bench.metrics import records_to_json, summarize
-from pagedserve.bench.trace import generate_trace, trace_summary
+from pagedserve.bench.trace import generate_trace, sharegpt_trace, trace_summary
 
 
 def parse_rates(s: str) -> list[float | None]:
@@ -152,6 +152,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "when --model is a local directory, else 151936 (Qwen2.5)")
     p.add_argument("--tokenizer", default=None,
                    help="HF dir for text prompts (default: send token ids)")
+    p.add_argument("--sharegpt", default=None,
+                   help="ShareGPT JSON dump: real conversations as the trace (first human turn as the "
+                        "prompt, first reply's length as output_len); needs --tokenizer for the "
+                        "length accounting. scripts/download_sharegpt.py fetches the file")
     p.add_argument("--slo-ttft-ms", type=float, default=None)
     p.add_argument("--slo-tpot-ms", type=float, default=None)
     p.add_argument("--no-warmup", dest="warmup", action="store_false")
@@ -200,10 +204,17 @@ def main(argv: list[str] | None = None) -> int:
                                            api_key=args.api_key, progress=False, path=path,
                                            ignore_eos=ignore_eos))
         for rate in parse_rates(args.rates):
-            trace = generate_trace(args.trace_n, seed=args.seed, request_rate=rate,
-                                   shared_prefix_len=args.shared_prefix_len,
-                                   max_prompt_len=args.max_prompt_len,
-                                   max_output_len=args.max_output_len, vocab_size=vocab_size)
+            if args.sharegpt:
+                if tokenizer is None:
+                    raise SystemExit("--sharegpt needs --tokenizer (to count prompt/output tokens)")
+                trace = sharegpt_trace(args.sharegpt, args.trace_n, tokenizer, seed=args.seed,
+                                       request_rate=rate, max_prompt_len=args.max_prompt_len,
+                                       max_output_len=args.max_output_len)
+            else:
+                trace = generate_trace(args.trace_n, seed=args.seed, request_rate=rate,
+                                       shared_prefix_len=args.shared_prefix_len,
+                                       max_prompt_len=args.max_prompt_len,
+                                       max_output_len=args.max_output_len, vocab_size=vocab_size)
             label = "inf" if rate is None else f"{rate:g}"
             print(f"[baseline] {name} @ rate={label} req/s, n={len(trace)}", file=sys.stderr)
             t0 = time.perf_counter()
@@ -216,7 +227,8 @@ def main(argv: list[str] | None = None) -> int:
                                 slo_tpot_ms=args.slo_tpot_ms)
             print(summary.one_line(f"{name}@{label}"), file=sys.stderr)
             run = {"request_rate": rate, "wall_s": wall, "summary": summary.to_dict(),
-                   "trace": trace_summary(trace)}
+                   "trace": {**trace_summary(trace),
+                             "source": "sharegpt" if args.sharegpt else "synthetic"}}
             if args.save_records:
                 run["records"] = records_to_json(records)
             runs.append(run)

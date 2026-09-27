@@ -125,6 +125,17 @@ If torch already got replaced: `pip uninstall -y vllm && pip install torch==2.8.
 --force-reinstall flash-attn --no-build-isolation` (`--no-deps`, or flash-attn's resolver
 pulls a newer torch right back).
 
+## Real-text traces
+
+The synthetic trace draws prompt ids uniformly from the vocabulary. That is fine for the
+dense models (a decode step costs the same whatever the ids) but pessimistic for two
+things: prefix caching (no two random prompts share a block) and MoE routing (random ids
+route to whatever experts random hidden states pick). `--sharegpt <dump> --tokenizer <dir>`
+samples real conversations instead (`scripts/download_sharegpt.py`, the file vLLM's own
+benchmark uses): the first human turn is the prompt, sent as text, and the first reply's
+token length is the output length, so `ignore_eos` still makes every system generate the
+same amount. Results record `trace.source = "sharegpt"`.
+
 ## Block size 256 with `paged_flash`
 
 Upstream flash-attn (2.6.3 through 2.8.3.post1 and `main`) hard-checks
