@@ -1,0 +1,10 @@
+[baseline] synthetic prompt ids drawn from [2, 151936)
+[baseline] launching: vllm serve models/Qwen2.5-0.5B-Instruct --port 8000 --host 127.0.0.1 --served-model-name models/Qwen2.5-0.5B-Instruct --dtype float16 --max-model-len 4096
+[baseline] waiting for http://127.0.0.1:8000/health ...
+[baseline] vllm_text_sat_mp @ rate=16 req/s, n=200
+   vllm_text_sat_mp@16 tok/s=  3996.6 req/s= 15.41 ttft p50/p99=   14.8/   40.0ms tpot p50/p99=   2.3/   2.5ms ok=200/200
+[baseline] server-side means: ttft_ms_mean 13.1, tpot_ms_mean 2.3, e2e_ms_mean 608.0
+[baseline] vllm_text_sat_mp @ rate=inf req/s, n=200
+  vllm_text_sat_mp@inf tok/s= 23339.1 req/s= 90.00 ttft p50/p99=  205.3/  552.4ms tpot p50/p99=   5.9/  10.0ms ok=200/200
+[baseline] server-side means: ttft_ms_mean 97.6, tpot_ms_mean 4.3, e2e_ms_mean 1373.4
+[baseline] wrote results/vllm_text_sat_mp.json
