@@ -141,6 +141,11 @@ def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connectio
             try:
                 outputs = engine.step()
             except Exception as exc:  # noqa: BLE001 - every in-flight request is told
+                if engine.tp.size > 1:
+                    # A failed step may have left a worker inside a collective the driver
+                    # never completed; there is no resynchronizing that, so the core dies
+                    # (the API process reports "fatal") rather than serving garbage.
+                    raise
                 in_flight = [r.request_id for r in list(sched.running) + list(sched.waiting)]
                 engine.reset()
                 out_conn.send(("failed", in_flight,
