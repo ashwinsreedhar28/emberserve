@@ -891,18 +891,25 @@ not move the median; and hosts vary — one 0.5B worker took 155.6 s from contai
 to healthy on the same image that boots in 16–26 s elsewhere.
 `deploy/runpod/README.md` has the full table and the anatomy of a `delayTime`.
 
-The 7B's throughput sweep on the same 4090 (Queue endpoint) found a bug of mine that
-only a small card could: TPOT 15.8 ms at 1 req/s is the card's floor (15.2 GB of weights
-over 1.0 TB/s), but saturation came out at 1,118 tok/s and 22.7 ms per token — ~30
-sequences in flight while the worker held all 200 jobs. The default KV budget had
-subtracted the weights from a `free`-memory reading taken after they were loaded; on an
-80 GB A100 that just left cache on the table (42 GB instead of 57 for the 7B), on a 24 GB
-card it drove the budget negative and the engine ran on its 64-block floor, 16K tokens of
-cache for a trace that averages 2.17 blocks per request. Fixed (`kv_blocks_for` in
-`engine.py`, CPU-tested against the 4090 numbers), and the reserve outside the cache is
-now explicit — a hand-set 512 blocks on the same card OOMed at graph capture with 71 MiB
-to spare, so the budget keeps 1 GiB plus one prefill chunk's MLP activations and the
-largest decode batch's logits free. The corrected sweep is pending a rebuild of the image.
+The 7B's throughput on the same 4090 (Queue endpoint) came out at **2,176 tok/s** at
+saturation — 69% of the A100's 3,166 on a card with half the memory bandwidth — with TPOT
+15.7 ms at 1 req/s, which is the card's floor (15.2 GB of weights over 1.0 TB/s). Getting
+there found a bug of mine that only a small card could: the first sweep saturated at 1,118
+tok/s with ~30 sequences in flight while the worker held all 200 jobs, because the default
+KV budget subtracted the weights from a `free`-memory reading taken after they were
+loaded. On an 80 GB A100 that just left cache on the table (42 GB instead of 57 for the
+7B); on a 24 GB card it drove the budget negative and the engine ran on its 64-block
+floor, 16K tokens of cache for a trace that averages 2.17 blocks per request. Fixed
+(`kv_blocks_for` in `engine.py`, CPU-tested against the 4090 numbers), and the reserve
+outside the cache is now explicit — a hand-set 512 blocks on the same card OOMed at graph
+capture with 71 MiB to spare, so the budget keeps 1 GiB plus one prefill chunk's MLP
+activations and the largest decode batch's logits free. The queue endpoint's delivery path
+then set everything else: the server's own counters put TTFT at 625 ms while the client
+saw 4.27 s at 16 req/s, and the gateway's per-endpoint limit on fetching job streams
+turned a 200-request burst into `Error fetching the stream: HTTP 429` in some runs and
+not others — while the refused jobs still ran to completion on the worker, since
+cancellation does not travel through the queue path. `deploy/runpod/README.md` has both
+tables.
 
 ### Benchmarks
 

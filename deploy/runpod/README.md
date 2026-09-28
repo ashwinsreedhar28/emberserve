@@ -124,33 +124,71 @@ nothing when it doesn't.
 
 ### 7B throughput (Queue endpoint, one RTX 4090, `STREAM_FLUSH_MS=100`, 200-request trace)
 
+As first measured (`results/runpod_serverless_7b_pagedserve.json`), with a KV-cache sizing
+bug that is explained below:
+
 | rate | tok/s | TTFT p50 / p99 | TPOT p50 / p99 |
 |---|---:|---:|---:|
 | 1 req/s | 171 | 749 ms / 5.95 s | 15.8 / 18.3 ms |
-| 2 | 331 | 1.19 / 6.26 s | 16.3 / 19.0 ms |
 | 4 | 606 | 1.39 / 6.65 s | 18.5 / 25.0 ms |
-| 8 (5.3 served) | 919 | 5.38 / 8.56 s | 21.7 / 27.2 ms |
 | 16 (6.3 served) | 1,085 | 6.58 / 13.8 s | 22.4 / 30.0 ms |
 | inf | 1,118 | 13.4 / 24.8 s | 22.7 / 26.7 ms |
 
-`results/runpod_serverless_7b_pagedserve.json`, measured with a KV-cache sizing bug
-(below). TPOT 15.8 ms at 1 req/s is the card: 15.2 GB of fp16 weights over the 4090's
-1.0 TB/s is 15 ms per decode step. TTFT is the queue endpoint's job dispatch (prefill is
-~50 ms), as with the 0.5B. The saturation number is wrong by about 3×: 1,118 tok/s at
-22.7 ms per token is ~30 sequences in flight, and the worker log shows the SDK holding
-all 200 jobs, so the engine was admitting 30. The default KV budget subtracted the
-weights from a `free` memory reading taken *after* they were loaded; on an 80 GB card
-that only cost some cache (7B: 42 GB instead of 57), on a 24 GB card it drove the budget
-negative and the engine fell to its 64-block floor — 16K tokens, and this trace averages
-2.17 blocks per request, so 29.5 of them at a time. Fixed in `pagedserve/engine.py`
-(`kv_blocks_for`, with a CPU test). The other edge of the same card: a hand-set
-`EXTRA_SERVE_ARGS=--num-blocks 512` (7.0 GiB of cache) OOMed at the bucket-256 graph
-capture with 71 MiB left — the container sees the 4090 as 22.04 GiB, and 14.18 GiB of
-weights plus the cache left nothing for the graph mempool. So the reserve is now explicit
-(`activation_reserve_bytes`: 1 GiB plus a prefill chunk's MLP activations and the largest
-decode batch's logits, 1.36 GiB for the 7B), which sizes the 7B's cache on this card at
-380 blocks (97K tokens, ~175 of this trace's requests in flight). The corrected row is
-pending a rebuild.
+TPOT 15.8 ms at 1 req/s is the card: 15.2 GB of fp16 weights over the 4090's 1.0 TB/s is
+15 ms per decode step. TTFT is the queue endpoint's job dispatch (prefill is ~50 ms), as
+with the 0.5B. The saturation number was wrong by 2×: 1,118 tok/s at 22.7 ms per token is
+~30 sequences in flight, and the worker log shows the SDK holding all 200 jobs, so the
+engine was admitting 30. The default KV budget subtracted the weights from a `free`
+memory reading taken *after* they were loaded; on an 80 GB card that only cost some cache
+(7B: 42 GB instead of 57), on a 24 GB card it drove the budget negative and the engine
+fell to its 64-block floor — 16K tokens, and this trace averages 2.17 blocks per request,
+so 29.5 of them at a time. Fixed in `pagedserve/engine.py` (`kv_blocks_for`, with a CPU
+test). The other edge of the same card: a hand-set `EXTRA_SERVE_ARGS=--num-blocks 512`
+(7.0 GiB of cache) OOMed at the bucket-256 graph capture with 71 MiB left — the container
+sees the 4090 as 22.04 GiB, and 14.18 GiB of weights plus the cache left nothing for the
+graph mempool. So the reserve is now explicit (`activation_reserve_bytes`: 1 GiB plus a
+prefill chunk's MLP activations and the largest decode batch's logits, 1.36 GiB for the
+7B), which sizes the 7B's cache on this card at 380 blocks (97K tokens).
+
+Corrected, same endpoint with `--num-blocks 380` (what the fixed default computes for this
+card; `/metrics` reported 379 after the graph scratch block) —
+`results/runpod_serverless_7b_pagedserve_kv380*.json`:
+
+| rate | tok/s | TTFT p50 / p99 | TPOT p50 / p99 | ok |
+|---|---:|---:|---:|---:|
+| 1 req/s | 172 | 474 ms / 5.56 s | 15.7 / 17.2 ms | 200/200 |
+| 2 | 317 | 1.26 / 5.73 s | 16.4 / 18.6 ms | 200/200 |
+| 4 | 547 | 2.41 / 5.98 s | 18.1 / 21.5 ms | 198/200 |
+| 8 (5.7 served) | 947 | 3.38 / 6.42 s | 20.3 / 32.7 ms | 190/200 |
+| 16 (10.8–11.2 served) | 1,179 · 1,599 (rerun) | 4.27 / 7.79 s | 26.0 / 47.9 ms | 200/200 |
+| inf, 64 in flight | 1,088 | 3.83 / 6.52 s | 21.1 / 44.0 ms | 200/200 |
+| inf, 128 in flight | 791 | 3.14 / 6.66 s | 28.5 / 56.2 ms | 173/200 |
+| inf, unbounded (200) | **2,176** | 3.10 / 9.86 s | 33.2 / 51.1 ms | 200/200 |
+
+2,176 tok/s is 1.95× the bugged run and 69% of the A100's 3,166 on a card with half the
+memory bandwidth. The rest of the table is the queue endpoint's delivery path, and three
+things in it are worth knowing before serving a 7B this way:
+
+- **TTFT is the platform's.** The server's own counters over the rate-16 run put TTFT at
+  a mean of 625 ms from arrival; the client saw a p50 of 4.27 s. The 3.6 s between them is
+  job dispatch plus the gateway. The engine's TPOT over the same window, with 100–200
+  sequences in the batch, averaged 31 ms — the 4090 running the 7B at a real batch, which
+  the client only sees at the unbounded burst.
+- **The stream fetch is rate-limited.** The OpenAI route on a queue endpoint fetches each
+  job's stream on the client's behalf, and that fetch has a per-endpoint limit: the
+  client gets a `200` whose body is `Error fetching the stream: HTTP 429`, not SSE (the
+  load generator now records that text instead of "empty stream"). It hit 27 of 200
+  streams at 128 in flight, all 200 within a second in two earlier unbounded runs, and
+  none in the run above — the gateway's bucket, not the concurrency, decides. The 2 and
+  10 failures at 4 and 8 req/s were not recorded and are most likely the same.
+- **A refused stream is still a job.** After the client had written off a burst, the
+  worker reported `requests_running: 98`: the jobs were queued, dispatched and run to their
+  full length (`ignore_eos`) with nobody listening, because cancellation does not travel
+  through the queue path. Bounding the client's concurrency (64 here) avoids the 429 but
+  halves the throughput, since every slot then spends most of its life in dispatch.
+
+A load-balancing endpoint has none of this (the 0.5B measurements above); the 7B was not
+built as one.
 
 ## Benchmark it
 
