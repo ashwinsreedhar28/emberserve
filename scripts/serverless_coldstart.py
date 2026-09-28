@@ -104,6 +104,8 @@ def main() -> None:
     ap.add_argument("--note", default="", help="e.g. worker-log start-to-healthy seconds")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
+    if not args.api_key.strip():
+        raise SystemExit("--api-key is empty (export RUNPOD_API_KEY in this shell)")
 
     base = (f"https://api.runpod.ai/v2/{args.endpoint}" if args.mode == "queue"
             else f"https://{args.endpoint}.api.runpod.ai")
