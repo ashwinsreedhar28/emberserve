@@ -1,0 +1,142 @@
+{
+ "kind": "sweep",
+ "system": "hosted_runpod_warmup",
+ "server": "vllm",
+ "base_url": "https://api.runpod.ai/v2/kbme98hqtjthdl/openai/v1",
+ "model": "qwen/qwen3-8b",
+ "args": {
+  "server": "vllm",
+  "vllm_bin": "vllm",
+  "base_url": "https://api.runpod.ai/v2/kbme98hqtjthdl/openai/v1",
+  "hosted": true,
+  "completions_path": "/completions",
+  "client_procs": 1,
+  "health": false,
+  "ignore_eos": false,
+  "model": "qwen/qwen3-8b",
+  "served_model_name": null,
+  "dtype": null,
+  "max_model_len": null,
+  "server_args": "",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "rates": "1",
+  "trace_n": 5,
+  "seed": 0,
+  "shared_prefix_len": 0,
+  "max_prompt_len": 1024,
+  "max_output_len": 128,
+  "max_concurrency": null,
+  "timeout_s": 600.0,
+  "startup_timeout_s": 900.0,
+  "api_key": "<redacted>",
+  "vocab_size": null,
+  "tokenizer": "models/Qwen2.5-0.5B-Instruct",
+  "sharegpt": "data/ShareGPT_V3_unfiltered_cleaned_split.json",
+  "slo_ttft_ms": null,
+  "slo_tpot_ms": null,
+  "warmup": true,
+  "save_records": true,
+  "name": "hosted_runpod_warmup",
+  "out_dir": "results"
+ },
+ "runs": [
+  {
+   "request_rate": 1.0,
+   "wall_s": 4.513936833944172,
+   "summary": {
+    "num_requests": 5,
+    "completed": 5,
+    "failed": 0,
+    "duration_s": 4.496949499938637,
+    "requests_per_s": 1.1118648319417923,
+    "throughput_tok_s": 120.5261477824903,
+    "total_throughput_tok_s": 367.5825134399566,
+    "ttft_ms": {
+     "mean": 1021.5346917510033,
+     "p50": 903.1103749293834,
+     "p90": 1355.7760085910559,
+     "p99": 1425.1931889820844
+    },
+    "tpot_ms": {
+     "mean": 8.62931391271552,
+     "p50": 7.606742791189203,
+     "p90": 11.580775065831547,
+     "p99": 12.96743931952776
+    },
+    "e2e_ms": {
+     "mean": 1968.3653999585658,
+     "p50": 2007.745207985863,
+     "p90": 2475.773408776149,
+     "p99": 2560.1656285580248
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 1111,
+    "output_tokens": 542
+   },
+   "trace": {
+    "n": 5,
+    "prompt_mean": 222.2,
+    "prompt_p50": 279.0,
+    "output_mean": 108.4,
+    "output_p50": 128.0,
+    "span_s": 1.940032586987773,
+    "source": "sharegpt"
+   },
+   "records": [
+    {
+     "request_id": "req-00000",
+     "arrival_s": 2048131.402386375,
+     "first_token_s": 2048132.241984,
+     "finish_s": 2048132.462579541,
+     "prompt_tokens": 21,
+     "output_tokens": 30,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00001",
+     "arrival_s": 2048132.229718666,
+     "first_token_s": 2048132.921697208,
+     "finish_s": 2048134.098945041,
+     "prompt_tokens": 344,
+     "output_tokens": 128,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00002",
+     "arrival_s": 2048132.478482541,
+     "first_token_s": 2048133.91138875,
+     "finish_s": 2048134.81360225,
+     "prompt_tokens": 279,
+     "output_tokens": 128,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00003",
+     "arrival_s": 2048132.67251875,
+     "first_token_s": 2048133.912599458,
+     "finish_s": 2048134.680263958,
+     "prompt_tokens": 451,
+     "output_tokens": 128,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00004",
+     "arrival_s": 2048133.329793333,
+     "first_token_s": 2048134.232903708,
+     "finish_s": 2048135.899335875,
+     "prompt_tokens": 16,
+     "output_tokens": 128,
+     "success": true,
+     "error": null
+    }
+   ]
+  }
+ ]
+}

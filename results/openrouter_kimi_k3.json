@@ -1,0 +1,180 @@
+{
+ "kind": "sweep",
+ "system": "openrouter_kimi_k3",
+ "server": "vllm",
+ "base_url": "https://openrouter.ai/api/v1",
+ "model": "moonshotai/kimi-k3",
+ "args": {
+  "server": "vllm",
+  "vllm_bin": "vllm",
+  "base_url": "https://openrouter.ai/api/v1",
+  "hosted": true,
+  "completions_path": "/completions",
+  "client_procs": 1,
+  "health": false,
+  "ignore_eos": false,
+  "model": "moonshotai/kimi-k3",
+  "served_model_name": null,
+  "dtype": null,
+  "max_model_len": 4096,
+  "server_args": "",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "rates": "1,2,4",
+  "trace_n": 50,
+  "seed": 0,
+  "shared_prefix_len": 0,
+  "max_prompt_len": 1024,
+  "max_output_len": 512,
+  "max_concurrency": null,
+  "timeout_s": 600.0,
+  "startup_timeout_s": 900.0,
+  "api_key": "<redacted>",
+  "vocab_size": null,
+  "tokenizer": "models/Qwen2.5-0.5B-Instruct",
+  "sharegpt": "data/ShareGPT_V3_unfiltered_cleaned_split.json",
+  "slo_ttft_ms": null,
+  "slo_tpot_ms": null,
+  "warmup": true,
+  "save_records": false,
+  "name": "openrouter_kimi_k3",
+  "out_dir": "results"
+ },
+ "runs": [
+  {
+   "request_rate": 1.0,
+   "wall_s": 53.547589499969035,
+   "summary": {
+    "num_requests": 50,
+    "completed": 36,
+    "failed": 14,
+    "duration_s": 53.52882958389819,
+    "requests_per_s": 0.6725347869520583,
+    "throughput_tok_s": 164.62157062837605,
+    "total_throughput_tok_s": 288.27456381825584,
+    "ttft_ms": {
+     "mean": 955.0750173641266,
+     "p50": 881.4656254835427,
+     "p90": 1361.3114370964468,
+     "p99": 2148.193381063174
+    },
+    "tpot_ms": {
+     "mean": 7.752590056791757,
+     "p50": 6.44398068873349,
+     "p90": 13.350126073357638,
+     "p99": 20.196496533871894
+    },
+    "e2e_ms": {
+     "mean": 2974.370814872802,
+     "p50": 2722.812708001584,
+     "p90": 4616.897937958129,
+     "p99": 7449.535771086807
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 6619,
+    "output_tokens": 8812
+   },
+   "trace": {
+    "n": 50,
+    "prompt_mean": 133.28,
+    "prompt_p50": 37.0,
+    "output_mean": 253.44,
+    "output_p50": 259.5,
+    "span_s": 50.906500028585675,
+    "source": "sharegpt"
+   }
+  },
+  {
+   "request_rate": 2.0,
+   "wall_s": 25.568786167073995,
+   "summary": {
+    "num_requests": 50,
+    "completed": 0,
+    "failed": 50,
+    "duration_s": 0.0,
+    "requests_per_s": 0.0,
+    "throughput_tok_s": 0.0,
+    "total_throughput_tok_s": 0.0,
+    "ttft_ms": {
+     "mean": NaN,
+     "p50": NaN,
+     "p90": NaN,
+     "p99": NaN
+    },
+    "tpot_ms": {
+     "mean": NaN,
+     "p50": NaN,
+     "p90": NaN,
+     "p99": NaN
+    },
+    "e2e_ms": {
+     "mean": NaN,
+     "p50": NaN,
+     "p90": NaN,
+     "p99": NaN
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 0,
+    "output_tokens": 0
+   },
+   "trace": {
+    "n": 50,
+    "prompt_mean": 133.28,
+    "prompt_p50": 37.0,
+    "output_mean": 253.44,
+    "output_p50": 259.5,
+    "span_s": 25.453250014292838,
+    "source": "sharegpt"
+   }
+  },
+  {
+   "request_rate": 4.0,
+   "wall_s": 17.295164374867454,
+   "summary": {
+    "num_requests": 50,
+    "completed": 16,
+    "failed": 34,
+    "duration_s": 17.272000084165484,
+    "requests_per_s": 0.9263547893719836,
+    "throughput_tok_s": 237.08892890489207,
+    "total_throughput_tok_s": 436.89207753756176,
+    "ttft_ms": {
+     "mean": 1105.2158100210363,
+     "p50": 1011.887687491253,
+     "p90": 1456.0535625787452,
+     "p99": 1607.2357900906354
+    },
+    "tpot_ms": {
+     "mean": 8.565666686961396,
+     "p50": 7.407051933450156,
+     "p90": 12.889078907935163,
+     "p99": 18.45100903312458
+    },
+    "e2e_ms": {
+     "mean": 3274.859786455636,
+     "p50": 2835.273979464546,
+     "p90": 5268.526521045715,
+     "p99": 6412.956481217407
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 3451,
+    "output_tokens": 4095
+   },
+   "trace": {
+    "n": 50,
+    "prompt_mean": 133.28,
+    "prompt_p50": 37.0,
+    "output_mean": 253.44,
+    "output_p50": 259.5,
+    "span_s": 12.726625007146419,
+    "source": "sharegpt"
+   }
+  }
+ ]
+}

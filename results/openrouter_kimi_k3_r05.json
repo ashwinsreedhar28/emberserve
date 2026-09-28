@@ -1,0 +1,90 @@
+{
+ "kind": "sweep",
+ "system": "openrouter_kimi_k3_r05",
+ "server": "vllm",
+ "base_url": "https://openrouter.ai/api/v1",
+ "model": "moonshotai/kimi-k3",
+ "args": {
+  "server": "vllm",
+  "vllm_bin": "vllm",
+  "base_url": "https://openrouter.ai/api/v1",
+  "hosted": true,
+  "completions_path": "/completions",
+  "client_procs": 1,
+  "health": false,
+  "ignore_eos": false,
+  "model": "moonshotai/kimi-k3",
+  "served_model_name": null,
+  "dtype": null,
+  "max_model_len": 4096,
+  "server_args": "",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "rates": "0.5",
+  "trace_n": 30,
+  "seed": 0,
+  "shared_prefix_len": 0,
+  "max_prompt_len": 1024,
+  "max_output_len": 512,
+  "max_concurrency": null,
+  "timeout_s": 600.0,
+  "startup_timeout_s": 900.0,
+  "api_key": "<redacted>",
+  "vocab_size": null,
+  "tokenizer": "models/Qwen2.5-0.5B-Instruct",
+  "sharegpt": "data/ShareGPT_V3_unfiltered_cleaned_split.json",
+  "slo_ttft_ms": null,
+  "slo_tpot_ms": null,
+  "warmup": true,
+  "save_records": false,
+  "name": "openrouter_kimi_k3_r05",
+  "out_dir": "results"
+ },
+ "runs": [
+  {
+   "request_rate": 0.5,
+   "wall_s": 61.371005499968305,
+   "summary": {
+    "num_requests": 30,
+    "completed": 26,
+    "failed": 4,
+    "duration_s": 46.03878220799379,
+    "requests_per_s": 0.5647412627583702,
+    "throughput_tok_s": 140.96810751160857,
+    "total_throughput_tok_s": 268.59963289500024,
+    "ttft_ms": {
+     "mean": 1138.659062464005,
+     "p50": 1012.5457079848275,
+     "p90": 1590.0958955753595,
+     "p99": 2284.1706565232016
+    },
+    "tpot_ms": {
+     "mean": 5.424018439215541,
+     "p50": 5.811686548385601,
+     "p90": 7.144508127469299,
+     "p99": 9.29120344254227
+    },
+    "e2e_ms": {
+     "mean": 2557.616725966979,
+     "p50": 2309.0461670653895,
+     "p90": 3865.695229033008,
+     "p99": 4259.4327191472985
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 5876,
+    "output_tokens": 6490
+   },
+   "trace": {
+    "n": 30,
+    "prompt_mean": 127.9,
+    "prompt_p50": 26.5,
+    "output_mean": 230.4,
+    "output_p50": 196.0,
+    "span_s": 61.16046548126546,
+    "source": "sharegpt"
+   }
+  }
+ ]
+}

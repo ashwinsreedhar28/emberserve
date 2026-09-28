@@ -1,0 +1,292 @@
+{
+ "kind": "sweep",
+ "system": "openrouter_kimi_k3_diag",
+ "server": "vllm",
+ "base_url": "https://openrouter.ai/api/v1",
+ "model": "moonshotai/kimi-k3",
+ "args": {
+  "server": "vllm",
+  "vllm_bin": "vllm",
+  "base_url": "https://openrouter.ai/api/v1",
+  "hosted": true,
+  "completions_path": "/completions",
+  "client_procs": 1,
+  "health": false,
+  "ignore_eos": false,
+  "model": "moonshotai/kimi-k3",
+  "served_model_name": null,
+  "dtype": null,
+  "max_model_len": 4096,
+  "server_args": "",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "rates": "2",
+  "trace_n": 20,
+  "seed": 0,
+  "shared_prefix_len": 0,
+  "max_prompt_len": 1024,
+  "max_output_len": 512,
+  "max_concurrency": null,
+  "timeout_s": 600.0,
+  "startup_timeout_s": 900.0,
+  "api_key": "<redacted>",
+  "vocab_size": null,
+  "tokenizer": "models/Qwen2.5-0.5B-Instruct",
+  "sharegpt": "data/ShareGPT_V3_unfiltered_cleaned_split.json",
+  "slo_ttft_ms": null,
+  "slo_tpot_ms": null,
+  "warmup": true,
+  "save_records": true,
+  "name": "openrouter_kimi_k3_diag",
+  "out_dir": "results"
+ },
+ "runs": [
+  {
+   "request_rate": 2.0,
+   "wall_s": 12.422650417080149,
+   "summary": {
+    "num_requests": 20,
+    "completed": 16,
+    "failed": 4,
+    "duration_s": 12.403185124974698,
+    "requests_per_s": 1.2899912271552618,
+    "throughput_tok_s": 252.9189049741285,
+    "total_throughput_tok_s": 540.7481975331464,
+    "ttft_ms": {
+     "mean": 1102.8114140353864,
+     "p50": 1031.0228751040995,
+     "p90": 1422.5122079951689,
+     "p99": 1462.8591248416342
+    },
+    "tpot_ms": {
+     "mean": 6.112186308461833,
+     "p50": 6.1551281175254395,
+     "p90": 8.248648890177465,
+     "p99": 9.12333897374467
+    },
+    "e2e_ms": {
+     "mean": 2370.923671798664,
+     "p50": 2129.3725210707635,
+     "p90": 3836.8046664400026,
+     "p99": 5047.425016784108
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 3570,
+    "output_tokens": 3137
+   },
+   "trace": {
+    "n": 20,
+    "prompt_mean": 145.0,
+    "prompt_p50": 40.0,
+    "output_mean": 230.6,
+    "output_p50": 219.5,
+    "span_s": 8.21536368223465,
+    "source": "sharegpt"
+   },
+   "records": [
+    {
+     "request_id": "req-00000",
+     "arrival_s": 2058158.033238125,
+     "first_token_s": 2058159.479436541,
+     "finish_s": 2058159.512316125,
+     "prompt_tokens": 106,
+     "output_tokens": 30,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00001",
+     "arrival_s": 2058158.44009975,
+     "first_token_s": 2058159.481429791,
+     "finish_s": 2058160.95834975,
+     "prompt_tokens": 427,
+     "output_tokens": 305,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00002",
+     "arrival_s": 2058158.563942541,
+     "first_token_s": 2058159.58465825,
+     "finish_s": 2058160.578130458,
+     "prompt_tokens": 378,
+     "output_tokens": 154,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00003",
+     "arrival_s": 2058158.6611585,
+     "first_token_s": 2058159.574551833,
+     "finish_s": 2058160.602848166,
+     "prompt_tokens": 455,
+     "output_tokens": 137,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00004",
+     "arrival_s": 2058158.989603875,
+     "first_token_s": 2058159.913489125,
+     "finish_s": 2058160.868048166,
+     "prompt_tokens": 101,
+     "output_tokens": 193,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00005",
+     "arrival_s": 2058159.640412,
+     "first_token_s": 2058161.039238,
+     "finish_s": 2058163.495031166,
+     "prompt_tokens": 89,
+     "output_tokens": 364,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00006",
+     "arrival_s": 2058159.83091075,
+     "first_token_s": 2058161.29671,
+     "finish_s": 2058162.075467875,
+     "prompt_tokens": 137,
+     "output_tokens": 138,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00007",
+     "arrival_s": 2058160.224826541,
+     "first_token_s": 2058161.548794583,
+     "finish_s": 2058164.043816708,
+     "prompt_tokens": 91,
+     "output_tokens": 390,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00008",
+     "arrival_s": 2058160.263865041,
+     "first_token_s": 2058161.317769875,
+     "finish_s": 2058162.822210541,
+     "prompt_tokens": 93,
+     "output_tokens": 254,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00009",
+     "arrival_s": 2058160.394096916,
+     "first_token_s": 2058161.194091666,
+     "finish_s": 2058162.996331666,
+     "prompt_tokens": 999,
+     "output_tokens": 288,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00010",
+     "arrival_s": 2058160.64053875,
+     "first_token_s": 2058161.544042125,
+     "finish_s": 2058163.242556541,
+     "prompt_tokens": 136,
+     "output_tokens": 246,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00011",
+     "arrival_s": 2058161.477902833,
+     "first_token_s": 2058162.436698166,
+     "finish_s": 2058162.76740475,
+     "prompt_tokens": 110,
+     "output_tokens": 65,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00012",
+     "arrival_s": 2058162.108454208,
+     "first_token_s": 2058163.080276166,
+     "finish_s": 2058163.33708825,
+     "prompt_tokens": 104,
+     "output_tokens": 48,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00013",
+     "arrival_s": 2058163.020521708,
+     "first_token_s": 2058164.146486333,
+     "finish_s": 2058164.375395,
+     "prompt_tokens": 89,
+     "output_tokens": 26,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00014",
+     "arrival_s": 2058163.182935125,
+     "first_token_s": 2058164.08237625,
+     "finish_s": 2058164.474370083,
+     "prompt_tokens": 140,
+     "output_tokens": 66,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00015",
+     "arrival_s": 2058165.178503083,
+     "first_token_s": 2058166.575943666,
+     "finish_s": 2058170.43642325,
+     "prompt_tokens": 115,
+     "output_tokens": 433,
+     "success": true,
+     "error": null
+    },
+    {
+     "request_id": "req-00016",
+     "arrival_s": 2058165.330571,
+     "first_token_s": null,
+     "finish_s": null,
+     "prompt_tokens": 23,
+     "output_tokens": 0,
+     "success": false,
+     "error": "RuntimeError: HTTP 429: {\"error\":{\"message\":\"Rate limit exceeded: new-account-rpm/moonshotai/kimi-k3-20260715. Rate limit reached: new accounts are limited to 20 requests per minute for this model. Please retry shortly.\",\"co"
+    },
+    {
+     "request_id": "req-00017",
+     "arrival_s": 2058165.867330458,
+     "first_token_s": null,
+     "finish_s": null,
+     "prompt_tokens": 129,
+     "output_tokens": 0,
+     "success": false,
+     "error": "RuntimeError: HTTP 429: {\"error\":{\"message\":\"Rate limit exceeded: new-account-rpm/moonshotai/kimi-k3-20260715. Rate limit reached: new accounts are limited to 20 requests per minute for this model. Please retry shortly.\",\"co"
+    },
+    {
+     "request_id": "req-00018",
+     "arrival_s": 2058166.009743791,
+     "first_token_s": null,
+     "finish_s": null,
+     "prompt_tokens": 115,
+     "output_tokens": 0,
+     "success": false,
+     "error": "RuntimeError: HTTP 429: {\"error\":{\"message\":\"Rate limit exceeded: new-account-rpm/moonshotai/kimi-k3-20260715. Rate limit reached: new accounts are limited to 20 requests per minute for this model. Please retry shortly.\",\"co"
+    },
+    {
+     "request_id": "req-00019",
+     "arrival_s": 2058166.235152666,
+     "first_token_s": null,
+     "finish_s": null,
+     "prompt_tokens": 323,
+     "output_tokens": 0,
+     "success": false,
+     "error": "RuntimeError: HTTP 429: {\"error\":{\"message\":\"Rate limit exceeded: new-account-rpm/moonshotai/kimi-k3-20260715. Rate limit reached: new accounts are limited to 20 requests per minute for this model. Please retry shortly.\",\"co"
+    }
+   ]
+  }
+ ]
+}

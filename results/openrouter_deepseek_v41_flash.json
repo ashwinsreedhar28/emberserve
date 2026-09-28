@@ -1,0 +1,180 @@
+{
+ "kind": "sweep",
+ "system": "openrouter_deepseek_v41_flash",
+ "server": "vllm",
+ "base_url": "https://openrouter.ai/api/v1",
+ "model": "deepseek/deepseek-v4.1-flash",
+ "args": {
+  "server": "vllm",
+  "vllm_bin": "vllm",
+  "base_url": "https://openrouter.ai/api/v1",
+  "hosted": true,
+  "completions_path": "/completions",
+  "client_procs": 1,
+  "health": false,
+  "ignore_eos": false,
+  "model": "deepseek/deepseek-v4.1-flash",
+  "served_model_name": null,
+  "dtype": null,
+  "max_model_len": 4096,
+  "server_args": "",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "rates": "1,2,4",
+  "trace_n": 50,
+  "seed": 0,
+  "shared_prefix_len": 0,
+  "max_prompt_len": 1024,
+  "max_output_len": 512,
+  "max_concurrency": null,
+  "timeout_s": 600.0,
+  "startup_timeout_s": 900.0,
+  "api_key": "<redacted>",
+  "vocab_size": null,
+  "tokenizer": "models/Qwen2.5-0.5B-Instruct",
+  "sharegpt": "data/ShareGPT_V3_unfiltered_cleaned_split.json",
+  "slo_ttft_ms": null,
+  "slo_tpot_ms": null,
+  "warmup": true,
+  "save_records": false,
+  "name": "openrouter_deepseek_v41_flash",
+  "out_dir": "results"
+ },
+ "runs": [
+  {
+   "request_rate": 1.0,
+   "wall_s": 53.03617616603151,
+   "summary": {
+    "num_requests": 50,
+    "completed": 50,
+    "failed": 0,
+    "duration_s": 53.0128586248029,
+    "requests_per_s": 0.9431673993261459,
+    "throughput_tok_s": 165.1108849260351,
+    "total_throughput_tok_s": 298.2672583629004,
+    "ttft_ms": {
+     "mean": 682.0158192375675,
+     "p50": 533.5809169337153,
+     "p90": 1219.215758726932,
+     "p99": 1646.0445205215353
+    },
+    "tpot_ms": {
+     "mean": 7.1552472404717005,
+     "p50": 5.469279278219741,
+     "p90": 14.240811295202144,
+     "p99": 28.96668144036084
+    },
+    "e2e_ms": {
+     "mean": 1716.368531677872,
+     "p50": 1205.8669584803283,
+     "p90": 3902.00813736301,
+     "p99": 5937.297645201904
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 7059,
+    "output_tokens": 8753
+   },
+   "trace": {
+    "n": 50,
+    "prompt_mean": 133.28,
+    "prompt_p50": 37.0,
+    "output_mean": 253.44,
+    "output_p50": 259.5,
+    "span_s": 50.906500028585675,
+    "source": "sharegpt"
+   }
+  },
+  {
+   "request_rate": 2.0,
+   "wall_s": 28.977974582929164,
+   "summary": {
+    "num_requests": 50,
+    "completed": 50,
+    "failed": 0,
+    "duration_s": 28.959042333066463,
+    "requests_per_s": 1.7265764324985369,
+    "throughput_tok_s": 437.5835310524292,
+    "total_throughput_tok_s": 718.635642734541,
+    "ttft_ms": {
+     "mean": 1118.4096507914364,
+     "p50": 1045.1220630202442,
+     "p90": 1418.3073542313653,
+     "p99": 1827.6496561383824
+    },
+    "tpot_ms": {
+     "mean": 6.238517903433094,
+     "p50": 6.224301349689107,
+     "p90": 7.579236141439262,
+     "p99": 9.230778302938482
+    },
+    "e2e_ms": {
+     "mean": 2776.574011640623,
+     "p50": 2535.8261665096506,
+     "p90": 4195.766088063829,
+     "p99": 4642.703121460509
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 8139,
+    "output_tokens": 12672
+   },
+   "trace": {
+    "n": 50,
+    "prompt_mean": 133.28,
+    "prompt_p50": 37.0,
+    "output_mean": 253.44,
+    "output_p50": 259.5,
+    "span_s": 25.453250014292838,
+    "source": "sharegpt"
+   }
+  },
+  {
+   "request_rate": 4.0,
+   "wall_s": 16.891166791087016,
+   "summary": {
+    "num_requests": 50,
+    "completed": 50,
+    "failed": 0,
+    "duration_s": 16.86968379188329,
+    "requests_per_s": 2.963896692838848,
+    "throughput_tok_s": 718.38928041028,
+    "total_throughput_tok_s": 1197.2957080391811,
+    "ttft_ms": {
+     "mean": 1120.6873332057148,
+     "p50": 1065.8431039191782,
+     "p90": 1464.3032325198874,
+     "p99": 1745.4592381254768
+    },
+    "tpot_ms": {
+     "mean": 6.540970880390657,
+     "p50": 6.935264787091899,
+     "p90": 8.218231001129658,
+     "p99": 9.490733404558446
+    },
+    "e2e_ms": {
+     "mean": 2809.7097057197243,
+     "p50": 2673.8224999280646,
+     "p90": 4403.194070374593,
+     "p99": 4761.547697994392
+    },
+    "goodput_rps": null,
+    "slo_ttft_ms": null,
+    "slo_tpot_ms": null,
+    "prompt_tokens": 8079,
+    "output_tokens": 12119
+   },
+   "trace": {
+    "n": 50,
+    "prompt_mean": 133.28,
+    "prompt_p50": 37.0,
+    "output_mean": 253.44,
+    "output_p50": 259.5,
+    "span_s": 12.726625007146419,
+    "source": "sharegpt"
+   }
+  }
+ ]
+}
