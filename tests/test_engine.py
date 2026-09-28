@@ -259,18 +259,29 @@ def test_step_stats_token_split(chunked: bool) -> None:
 
 def test_kv_budget_does_not_subtract_resident_weights() -> None:
     """`free` is read after the weights are loaded; charging them again put the 7B on a
-    24 GB card at the 64-block floor (the Serverless 4090 run: ~30 sequences, 1,118 tok/s)."""
-    from pagedserve.engine import KV_WORKSPACE_BYTES, MIN_GPU_BLOCKS, kv_blocks_for
+    24 GB card at the 64-block floor (the Serverless 4090 run: ~30 sequences, 1,118 tok/s),
+    and a hand-set 512 blocks on the same card OOMed at graph capture, so the reserve has
+    to cover the busiest step's activations."""
+    from pagedserve.engine import (KV_WORKSPACE_BYTES, MIN_GPU_BLOCKS, activation_reserve_bytes,
+                                   kv_blocks_for)
 
-    qwen7b = ModelConfig(hidden_size=3584, num_hidden_layers=28, num_attention_heads=28,
-                         num_key_value_heads=4)
+    qwen7b = ModelConfig(vocab_size=152064, hidden_size=3584, intermediate_size=18944,
+                         num_hidden_layers=28, num_attention_heads=28, num_key_value_heads=4)
+    cfg = EngineConfig(device="cuda", dtype=torch.float16, block_size=256, max_num_seqs=256,
+                       max_num_batched_tokens=2048)
     bytes_per_block = qwen7b.kv_bytes_per_token(torch.float16) * 256
-    assert bytes_per_block == 28 * 2 * 4 * 128 * 2 * 256  # 14.7 MB per 256-token block
-    free_after_load = 9_500 << 20  # RTX 4090 with 15.2 GB of fp16 weights resident
-    blocks = kv_blocks_for(free_after_load, 0.90, bytes_per_block)
-    assert blocks == (int(free_after_load * 0.90) - KV_WORKSPACE_BYTES) // bytes_per_block
-    assert blocks >= 500  # >128K tokens of cache, not the 64-block floor
-    old_formula = max((int(free_after_load * 0.90) - (15_231 << 20) - KV_WORKSPACE_BYTES)
+    assert bytes_per_block == 28 * 2 * 4 * 128 * 2 * 256  # 14.0 MiB per 256-token block
+    reserve = activation_reserve_bytes(qwen7b, cfg)
+    assert reserve == KV_WORKSPACE_BYTES + 2048 * 18944 * 2 * 2 + 256 * 152064 * 6
+    # RTX 4090 as the container sees it: 22.04 GiB, 14.18 GiB of weights, ~0.55 GiB context.
+    free_after_load = int(7.3 * (1 << 30))
+    blocks = kv_blocks_for(free_after_load, 0.90, bytes_per_block, reserve)
+    assert 300 <= blocks < 512
+    assert free_after_load - blocks * bytes_per_block >= reserve  # room for capture + prefill
+    assert 512 * bytes_per_block > free_after_load - (512 << 20)  # what OOMed: 71 MiB left
+    old_formula = max((int(free_after_load * 0.90) - (15_231 << 20) - (512 << 20))
                       // bytes_per_block, MIN_GPU_BLOCKS)
     assert old_formula == MIN_GPU_BLOCKS
-    assert kv_blocks_for(0, 0.90, bytes_per_block) == MIN_GPU_BLOCKS
+    assert kv_blocks_for(0, 0.90, bytes_per_block, reserve) == MIN_GPU_BLOCKS
+    # 80 GB A100 after the same weights: most of the card, as before.
+    assert kv_blocks_for(int(64 * (1 << 30)), 0.90, bytes_per_block, reserve) > 3900

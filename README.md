@@ -899,8 +899,10 @@ subtracted the weights from a `free`-memory reading taken after they were loaded
 80 GB A100 that just left cache on the table (42 GB instead of 57 for the 7B), on a 24 GB
 card it drove the budget negative and the engine ran on its 64-block floor, 16K tokens of
 cache for a trace that averages 2.17 blocks per request. Fixed (`kv_blocks_for` in
-`engine.py`, CPU-tested against the 4090 numbers); the corrected sweep is pending a
-rebuild of the image.
+`engine.py`, CPU-tested against the 4090 numbers), and the reserve outside the cache is
+now explicit — a hand-set 512 blocks on the same card OOMed at graph capture with 71 MiB
+to spare, so the budget keeps 1 GiB plus one prefill chunk's MLP activations and the
+largest decode batch's logits free. The corrected sweep is pending a rebuild of the image.
 
 ### Benchmarks
 

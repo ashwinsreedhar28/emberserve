@@ -143,7 +143,14 @@ weights from a `free` memory reading taken *after* they were loaded; on an 80 GB
 that only cost some cache (7B: 42 GB instead of 57), on a 24 GB card it drove the budget
 negative and the engine fell to its 64-block floor — 16K tokens, and this trace averages
 2.17 blocks per request, so 29.5 of them at a time. Fixed in `pagedserve/engine.py`
-(`kv_blocks_for`, with a CPU test); the corrected row is pending a rebuild.
+(`kv_blocks_for`, with a CPU test). The other edge of the same card: a hand-set
+`EXTRA_SERVE_ARGS=--num-blocks 512` (7.0 GiB of cache) OOMed at the bucket-256 graph
+capture with 71 MiB left — the container sees the 4090 as 22.04 GiB, and 14.18 GiB of
+weights plus the cache left nothing for the graph mempool. So the reserve is now explicit
+(`activation_reserve_bytes`: 1 GiB plus a prefill chunk's MLP activations and the largest
+decode batch's logits, 1.36 GiB for the 7B), which sizes the 7B's cache on this card at
+380 blocks (97K tokens, ~175 of this trace's requests in flight). The corrected row is
+pending a rebuild.
 
 ## Benchmark it
 

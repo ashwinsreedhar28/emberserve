@@ -108,20 +108,35 @@ class StepPlan:
     logit_rows: list[int] = field(default_factory=list)
 
 
-KV_WORKSPACE_BYTES = 512 << 20  # activations, graph pools, sampler scratch outside the cache
+KV_WORKSPACE_BYTES = 1 << 30  # graph mempool, allocator slack, sampler scratch, Triton/cuBLAS
 MIN_GPU_BLOCKS = 64
 
 
-def kv_blocks_for(free_bytes: int, utilization: float, bytes_per_block: int) -> int:
+def activation_reserve_bytes(model_config: ModelConfig, engine_config: EngineConfig) -> int:
+    """Memory the engine needs outside the cache at its busiest step, kept free when the
+    cache is sized: KV_WORKSPACE_BYTES plus the two allocations that scale with the
+    configuration — the MLP's gate/up activations for one prefill chunk
+    (`max_num_batched_tokens x intermediate x 2` in the model dtype) and the logits for the
+    largest decode batch (`max_num_seqs x vocab`, fp16 plus the fp32 copy the sampler
+    takes). About 1.4 GB for the 7B at the CLI defaults, 1.3 GB for the 0.5B."""
+    esize = torch.tensor([], dtype=engine_config.dtype).element_size()
+    mlp = engine_config.max_num_batched_tokens * model_config.intermediate_size * 2 * esize
+    logits = engine_config.max_num_seqs * model_config.vocab_size * (esize + 4)
+    return KV_WORKSPACE_BYTES + mlp + logits
+
+
+def kv_blocks_for(free_bytes: int, utilization: float, bytes_per_block: int,
+                  reserve_bytes: int = KV_WORKSPACE_BYTES) -> int:
     """KV blocks that fit in `free_bytes` of device memory read *with the weights already
-    resident*: `free * utilization - workspace`, floored at MIN_GPU_BLOCKS.
+    resident*: `free * utilization - reserve`, floored at MIN_GPU_BLOCKS.
 
     The weights are not subtracted here. They used to be, on top of a `free` that already
     excluded them, and an 80 GB card never noticed (7B: 42 GB of cache instead of 57) while
     a 24 GB card serving the 7B went to the 64-block floor — 16K tokens of cache, about 30
     sequences in flight, 1,118 tok/s on an RTX 4090 where the batch should have been KV-bound
-    at three times that."""
-    budget = int(free_bytes * utilization) - KV_WORKSPACE_BYTES
+    at three times that. The reserve is `activation_reserve_bytes`: on the same card a
+    hand-set 512 blocks (7.0 GiB) left 71 MiB for the bucket-256 graph capture and failed."""
+    budget = int(free_bytes * utilization) - reserve_bytes
     return max(budget // bytes_per_block, MIN_GPU_BLOCKS)
 
 
@@ -136,7 +151,8 @@ def default_num_blocks(model_config: ModelConfig, engine_config: EngineConfig) -
     bytes_per_block = model_config.kv_bytes_per_token(engine_config.dtype) * engine_config.block_size
     if engine_config.device.startswith("cuda") and torch.cuda.is_available():
         free, _total = torch.cuda.mem_get_info(torch.device(engine_config.device))
-        return kv_blocks_for(free, engine_config.gpu_memory_utilization, bytes_per_block)
+        return kv_blocks_for(free, engine_config.gpu_memory_utilization, bytes_per_block,
+                             activation_reserve_bytes(model_config, engine_config))
     return 2048
 
 
