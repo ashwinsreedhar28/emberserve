@@ -876,10 +876,13 @@ its own queue-to-handler number:
 | 0.5B | on | 87.1 s (fresh host) / 25.9 / 22.8 s | 26.1 / 17.9 / 16.3 s |
 | 0.5B | off | 29.2 / 25.1 / 29.3 s | 22.1 / 17.4 / 20.1 s |
 | 7B | on | 22.6 s / ≈95 s (fresh host) / 0.85 s (resumed) | 12.3 / 14.5 / — s |
+| 7B | off | 24.1 / 65.6 s (host GPU taken) / 27.4 s | 15.6 / 14.5 / 15.3 s |
 
-So a 7B cold start on a host that has the image is ~20 s end to end, of which 12–15 s is
-the worker loading 15 GB of weights and capturing graphs; a fresh host adds the pull
-(~50 s for 9.8 GB, ~70 s for 25 GB). worker-vllm serving Qwen3-8B on a 24 GB GPU in the
+So a 7B cold start on a host that has the image is 22–27 s end to end, of which 12–16 s
+is the worker loading 15 GB of weights and capturing graphs; a fresh host adds the pull
+(~50 s for 9.8 GB, ~70 s for 25 GB), and a shared host can add a wait for its own GPU:
+a stopped container holds no 4090, so one sample sat 49 s while another tenant's job had
+it (`/health` calls that worker `throttled`) before Runpod moved the slot to another host. worker-vllm serving Qwen3-8B on a 24 GB GPU in the
 earlier Runpod runs took 171–311 s, most of it downloading the weights at start (the
 network volume meant to cache them never mounted) — the two numbers measure different
 things, which is the point of baking the weights in. Two things the series taught: FlashBoot resumed the

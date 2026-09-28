@@ -97,12 +97,20 @@ downloaded at start: both images carry the weights (`Dockerfile`: Qwen2.5-0.5B-I
 | 0.5B, 9.8 GB | on | 87.1 s (fresh host) / 25.9 / 22.8 s | 26.1 / 17.9 / 16.3 s |
 | 0.5B, 9.8 GB | off | 29.2 / 25.1 / 29.3 s | 22.1 / 17.4 / 20.1 s |
 | 7B, ~25 GB | on | 22.6 s / ≈95 s (fresh host) / 0.85 s (container resumed, not restarted) | 12.3 / 14.5 / — s |
+| 7B, ~25 GB | off | 24.1 s / 65.6 s (host GPU taken, `throttled`) / 27.4 s (new worker, other host) | 15.6 / 14.5 / 15.3 s |
 
 `delayTime` is Runpod's own number: scheduling, the image pull when the host does not
 have it, container start, the boot above, and ~2 s of the SDK's fitness checks. On a host
-that already holds the image it runs 6–10 s over the boot line; a fresh host adds the pull,
+that already holds the image it runs 8–12 s over the boot line; a fresh host adds the pull,
 roughly 50 s for the 9.8 GB image and 70 s for the 25 GB one (that 7B sample is the one
-that outlived the 90 s `/runsync` cap; its wall time is read off the worker log). The 7B image
+that outlived the 90 s `/runsync` cap; its wall time is read off the worker log). The
+third kind of wait is the host itself: a stopped container holds no GPU, and hosts are
+shared with pods, so `/health` reported the 7B worker as `throttled` (its host's 4090 in
+use by someone else) before two of the FlashBoot-off samples. The first cleared at once
+(8.5 s over the boot); the second waited 49 s for the GPU before the container could even
+start; by the third Runpod had re-homed the slot to another host (a new worker id, a
+different driver) and, since it did so during the wait between samples, that host already
+had the image and the sample cost 12 s over its boot. The 7B image
 boots *faster* than the 0.5B one: below 4 GB of weights the CLI turns piecewise CUDA
 graphs on and captures a graph per token bucket on top of the full-step ones, while the
 7B worker captures only the full-step graphs and spends the time on 15 GB of weights.
