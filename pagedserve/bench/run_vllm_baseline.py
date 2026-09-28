@@ -197,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
             proc = launch(server_command(args), out_dir / f"{name}.server.log")
         if args.health:
             print(f"[baseline] waiting for {base_url}/health ...", file=sys.stderr)
-            if not asyncio.run(wait_for_health(base_url, args.startup_timeout_s)):
+            if not asyncio.run(wait_for_health(base_url, args.startup_timeout_s, api_key=args.api_key)):
                 print("[baseline] server never became healthy", file=sys.stderr)
                 return 1
         runs: list[dict[str, Any]] = []
@@ -221,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
                                        max_output_len=args.max_output_len, vocab_size=vocab_size)
             label = "inf" if rate is None else f"{rate:g}"
             print(f"[baseline] {name} @ rate={label} req/s, n={len(trace)}", file=sys.stderr)
-            before = asyncio.run(fetch_metrics(base_url)) if not args.hosted else None
+            before = asyncio.run(fetch_metrics(base_url, api_key=args.api_key)) if not args.hosted else None
             t0 = time.perf_counter()
             if args.client_procs > 1:
                 records = run_http_benchmark_procs(
@@ -240,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
             run = {"request_rate": rate, "wall_s": wall, "summary": summary.to_dict(),
                    "trace": {**trace_summary(trace),
                              "source": "sharegpt" if args.sharegpt else "synthetic"}}
-            after = asyncio.run(fetch_metrics(base_url)) if before is not None else None
+            after = asyncio.run(fetch_metrics(base_url, api_key=args.api_key)) if before is not None else None
             if after is not None:
                 # this run's share of the server's counters (speculation drafted/accepted,
                 # server-side latency sums...)

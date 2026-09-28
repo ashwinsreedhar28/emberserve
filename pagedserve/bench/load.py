@@ -262,13 +262,21 @@ def run_http_benchmark_procs(base_url: str, model: str, trace: list[TraceRequest
     return records
 
 
+def _auth(api_key: str | None) -> dict[str, str]:
+    """Bearer header for endpoints behind a gateway (Runpod's load balancer rejects
+    unauthenticated /health and /metrics polls with 401)."""
+    return {"Authorization": f"Bearer {api_key}"} if api_key and api_key != "x" else {}
+
+
 async def fetch_metrics(base_url: str, path: str = "/metrics",
-                        transport: httpx.AsyncBaseTransport | None = None) -> dict | None:
+                        transport: httpx.AsyncBaseTransport | None = None,
+                        api_key: str | None = None) -> dict | None:
     """The server's metrics as a flat dict: pagedserve's `/metrics` JSON as is, vLLM's
     Prometheus text reduced to the keys of `_PROM_KEYS`; None when there is no such route
     (hosted APIs) or nothing recognizable in it."""
     try:
-        async with httpx.AsyncClient(base_url=base_url, timeout=5.0, transport=transport) as c:
+        async with httpx.AsyncClient(base_url=base_url, timeout=5.0, transport=transport,
+                                     headers=_auth(api_key)) as c:
             r = await c.get(path)
             if r.status_code != 200:
                 return None
@@ -283,10 +291,12 @@ async def fetch_metrics(base_url: str, path: str = "/metrics",
 
 
 async def wait_for_health(base_url: str, timeout_s: float = 600.0, path: str = "/health",
-                          transport: httpx.AsyncBaseTransport | None = None) -> bool:
+                          transport: httpx.AsyncBaseTransport | None = None,
+                          api_key: str | None = None) -> bool:
     """Poll `base_url + path` until it answers 200 or the timeout elapses."""
     deadline = time.perf_counter() + timeout_s
-    async with httpx.AsyncClient(base_url=base_url, timeout=5.0, transport=transport) as c:
+    async with httpx.AsyncClient(base_url=base_url, timeout=5.0, transport=transport,
+                                 headers=_auth(api_key)) as c:
         while time.perf_counter() < deadline:
             try:
                 r = await c.get(path)
