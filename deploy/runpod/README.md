@@ -62,6 +62,22 @@ TTFT 8–11 ms, TPOT 1.7–2.0 ms. For a load-balancer endpoint set the endpoint
 **request count** to the concurrency the server should hold (200 here): at the default
 the balancer admits about four requests per worker and queues the rest.
 
+## 7B image and the cold-start series
+
+`deploy/runpod/Dockerfile.7b` bakes Qwen2.5-7B-Instruct instead (~25 GB image); point a
+new endpoint's Dockerfile path at it. A 24 GB GPU holds the fp16 weights (15 GB) plus a
+~6 GB KV cache. `scripts/serverless_coldstart.py` measures cold starts properly: set the
+endpoint's idle timeout to 5 s, then
+
+```bash
+python scripts/serverless_coldstart.py --base-url https://$E7.api.runpod.ai --api-key "$RUNPOD_API_KEY" \
+  --repeats 5 --idle-s 90 --label flashboot_on --out results/serverless_coldstart_7b_4090_flashboot_on.json
+```
+
+and again with FlashBoot toggled on the endpoint. Cold time is wall clock to the first
+response byte (worker scheduling, image start, model load, graph capture and the gateway's
+wait, all included), each followed by a warm request.
+
 ## Benchmark it
 
 ```bash

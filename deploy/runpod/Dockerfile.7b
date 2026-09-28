@@ -1,0 +1,38 @@
+# pagedserve on Runpod Serverless, Qwen2.5-7B-Instruct baked in (~25 GB image; Runpod's GitHub build
+# has no build-args field, hence a second Dockerfile). Everything else is identical to ./Dockerfile.
+#
+#   docker build --platform linux/amd64 -f deploy/runpod/Dockerfile -t <you>/pagedserve-worker:0.5b .
+#   docker push <you>/pagedserve-worker:0.5b
+#
+# or let Runpod build it from the GitHub repo (Serverless -> New endpoint -> GitHub repo, Dockerfile
+# path deploy/runpod/Dockerfile). Then an endpoint from the image: any 24 GB GPU is plenty for the
+# 0.5B / 7B fp16 models with a 4k context, A100 80 GB for Moonlight. Qwen2.5-0.5B-Instruct is baked
+# in by default (--build-arg MODEL_REPO=Qwen/Qwen2.5-7B-Instruct for the 7B; an empty MODEL_REPO
+# makes a model-free image that downloads the MODEL_REPO env var at cold start instead).
+#
+# The worker (deploy/runpod/main.py) starts `pagedserve serve` — the same server the benchmarks
+# ran against — and proxies Runpod jobs to it, so the endpoint speaks OpenAI at
+# https://api.runpod.ai/v2/<endpoint>/openai/v1/... .
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
+
+ARG MODEL_REPO="Qwen/Qwen2.5-7B-Instruct"
+ENV MODEL_DIR=/models/model \
+    PYTHONUNBUFFERED=1 \
+    HF_HUB_ENABLE_HF_TRANSFER=1
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY pagedserve ./pagedserve
+COPY scripts/download_model.py ./scripts/download_model.py
+COPY deploy/runpod/handler.py deploy/runpod/main.py ./deploy/runpod/
+
+# flash-attn fetches the prebuilt wheel matching this torch; runpod is the serverless SDK;
+# httpx is the proxy's client. Triton ships with torch.
+RUN pip install --no-cache-dir -e '.[hf,server]' runpod httpx hf_transfer \
+ && pip install --no-cache-dir flash-attn --no-build-isolation
+
+RUN if [ -n "$MODEL_REPO" ]; then \
+      python scripts/download_model.py --repo "$MODEL_REPO" --out "$MODEL_DIR"; \
+    fi
+
+CMD ["python", "-u", "deploy/runpod/main.py"]
