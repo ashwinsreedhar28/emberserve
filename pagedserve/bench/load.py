@@ -70,6 +70,7 @@ async def _one_request(client: httpx.AsyncClient, model: str, req: TraceRequest,
     n_chunks = 0
     usage_out: int | None = None
     usage_in: int | None = None
+    unparsed = ""  # non-SSE text seen before any token (an empty stream's reason)
     try:
         if stream:
             async with client.stream("POST", path, json=body) as resp:
@@ -79,6 +80,10 @@ async def _one_request(client: httpx.AsyncClient, model: str, req: TraceRequest,
                 async for line in resp.aiter_lines():
                     obj = _parse_sse_line(line)
                     if obj is None:
+                        # Keep what a 200 that is not SSE said (a gateway's own error
+                        # body, say) so an empty stream carries its reason.
+                        if last is None and line.strip() and len(unparsed) < 300:
+                            unparsed += line.strip()[:300 - len(unparsed)]
                         continue
                     if obj.get("done"):
                         break
@@ -109,7 +114,8 @@ async def _one_request(client: httpx.AsyncClient, model: str, req: TraceRequest,
     in_tokens = usage_in if usage_in is not None else req.prompt_len
     if last is None:
         return RequestRecord(req.request_id, t_send, first, None, in_tokens, out_tokens,
-                             success=False, error="empty stream")
+                             success=False,
+                             error="empty stream" + (f": {unparsed!r}" if unparsed else ""))
     return RequestRecord(req.request_id, t_send, first, last, in_tokens, out_tokens)
 
 
