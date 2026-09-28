@@ -1,0 +1,143 @@
+{
+ "kind": "serverless_coldstart",
+ "mode": "queue",
+ "endpoint": "u4sr4a1xzwmljr",
+ "label": "7b_4090_flashboot_on",
+ "image": "Qwen2.5-7B, ~25 GB image, weights baked in, nothing downloaded at start",
+ "note": "",
+ "max_tokens": 16,
+ "idle_s": 60.0,
+ "runs": [
+  {
+   "health_before": {
+    "jobs": {
+     "completed": 0,
+     "failed": 0,
+     "inProgress": 0,
+     "inQueue": 0,
+     "retried": 0
+    },
+    "workers": {
+     "idle": 1,
+     "initializing": 0,
+     "ready": 1,
+     "running": 0,
+     "throttled": 0,
+     "unhealthy": 0
+    }
+   },
+   "cold": {
+    "status": 200,
+    "total_s": 24.020578750176355,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 22591,
+    "execution_ms": 1303,
+    "worker_id": "80fcxq58vdfrqt"
+   },
+   "warm": {
+    "status": 200,
+    "total_s": 0.4852687499951571,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 17,
+    "execution_ms": 424,
+    "worker_id": "80fcxq58vdfrqt"
+   }
+  },
+  {
+   "health_before": {
+    "jobs": {
+     "completed": 2,
+     "failed": 0,
+     "inProgress": 0,
+     "inQueue": 0,
+     "retried": 0
+    },
+    "workers": {
+     "idle": 0,
+     "initializing": 1,
+     "ready": 0,
+     "running": 0,
+     "throttled": 0,
+     "unhealthy": 0
+    }
+   },
+   "cold": {
+    "status": 200,
+    "total_s": 90.49192083301023,
+    "ok": false,
+    "job_status": "IN_QUEUE",
+    "delay_ms": null,
+    "execution_ms": null,
+    "worker_id": null,
+    "error": "{\"id\":\"sync-e397ded1-48f3-4771-b55b-d1f78cb8c8b9-u1\",\"status\":\"IN_QUEUE\"}\n"
+   },
+   "warm": {
+    "status": 200,
+    "total_s": 14.55963012506254,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 12600,
+    "execution_ms": 1801,
+    "worker_id": "0jwl3gte0rswvj"
+   }
+  },
+  {
+   "health_before": {
+    "jobs": {
+     "completed": 4,
+     "failed": 0,
+     "inProgress": 0,
+     "inQueue": 0,
+     "retried": 0
+    },
+    "workers": {
+     "idle": 1,
+     "initializing": 0,
+     "ready": 1,
+     "running": 0,
+     "throttled": 0,
+     "unhealthy": 0
+    }
+   },
+   "cold": {
+    "status": 200,
+    "total_s": 1.9620081670582294,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 853,
+    "execution_ms": 811,
+    "worker_id": "0jwl3gte0rswvj"
+   },
+   "warm": {
+    "status": 200,
+    "total_s": 0.9555597498547286,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 55,
+    "execution_ms": 740,
+    "worker_id": "0jwl3gte0rswvj"
+   }
+  }
+ ],
+ "summary": {
+  "cold_s": {
+   "n": 2,
+   "min": 1.9620081670582294,
+   "median": 12.991293458617292,
+   "max": 24.020578750176355
+  },
+  "cold_delay_ms": {
+   "median": 11722.0,
+   "values": [
+    22591,
+    853
+   ]
+  },
+  "warm_total_s": {
+   "median": 0.9555597498547286
+  },
+  "failures": 1
+ }
+}

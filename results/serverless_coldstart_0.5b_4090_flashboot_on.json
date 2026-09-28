@@ -1,0 +1,143 @@
+{
+ "kind": "serverless_coldstart",
+ "mode": "queue",
+ "endpoint": "nfr1cqjnqikgwm",
+ "label": "0.5b_4090_flashboot_on",
+ "image": "Qwen2.5-0.5B, 9.8 GB image, weights baked in, nothing downloaded at start",
+ "note": "",
+ "max_tokens": 16,
+ "idle_s": 60.0,
+ "runs": [
+  {
+   "health_before": {
+    "jobs": {
+     "completed": 2413,
+     "failed": 6,
+     "inProgress": 0,
+     "inQueue": 0,
+     "retried": 0
+    },
+    "workers": {
+     "idle": 0,
+     "initializing": 1,
+     "ready": 0,
+     "running": 0,
+     "throttled": 0,
+     "unhealthy": 0
+    }
+   },
+   "cold": {
+    "status": 200,
+    "total_s": 88.27723254193552,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 87084,
+    "execution_ms": 1087,
+    "worker_id": "rf9zk0gc9a0hbh"
+   },
+   "warm": {
+    "status": 200,
+    "total_s": 0.26184083288535476,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 24,
+    "execution_ms": 188,
+    "worker_id": "rf9zk0gc9a0hbh"
+   }
+  },
+  {
+   "health_before": {
+    "jobs": {
+     "completed": 2415,
+     "failed": 6,
+     "inProgress": 0,
+     "inQueue": 0,
+     "retried": 0
+    },
+    "workers": {
+     "idle": 1,
+     "initializing": 0,
+     "ready": 1,
+     "running": 0,
+     "throttled": 0,
+     "unhealthy": 0
+    }
+   },
+   "cold": {
+    "status": 200,
+    "total_s": 27.20518383407034,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 25903,
+    "execution_ms": 959,
+    "worker_id": "rf9zk0gc9a0hbh"
+   },
+   "warm": {
+    "status": 200,
+    "total_s": 0.3459959579631686,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 15,
+    "execution_ms": 290,
+    "worker_id": "rf9zk0gc9a0hbh"
+   }
+  },
+  {
+   "health_before": {
+    "jobs": {
+     "completed": 2417,
+     "failed": 6,
+     "inProgress": 0,
+     "inQueue": 0,
+     "retried": 0
+    },
+    "workers": {
+     "idle": 1,
+     "initializing": 0,
+     "ready": 1,
+     "running": 0,
+     "throttled": 0,
+     "unhealthy": 0
+    }
+   },
+   "cold": {
+    "status": 200,
+    "total_s": 23.846523083979264,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 22775,
+    "execution_ms": 935,
+    "worker_id": "rf9zk0gc9a0hbh"
+   },
+   "warm": {
+    "status": 200,
+    "total_s": 0.2662367080338299,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 17,
+    "execution_ms": 199,
+    "worker_id": "rf9zk0gc9a0hbh"
+   }
+  }
+ ],
+ "summary": {
+  "cold_s": {
+   "n": 3,
+   "min": 23.846523083979264,
+   "median": 27.20518383407034,
+   "max": 88.27723254193552
+  },
+  "cold_delay_ms": {
+   "median": 25903,
+   "values": [
+    87084,
+    25903,
+    22775
+   ]
+  },
+  "warm_total_s": {
+   "median": 0.2662367080338299
+  },
+  "failures": 0
+ }
+}
