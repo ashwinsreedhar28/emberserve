@@ -752,7 +752,7 @@ measured throughput (prompt tokens ride free inside the hour).
 |---|---:|---:|---:|---|
 | pagedserve, Qwen2.5-0.5B, one A100 | 9 ms | 1.8–2.0 ms | $0.03 at saturation (16.6k tok/s) | this repo |
 | pagedserve, Qwen2.5-7B, one A100 | 39 ms | 10.2 ms | $2.50 at 1 req/s · $0.22 at 16 req/s · $0.14 at saturation (3,166 tok/s) | this repo |
-| vLLM, Qwen3-8B, Runpod Serverless | 770–930 ms | 8.2–8.7 ms | per-second GPU billing | Runpod's `worker-vllm`, through their proxy; a 100-request burst at a scaled-to-zero endpoint measured TTFT p50 **63.6 s** (cold start + scale-up) |
+| vLLM, Qwen3-8B, Runpod Serverless | 770–930 ms | 8.2–8.7 ms | per-second GPU billing | Runpod's `worker-vllm`, through their proxy; a 100-stream burst at one H100 worker (`MAX_CONCURRENCY` 64) measured TTFT p50 **63.6 s** while TPOT stayed at 8 ms (queueing before the first token) |
 | DeepSeek V4.1 Flash, OpenRouter | 530–1,070 ms | 4.1–6.9 ms | $0.29 (in: $0.035) | 50/50 at 1, 2 and 4 req/s |
 | Claude Haiku 4.5, OpenRouter | 940 ms | 7.8 ms | $5 (in: $1) | 20 requests at 0.3 req/s |
 | Kimi K3, OpenRouter | 880–1,010 ms | 5.8–14.0 ms | $9 (in: $1) | **rate-limited**: `new-account-rpm` 429s above ~0.5 req/s (36/50 at 1 req/s, 0/50 at 2, 26/30 at 0.5) |
@@ -882,10 +882,10 @@ So a 7B cold start on a host that has the image is 22–27 s end to end, of whic
 is the worker loading 15 GB of weights and capturing graphs; a fresh host adds the pull
 (~50 s for 9.8 GB, ~70 s for 25 GB), and a shared host can add a wait for its own GPU:
 a stopped container holds no 4090, so one sample sat 49 s while another tenant's job had
-it (`/health` calls that worker `throttled`) before Runpod moved the slot to another host. worker-vllm serving Qwen3-8B on a 24 GB GPU in the
-earlier Runpod runs took 171–311 s, most of it downloading the weights at start (the
-network volume meant to cache them never mounted) — the two numbers measure different
-things, which is the point of baking the weights in. Two things the series taught: FlashBoot resumed the
+it (`/health` calls that worker `throttled`) before Runpod moved the slot to another host. worker-vllm serving Qwen3-8B took
+138–144 s from container start to healthy on an A100 and an H100, re-downloading the
+weights and running torch.compile in full on every start (the network volume meant to
+cache them did not mount in that configuration), which is the point of baking the weights in. Two things the series taught: FlashBoot resumed the
 paused container once in six tries (0.85 s) and restarted it the other five, so it did
 not move the median; and hosts vary — one 0.5B worker took 155.6 s from container start
 to healthy on the same image that boots in 16–26 s elsewhere.
