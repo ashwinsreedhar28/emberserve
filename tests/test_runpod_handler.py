@@ -1,20 +1,23 @@
-"""The Runpod Serverless handler's job contract, on the tiny CPU engine (no SDK needed)."""
+"""The Runpod Serverless worker's job contract: the proxy handler against the real app on
+the tiny CPU engine (httpx ASGI transport, no SDK, no port)."""
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
+import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 
+import httpx
 import pytest
 
-from pagedserve.llm import LLM
-from pagedserve.sched.request import SamplingParams
+from pagedserve.server.app import create_app
 from pagedserve.server.async_engine import AsyncLLMEngine
 from tests.stub_tokenizer import install
-from tests.test_engine import make_engine, prompts
+from tests.test_engine import make_engine
 
 pytestmark = pytest.mark.anyio
+MODEL = "tiny"
 
 
 @pytest.fixture
@@ -22,49 +25,103 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def _load_handler_module():
-    path = Path(__file__).resolve().parents[1] / "deploy" / "runpod" / "handler.py"
-    spec = importlib.util.spec_from_file_location("runpod_handler", path)
+def _load(name: str):
+    path = Path(__file__).resolve().parents[1] / "deploy" / "runpod" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"runpod_{name}", path)
     mod = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(mod)
     return mod
 
 
+@pytest.fixture
+async def proxied() -> AsyncIterator[tuple[httpx.AsyncClient, AsyncLLMEngine]]:
+    aeng = AsyncLLMEngine(install(make_engine(max_model_len=512, num_blocks=512)))
+    app = create_app(aeng, MODEL, manage_lifespan=False)
+    aeng.start()
+    try:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                     base_url="http://worker") as client:
+            yield client, aeng
+    finally:
+        aeng.stop()
+
+
 async def _collect(handler, job):
     return [c async for c in handler(job)]
 
 
-async def test_streams_text_and_final_usage() -> None:
-    mod = _load_handler_module()
-    eng = install(make_engine())
-    ref = LLM.from_engine(install(make_engine())).generate(prompts(1), SamplingParams.greedy(6, ignore_eos=True))[0]
-    aeng = AsyncLLMEngine(eng)
-    aeng.start()
-    try:
-        handler = mod.make_handler(aeng, eng.tokenizer)
-        job = {"id": "job-1", "input": {"prompt_token_ids": prompts(1)[0], "max_tokens": 6,
-                                        "ignore_eos": True}}
-        chunks, bad = await asyncio.gather(
-            _collect(handler, job),
-            _collect(handler, {"id": "job-2", "input": {"max_tokens": 3}}))
-    finally:
-        aeng.stop()
-    assert "".join(c["text"] for c in chunks) == ref.text
-    assert chunks[-1]["finish_reason"] == "length"
-    assert chunks[-1]["usage"] == {"prompt_tokens": len(prompts(1)[0]), "completion_tokens": 6,
-                                   "total_tokens": len(prompts(1)[0]) + 6}
-    assert all("usage" not in c for c in chunks[:-1])
-    assert bad == [{"error": "input needs one of: prompt, messages, prompt_token_ids"}]
+def _sse_events(text: str) -> list[dict]:
+    out = []
+    for line in text.splitlines():
+        if line.startswith("data: ") and line != "data: [DONE]":
+            out.append(json.loads(line[6:]))
+    return out
 
 
-def test_sampling_params_mapping() -> None:
-    mod = _load_handler_module()
-    sp = mod.to_sampling_params({"max_tokens": 5, "temperature": 0.5, "top_p": 0.9, "top_k": 40,
-                                 "seed": 7, "stop": "END", "stop_token_ids": [3], "ignore_eos": True})
-    assert (sp.max_tokens, sp.temperature, sp.top_p, sp.top_k, sp.seed) == (5, 0.5, 0.9, 40, 7)
-    assert sp.stop == ["END"] and sp.stop_token_ids == [3] and sp.ignore_eos
-    cfg = mod.engine_config(None)
-    assert cfg.device == "cuda" and cfg.attn_backend == "paged_flash"
-    assert cfg.async_scheduling and cfg.enable_cuda_graphs and cfg.piecewise_cuda_graphs
-    assert cfg.enable_chunked_prefill
+def test_normalize_job_input() -> None:
+    n = _load("handler").normalize_job_input
+    assert n({"openai_route": "/v1/chat/completions", "openai_input": {"messages": []}}) == \
+        ("/v1/chat/completions", "POST", {"messages": []})
+    assert n({"openai_input": {"prompt": "x"}}) == ("/v1/chat/completions", "POST", {"prompt": "x"})
+    assert n({"openai_route": "/v1/models"}) == ("/v1/models", "GET", None)
+    assert n({"route": "/v1/completions", "body": {"prompt": "x"}}) == ("/v1/completions", "POST", {"prompt": "x"})
+    assert n({"route": "/health"}) == ("/health", "GET", None)
+    assert n({"prompt": "hi", "sampling_params": {"max_tokens": 3}}) == \
+        ("/v1/completions", "POST", {"max_tokens": 3, "stream": False, "prompt": "hi"})
+    assert n({"messages": [{"role": "user", "content": "hi"}], "stream": True}) == \
+        ("/v1/chat/completions", "POST", {"stream": True, "messages": [{"role": "user", "content": "hi"}]})
+    with pytest.raises(ValueError):
+        n({})
+
+
+async def test_openai_passthrough_non_stream_and_stream(proxied) -> None:
+    client, _ = proxied
+    handler = _load("handler").make_handler(client, served_model=MODEL)
+    body = {"prompt": "hello world", "max_tokens": 6, "temperature": 0, "ignore_eos": True}
+    full = await _collect(handler, {"id": "j1", "input": {"openai_route": "/v1/completions",
+                                                           "openai_input": body}})
+    assert len(full) == 1 and full[0]["object"] == "text_completion"
+    assert full[0]["usage"]["completion_tokens"] == 6 and full[0]["model"] == MODEL
+    chunks = await _collect(handler, {"id": "j2", "input": {"openai_route": "/v1/completions",
+                                                             "openai_input": {**body, "stream": True}}})
+    assert all(isinstance(c, str) for c in chunks)
+    events = _sse_events("".join(chunks))
+    assert "".join(e["choices"][0]["text"] for e in events) == full[0]["choices"][0]["text"]
+    assert "".join(chunks).rstrip().endswith("data: [DONE]")
+
+
+async def test_shorthand_routes_and_errors(proxied) -> None:
+    client, _ = proxied
+    handler = _load("handler").make_handler(client, served_model=MODEL)
+    out = await _collect(handler, {"id": "j3", "input": {"prompt": "hi", "sampling_params": {
+        "max_tokens": 2, "ignore_eos": True}}})
+    assert out[0]["usage"]["completion_tokens"] == 2
+    models = await _collect(handler, {"id": "j4", "input": {"openai_route": "/v1/models"}})
+    assert models[0]["data"][0]["id"] == MODEL
+    bad = await _collect(handler, {"id": "j5", "input": {}})
+    assert bad[0]["error"]["type"] == "worker_error"
+    http = await _collect(handler, {"id": "j6", "input": {"route": "/v1/completions",
+                                                          "body": {"model": MODEL, "prompt": ["a", "b"]}}})
+    assert "HTTP 400" in http[0]["error"]["message"]
+    dead = _load("handler").make_handler(client, served_model=MODEL, alive=lambda: False)
+    assert "not running" in (await _collect(dead, {"id": "j7", "input": {"prompt": "x"}}))[0]["error"]["message"]
+
+
+def test_serve_command_from_env(monkeypatch) -> None:
+    main = _load("main")
+    for k in ("DTYPE", "CUDA_GRAPHS", "PREFIX_CACHING", "QUANTIZATION", "TENSOR_PARALLEL_SIZE",
+              "EXTRA_SERVE_ARGS", "SERVED_MODEL_NAME"):
+        monkeypatch.delenv(k, raising=False)
+    cmd = main.serve_command("/models/m")
+    assert cmd[1:4] == ["-m", "pagedserve.cli", "serve"] and "--enable-cuda-graphs" in cmd
+    assert cmd[cmd.index("--served-model-name") + 1] == "/models/m"
+    monkeypatch.setenv("QUANTIZATION", "int8")
+    monkeypatch.setenv("TENSOR_PARALLEL_SIZE", "2")
+    monkeypatch.setenv("CUDA_GRAPHS", "0")
+    monkeypatch.setenv("EXTRA_SERVE_ARGS", "--no-chunked-prefill --piecewise-bucket-step 256")
+    cmd = main.serve_command("/models/m")
+    assert "--enable-cuda-graphs" not in cmd
+    assert cmd[cmd.index("--quantization") + 1] == "int8"
+    assert cmd[cmd.index("--tensor-parallel-size") + 1] == "2"
+    assert cmd[-3:] == ["--no-chunked-prefill", "--piecewise-bucket-step", "256"]

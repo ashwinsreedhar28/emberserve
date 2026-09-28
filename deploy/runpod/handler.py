@@ -1,155 +1,94 @@
-"""Runpod Serverless worker for pagedserve.
+"""Runpod Serverless handler for pagedserve: a proxy to the real server.
 
-One engine per worker (built at cold start), continuous batching across the jobs the
-worker is handling concurrently (`concurrency_modifier`), streamed output.
+`main.py` starts `pagedserve serve` on 127.0.0.1:PAGEDSERVE_PORT (the same OpenAI-compatible
+server the benchmarks ran against, engine-core process and all) and then the Runpod job
+loop; every job is forwarded to it. This is the layout Runpod's own `worker-vllm` uses,
+and it means the endpoint speaks OpenAI at `https://api.runpod.ai/v2/<id>/openai/v1/...`:
+the platform wraps such a request as a job and this handler unwraps it.
 
-Job input, any of:
+Accepted job input shapes (all under job["input"]):
 
-    {"input": {"prompt": "Once upon a time", "max_tokens": 64}}
-    {"input": {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 64, "temperature": 0.7}}
-    {"input": {"prompt_token_ids": [1, 2, 3], "max_tokens": 8}}
+1. Runpod's OpenAI passthrough (what /openai/v1/... sends):
+       {"openai_route": "/v1/chat/completions", "openai_input": {...}}
+2. Any server route:
+       {"route": "/v1/completions", "body": {...}, "method": "POST"}   (bodies POST, else GET)
+3. Shorthand:
+       {"prompt": "...", "sampling_params": {...}, "stream": false}
+       {"messages": [...], "sampling_params": {...}, "stream": true}
 
-plus the OpenAI sampling fields (`temperature`, `top_p`, `top_k`, `seed`, `stop`,
-`stop_token_ids`, `ignore_eos`, `repetition_penalty`). Streamed chunks are
-`{"text": delta}`; the last one adds `finish_reason` and `usage`. `runsync` / `run` get
-the chunks aggregated (`return_aggregate_stream`).
-
-Environment (all optional): MODEL_DIR (a snapshot baked into the image; default
-/models/model), MODEL_REPO (download at cold start instead), DTYPE (float16), ATTN_BACKEND
-(paged_flash), BLOCK_SIZE (256), MAX_MODEL_LEN (4096), MAX_NUM_SEQS (256), CUDA_GRAPHS (1),
-PIECEWISE_CUDA_GRAPHS (default: on for checkpoints under 4 GB), CHUNKED_PREFILL (default: on
-except small checkpoints without graphs),
-ASYNC_SCHEDULING (1), MAX_CONCURRENCY (jobs per worker, 64).
+With "stream": true the server's SSE bytes are yielded as they arrive (the platform
+relays them to the caller); otherwise the parsed JSON response is yielded once.
 """
 
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
 from typing import Any, AsyncIterator
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+import httpx
 
-from pagedserve.config import EngineConfig  # noqa: E402
-from pagedserve.sched.request import SamplingParams  # noqa: E402
-
-
-def env(name: str, default: str) -> str:
-    return os.environ.get(name, default)
+DEFAULT_CHAT_ROUTE = "/v1/chat/completions"
+DEFAULT_COMPLETION_ROUTE = "/v1/completions"
+REQUEST_TIMEOUT_S = float(os.environ.get("REQUEST_TIMEOUT", "3600"))
 
 
-def engine_config(model_dir: str | None = None) -> EngineConfig:
-    """Same defaults as `pagedserve serve --device cuda`: CUDA graphs (full-step for decode,
-    piecewise for prefill / mixed steps), chunked prefill, async scheduling."""
-    from pagedserve.cli import SMALL_CHECKPOINT_BYTES, checkpoint_bytes
-
-    graphs = env("CUDA_GRAPHS", "1") == "1"
-    small = checkpoint_bytes(model_dir) < SMALL_CHECKPOINT_BYTES
-    forced_pw = os.environ.get("PIECEWISE_CUDA_GRAPHS")
-    piecewise = graphs and (forced_pw == "1" if forced_pw is not None else small)
-    forced = os.environ.get("CHUNKED_PREFILL")
-    chunked = forced == "1" if forced is not None else (piecewise or not small)
-    return EngineConfig(
-        device="cuda", dtype=EngineConfig.dtype_from_str(env("DTYPE", "float16")),
-        attn_backend=env("ATTN_BACKEND", "paged_flash"), block_size=int(env("BLOCK_SIZE", "256")),
-        max_model_len=int(env("MAX_MODEL_LEN", "4096")), max_num_seqs=int(env("MAX_NUM_SEQS", "256")),
-        max_num_batched_tokens=2048 if chunked else 8192, enable_chunked_prefill=chunked,
-        enable_cuda_graphs=graphs, piecewise_cuda_graphs=piecewise,
-        async_scheduling=env("ASYNC_SCHEDULING", "1") == "1")
-
-
-def resolve_model_dir() -> str:
-    """The snapshot to serve: baked into the image, or fetched at cold start."""
-    model_dir = env("MODEL_DIR", "/models/model")
-    repo = os.environ.get("MODEL_REPO")
-    if repo and not (Path(model_dir) / "config.json").exists():
-        from huggingface_hub import snapshot_download
-
-        snapshot_download(repo, local_dir=model_dir,
-                          allow_patterns=["*.safetensors", "*.json", "merges.txt", "vocab.json",
-                                          "*.txt", "*.py", "*.model", "*.tiktoken"])
-    return model_dir
+def normalize_job_input(job_input: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
+    """`(route, method, body)` for any accepted job input shape."""
+    if job_input.get("openai_input"):
+        return job_input.get("openai_route") or DEFAULT_CHAT_ROUTE, "POST", job_input["openai_input"]
+    if job_input.get("openai_route"):
+        return job_input["openai_route"], "GET", None  # e.g. /v1/models
+    if job_input.get("route"):
+        body = job_input.get("body")
+        method = (job_input.get("method") or ("POST" if body else "GET")).upper()
+        return job_input["route"], method, body
+    messages, prompt = job_input.get("messages"), job_input.get("prompt")
+    if messages is None and prompt is None:
+        raise ValueError("job input needs one of: openai_input (+openai_route), route (+body), "
+                         "or prompt / messages")
+    body = {**dict(job_input.get("sampling_params") or {}), "stream": bool(job_input.get("stream", False))}
+    if messages is not None:
+        return DEFAULT_CHAT_ROUTE, "POST", {**body, "messages": messages}
+    return DEFAULT_COMPLETION_ROUTE, "POST", {**body, "prompt": prompt}
 
 
-def to_sampling_params(inp: dict[str, Any]) -> SamplingParams:
-    stop = inp.get("stop")
-    if isinstance(stop, str):
-        stop = [stop]
-    return SamplingParams(
-        max_tokens=int(inp.get("max_tokens", 128)),
-        temperature=float(inp.get("temperature", 0.0)),
-        top_p=float(inp.get("top_p", 1.0)),
-        top_k=int(inp.get("top_k", -1)),
-        seed=inp.get("seed"),
-        stop=list(stop or []),
-        stop_token_ids=list(inp.get("stop_token_ids") or []),
-        ignore_eos=bool(inp.get("ignore_eos", False)),
-        repetition_penalty=float(inp.get("repetition_penalty", 1.0)),
-    )
+def _error(message: str, error_type: str = "worker_error") -> dict[str, Any]:
+    return {"error": {"message": message, "type": error_type, "code": None}}
 
 
-def prompt_ids_for(inp: dict[str, Any], tokenizer) -> list[int]:
-    if "prompt_token_ids" in inp:
-        return [int(t) for t in inp["prompt_token_ids"]]
-    if "messages" in inp:
-        if tokenizer is None:
-            raise ValueError("this model has no tokenizer; send prompt_token_ids")
-        return tokenizer.apply_chat_template(inp["messages"], add_generation_prompt=True)
-    if "prompt" in inp:
-        if tokenizer is None:
-            raise ValueError("this model has no tokenizer; send prompt_token_ids")
-        return tokenizer.encode(inp["prompt"])
-    raise ValueError("input needs one of: prompt, messages, prompt_token_ids")
+def make_handler(client: httpx.AsyncClient, served_model: str | None = None,
+                 alive=lambda: True):
+    """The job handler, closed over an HTTP client for the server (an ASGI-transport client
+    in the tests, a real one in the worker). `served_model` fills in a missing "model"
+    field; `alive()` reports whether the server process is still there."""
 
-
-def make_handler(async_engine, tokenizer):
-    """The job handler as an async generator, closed over one engine (testable without the
-    Runpod SDK)."""
-
-    async def handler(job: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
-        inp = job.get("input") or {}
+    async def handler(job: dict[str, Any]) -> AsyncIterator[Any]:
         try:
-            prompt_ids = prompt_ids_for(inp, tokenizer)
-            params = to_sampling_params(inp)
-        except (ValueError, TypeError, KeyError) as exc:
-            yield {"error": str(exc)}
+            route, method, body = normalize_job_input(job.get("input") or {})
+        except ValueError as exc:
+            yield _error(str(exc))
             return
-        request_id = str(job.get("id") or id(job))
-        n_out = 0
-        gen = async_engine.generate(request_id, prompt_ids, params)
+        if not alive():
+            yield _error("pagedserve server process is not running; worker is unhealthy")
+            return
+        if body is not None and served_model and "model" not in body:
+            body = {**body, "model": served_model}
+        wants_stream = isinstance(body, dict) and body.get("stream") is True
         try:
-            async for out in gen:
-                n_out = len(out.output_token_ids)
-                chunk: dict[str, Any] = {"text": out.text_delta}
-                if out.finished:
-                    chunk["finish_reason"] = out.finish_reason.value if out.finish_reason else None
-                    chunk["usage"] = {"prompt_tokens": len(prompt_ids), "completion_tokens": n_out,
-                                      "total_tokens": len(prompt_ids) + n_out}
-                yield chunk
-        finally:
-            await gen.aclose()
+            async with client.stream(method, route, json=body if method != "GET" else None,
+                                     timeout=REQUEST_TIMEOUT_S) as resp:
+                if resp.status_code >= 400:
+                    detail = (await resp.aread()).decode("utf-8", errors="replace")
+                    yield _error(f"pagedserve returned HTTP {resp.status_code}: {detail}")
+                    return
+                if wants_stream:
+                    async for chunk in resp.aiter_text():
+                        if chunk:
+                            yield chunk
+                else:
+                    raw = await resp.aread()
+                    yield httpx.Response(200, content=raw).json()
+        except httpx.HTTPError as exc:
+            yield _error(f"request to pagedserve failed: {type(exc).__name__}: {exc}")
 
     return handler
-
-
-def main() -> None:
-    import runpod
-
-    from pagedserve.engine import LLMEngine
-    from pagedserve.server.async_engine import AsyncLLMEngine
-
-    model_dir = resolve_model_dir()
-    engine = LLMEngine.from_pretrained(model_dir, engine_config(model_dir))
-    async_engine = AsyncLLMEngine(engine)
-    async_engine.start()
-    max_concurrency = int(env("MAX_CONCURRENCY", "64"))
-    runpod.serverless.start({
-        "handler": make_handler(async_engine, engine.tokenizer),
-        "return_aggregate_stream": True,
-        "concurrency_modifier": lambda current: max_concurrency,
-    })
-
-
-if __name__ == "__main__":
-    main()

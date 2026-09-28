@@ -828,10 +828,13 @@ python -m pagedserve.cli serve --model models/Qwen2.5-0.5B-Instruct --device cud
 
 ### On Runpod Serverless
 
-`deploy/runpod/` has a worker (`handler.py`: one engine per worker, every job the worker
-holds in the same continuous batch, streamed chunks) and a Dockerfile that bakes a model
-into the image; `deploy/runpod/README.md` has the build, endpoint and `curl` steps. The
-job contract is tested on the CPU engine (`tests/test_runpod_handler.py`).
+`deploy/runpod/` has a worker and a Dockerfile that bakes a model into the image. The
+worker is a proxy in front of `pagedserve serve` (the layout Runpod's own `worker-vllm`
+uses): the same server as everywhere else, engine-core process and all, and Runpod's
+`/openai/v1/...` route lands on it, so the endpoint is OpenAI-compatible and the
+benchmark client runs against it unchanged. `deploy/runpod/README.md` has the build
+(Runpod can build it from this repo), endpoint, `curl` and benchmark steps; the job
+contract is tested against the real app on the CPU engine (`tests/test_runpod_handler.py`).
 
 ### Benchmarks
 
