@@ -80,7 +80,39 @@ python scripts/serverless_coldstart.py --mode queue --endpoint $E7 --api-key "$R
 then toggle FlashBoot on the endpoint and run it again with the other label. Both worker
 modes log `[worker] pagedserve up in X s` (container start to healthy); read it off the
 worker log and pass it as `--note`. `--mode lb` does the same series against a
-load-balancing endpoint by wall clock to the first byte (no delayTime there).
+load-balancing endpoint by wall clock to the first byte (no delayTime there). A `/runsync`
+answers `IN_QUEUE` after 90 s whatever the job is doing, so the script keeps polling
+`/status/<id>` until the job completes and records the job's final `delayTime`.
+
+### Measured (Sep 27, one RTX 4090 worker per endpoint, idle timeout 5 s)
+
+Three cold samples per row (`results/serverless_coldstart_*.json`). A sample counts only
+when `/health` reported no running worker beforehand and the worker log has a fresh
+`[worker] pagedserve up in X s` line for it — the container really restarted. Nothing is
+downloaded at start: both images carry the weights (`Dockerfile`: Qwen2.5-0.5B-Instruct,
+9.8 GB; `Dockerfile.7b`: Qwen2.5-7B-Instruct, ~25 GB).
+
+| image | FlashBoot | Runpod `delayTime` per cold sample | container start → healthy (worker log) |
+|---|---|---:|---:|
+| 0.5B, 9.8 GB | on | 87.1 s (fresh host) / 25.9 / 22.8 s | 26.1 / 17.9 / 16.3 s |
+| 0.5B, 9.8 GB | off | 29.2 / 25.1 / 29.3 s | 22.1 / 17.4 / 20.1 s |
+| 7B, ~25 GB | on | 22.6 s / ≈95 s (fresh host) / 0.85 s (container resumed, not restarted) | 12.3 / 14.5 / — s |
+
+`delayTime` is Runpod's own number: scheduling, the image pull when the host does not
+have it, container start, the boot above, and ~2 s of the SDK's fitness checks. On a host
+that already holds the image it runs 6–10 s over the boot line; a fresh host adds the pull,
+roughly 50 s for the 9.8 GB image and 70 s for the 25 GB one (that 7B sample is the one
+that outlived the 90 s `/runsync` cap; its wall time is read off the worker log). The 7B image
+boots *faster* than the 0.5B one: below 4 GB of weights the CLI turns piecewise CUDA
+graphs on and captures a graph per token bucket on top of the full-step ones, while the
+7B worker captures only the full-step graphs and spends the time on 15 GB of weights.
+Host variance is real: one 0.5B worker earlier in the day took 155.6 s from container
+start to healthy (108 s inside a model load and graph capture that takes ~16 s
+elsewhere), on the same image. FlashBoot's paused container came back once in six
+FlashBoot-on samples (0.85 s, same worker, three minutes after its previous job); the
+other five restarted the container, so with FlashBoot on the median cold start was no
+better than with it off — it is a "may resume", and worth leaving on because it costs
+nothing when it doesn't.
 
 ## Benchmark it
 

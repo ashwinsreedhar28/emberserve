@@ -861,11 +861,32 @@ the latency: a job still waits seconds in the queue's dispatch at moderate rates
 server's 10 ms TTFT, and the full saturation throughput — once the endpoint's "request
 count" is raised, because at its default the balancer admits ~4 concurrent requests per
 worker and queues the rest in front of a server that holds 200. The 4090's 11.1k tok/s
-against the A100's 16.6k is the memory-bandwidth ratio. Cold start (first request on an
-idle endpoint) was 29–37 s on the Queue endpoint with the image already on the host, and
-2:12 for the load balancer's very first worker (a 9.8 GB image pull); worker-vllm's 8B in
-the earlier Runpod runs was 171–311 s. Both endpoint types are the same image, chosen by
-`RUNPOD_LB=1`.
+against the A100's 16.6k is the memory-bandwidth ratio. Both endpoint types are the same
+image, chosen by `RUNPOD_LB=1`.
+
+Cold starts were measured as a series (`scripts/serverless_coldstart.py`, three samples
+per row, each taken only after `/health` showed no worker and confirmed by a fresh
+`[worker] pagedserve up in X s` line in the worker log, so a parked container never
+counts as one). The weights are baked into the image (9.8 GB for 0.5B, ~25 GB for 7B via
+`deploy/runpod/Dockerfile.7b`), so nothing downloads at start. Runpod's `delayTime` is
+its own queue-to-handler number:
+
+| image | FlashBoot | `delayTime` per cold sample | container start → healthy |
+|---|---|---:|---:|
+| 0.5B | on | 87.1 s (fresh host) / 25.9 / 22.8 s | 26.1 / 17.9 / 16.3 s |
+| 0.5B | off | 29.2 / 25.1 / 29.3 s | 22.1 / 17.4 / 20.1 s |
+| 7B | on | 22.6 s / ≈95 s (fresh host) / 0.85 s (resumed) | 12.3 / 14.5 / — s |
+
+So a 7B cold start on a host that has the image is ~20 s end to end, of which 12–15 s is
+the worker loading 15 GB of weights and capturing graphs; a fresh host adds the pull
+(~50 s for 9.8 GB, ~70 s for 25 GB). worker-vllm serving Qwen3-8B on a 24 GB GPU in the
+earlier Runpod runs took 171–311 s, most of it downloading the weights at start (the
+network volume meant to cache them never mounted) — the two numbers measure different
+things, which is the point of baking the weights in. Two things the series taught: FlashBoot resumed the
+paused container once in six tries (0.85 s) and restarted it the other five, so it did
+not move the median; and hosts vary — one 0.5B worker took 155.6 s from container start
+to healthy on the same image that boots in 16–26 s elsewhere.
+`deploy/runpod/README.md` has the full table and the anatomy of a `delayTime`.
 
 ### Benchmarks
 
