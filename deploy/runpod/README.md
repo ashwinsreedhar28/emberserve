@@ -48,6 +48,20 @@ shorthand `{"prompt" | "messages", "sampling_params", "stream"}`. With `"stream"
 the server's SSE bytes are relayed as they arrive; otherwise the JSON response comes back
 whole.
 
+## Measured (Sep 27, one RTX 4090 worker, 0.5B, 200-request trace)
+
+| endpoint | TPOT p50 @1–4 req/s | TTFT p50 @4 req/s | saturation tok/s | TTFT p50/p99 @inf |
+|---|---:|---:|---:|---:|
+| Queue, per-yield (first build) | 56–231 ms | 4.4 s | 95 (100 failures) | 37 s / 82 s |
+| Queue, `STREAM_FLUSH_MS=100` | 1.4–1.5 ms | 2.4 s | 9,162 | 1.5 s / 2.6 s |
+| Load balancer, request count 4 (default) | 1.7–1.8 ms | 220 ms | 1,013 | 13 s / 34 s |
+| Load balancer, request count 200 | 1.9–2.0 ms | 230 ms | 11,079 | 0.82 s / 1.07 s |
+
+Server-side (from `/metrics`, load-balancer runs) the engine was identical throughout:
+TTFT 8–11 ms, TPOT 1.7–2.0 ms. For a load-balancer endpoint set the endpoint's
+**request count** to the concurrency the server should hold (200 here): at the default
+the balancer admits about four requests per worker and queues the rest.
+
 ## Benchmark it
 
 ```bash

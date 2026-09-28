@@ -830,11 +830,42 @@ python -m pagedserve.cli serve --model models/Qwen2.5-0.5B-Instruct --device cud
 
 `deploy/runpod/` has a worker and a Dockerfile that bakes a model into the image. The
 worker is a proxy in front of `pagedserve serve` (the layout Runpod's own `worker-vllm`
-uses): the same server as everywhere else, engine-core process and all, and Runpod's
-`/openai/v1/...` route lands on it, so the endpoint is OpenAI-compatible and the
-benchmark client runs against it unchanged. `deploy/runpod/README.md` has the build
-(Runpod can build it from this repo), endpoint, `curl` and benchmark steps; the job
-contract is tested against the real app on the CPU engine (`tests/test_runpod_handler.py`).
+uses): the same server as everywhere else, engine-core process and all, so the endpoint is
+OpenAI-compatible and the benchmark client runs against it unchanged. Runpod builds the
+image from the repo (Serverless → New endpoint → GitHub repo, Dockerfile path
+`deploy/runpod/Dockerfile`); `deploy/runpod/README.md` has the endpoint, `curl` and
+benchmark steps, and the job contract is tested against the real app on the CPU engine
+(`tests/test_runpod_handler.py`).
+
+Deployed and measured Sep 27 on one RTX 4090 worker, the same 200-request synthetic trace
+as the A100 rows, from a laptop across the internet (`results/runpod_serverless_*.json`).
+Server-side, the engine was the same in every run: TPOT 1.7–2.0 ms, TTFT 8–11 ms, e2e
+~330 ms per request. Everything else in the table is the delivery path, and the first row
+is a bug of mine:
+
+| endpoint type | TPOT p50, 1–4 req/s | TTFT p50 @ 4 req/s | saturation | TTFT p50 / p99 at saturation |
+|---|---:|---:|---:|---:|
+| Queue, one yield per server write (as first built) | 56–231 ms | 4.4 s | 95 tok/s, 100 of 1,200 requests failed | 37 s / 82 s |
+| Queue, yields coalesced per 100 ms (`STREAM_FLUSH_MS`) | 1.4–1.5 ms | 2.4 s | 9,162 tok/s | 1.5 s / 2.6 s |
+| Load balancer, default concurrency (4 per worker) | 1.7–1.8 ms | 220 ms | 1,013 tok/s | 13 s / 34 s |
+| Load balancer, concurrency 200 | 1.9–2.0 ms | 230 ms (@ 8 and 16) | **11,079 tok/s** | 0.82 s / 1.07 s |
+
+On a **Queue** endpoint every chunk a streaming job yields is one call from the worker to
+Runpod's job-stream API (~115 ms round trip, rate-limited across the endpoint): with one
+stream, one token per write, that pinned a stream at 9 tokens/s while the engine sat
+idle, and 200 streams hit the limit and failed. Coalescing yields per 100 ms restores the
+throughput (Runpod's old `worker-vllm` had `BATCH_SIZE` knobs for the same reason) but not
+the latency: a job still waits seconds in the queue's dispatch at moderate rates. A
+**Load balancer** endpoint routes HTTP straight to the container's port and only polls
+`/ping`, so the endpoint *is* the server: ~200 ms of gateway round trip on top of the
+server's 10 ms TTFT, and the full saturation throughput — once the endpoint's "request
+count" is raised, because at its default the balancer admits ~4 concurrent requests per
+worker and queues the rest in front of a server that holds 200. The 4090's 11.1k tok/s
+against the A100's 16.6k is the memory-bandwidth ratio. Cold start (first request on an
+idle endpoint) was 29–37 s on the Queue endpoint with the image already on the host, and
+2:12 for the load balancer's very first worker (a 9.8 GB image pull); worker-vllm's 8B in
+the earlier Runpod runs was 171–311 s. Both endpoint types are the same image, chosen by
+`RUNPOD_LB=1`.
 
 ### Benchmarks
 
@@ -906,7 +937,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 * Speculative decoding: n-gram lookup implemented (`--speculative-ngram`); 16% acceptance on ShareGPT text and a loss at 0.5B and 7B as built. Next: a fixed-k draft step captured as a CUDA-graph bucket, async scheduling kept on (verify on the device), then a draft-model proposer.
 * Weight-only int8: batch-1 step −37% on the 7B, TPOT 6.6 vs vLLM 10.2 ms at 1 req/s; the large-M GEMM still trails cuBLAS by 31% at batch 128, so saturation loses — next is a better large-M kernel (or dequantize-then-cuBLAS for prefill), then W8A8 with `torch._int_mm` for the compute-bound end.
 * Tensor parallelism: TP2 on the 7B is 1.42× at saturation and −24% on the batch-1 step vs vLLM's 1.55× and a 6.6 ms TPOT; the gap is 56 NCCL all-reduces per step at ~25 µs each. Next: a custom small-message all-reduce over NVLink (or all-reduce fused into the following RMSNorm), piecewise graphs for the TP mixed step, a prefill-step profile (TTFT did not improve under TP2), then MLA/MoE sharding.
-* Runpod Serverless: worker + Dockerfile in `deploy/runpod/`, endpoint not yet deployed.
+* Runpod Serverless: deployed on both endpoint types ("Run it"); next is a 7B image (`--build-arg MODEL_REPO`) on an A100 worker and a cold-start series with FlashBoot on/off.
 
 ## License
 
