@@ -264,9 +264,13 @@ def main(argv: list[str] | None = None) -> int:
             if args.save_records:
                 run["records"] = records_to_json(records)
             runs.append(run)
+            # `args` goes into the file for provenance, minus the credential: a hosted run's
+            # key is not a result (GitHub's push protection caught the first one).
+            recorded = {k: ("<redacted>" if k == "api_key" and v != "x" else v)
+                        for k, v in vars(args).items()}
             payload = {"kind": "sweep", "system": name, "server": args.server,
                        "base_url": base_url, "model": args.model,
-                       "args": vars(args), "runs": runs}
+                       "args": recorded, "runs": runs}
             (out_dir / f"{name}.json").write_text(json.dumps(payload, indent=1))
         print(f"[baseline] wrote {out_dir / f'{name}.json'}", file=sys.stderr)
         return 0
