@@ -59,3 +59,7 @@ python -m pagedserve.bench.run_vllm_baseline --base-url https://api.runpod.ai/v2
 
 `tests/test_runpod_handler.py` runs the proxy handler against the real app on the tiny CPU
 engine, so the job contract is tested without a deployment.
+
+Runpod builds the image from a GitHub *release*; a push alone does not rebuild, and a release
+on a commit that already has a build record is skipped, so a failed registry push (seen once:
+`Manifest upload failed: 500`) needs a new commit plus a new release to rebuild.
