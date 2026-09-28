@@ -108,19 +108,35 @@ class StepPlan:
     logit_rows: list[int] = field(default_factory=list)
 
 
-def default_num_blocks(model_config: ModelConfig, engine_config: EngineConfig,
-                       model_bytes: int) -> int:
+KV_WORKSPACE_BYTES = 512 << 20  # activations, graph pools, sampler scratch outside the cache
+MIN_GPU_BLOCKS = 64
+
+
+def kv_blocks_for(free_bytes: int, utilization: float, bytes_per_block: int) -> int:
+    """KV blocks that fit in `free_bytes` of device memory read *with the weights already
+    resident*: `free * utilization - workspace`, floored at MIN_GPU_BLOCKS.
+
+    The weights are not subtracted here. They used to be, on top of a `free` that already
+    excluded them, and an 80 GB card never noticed (7B: 42 GB of cache instead of 57) while
+    a 24 GB card serving the 7B went to the 64-block floor — 16K tokens of cache, about 30
+    sequences in flight, 1,118 tok/s on an RTX 4090 where the batch should have been KV-bound
+    at three times that."""
+    budget = int(free_bytes * utilization) - KV_WORKSPACE_BYTES
+    return max(budget // bytes_per_block, MIN_GPU_BLOCKS)
+
+
+def default_num_blocks(model_config: ModelConfig, engine_config: EngineConfig) -> int:
     """How many KV blocks to allocate when the user did not say.
 
-    CUDA: (free memory * utilization - model weights - 512 MiB workspace) / bytes per block.
-    CPU/MPS: a fixed 2048 blocks (block_size 16 -> 32K cached tokens), which is ~800 MB at
-    fp32 for the 0.5B model and plenty for local correctness work.
+    CUDA: `kv_blocks_for` over the device's free memory, which is read after
+    `from_pretrained` / `build_tp_model` have loaded the weights. CPU/MPS: a fixed 2048
+    blocks (block_size 16 -> 32K cached tokens), which is ~800 MB at fp32 for the 0.5B
+    model and plenty for local correctness work.
     """
     bytes_per_block = model_config.kv_bytes_per_token(engine_config.dtype) * engine_config.block_size
     if engine_config.device.startswith("cuda") and torch.cuda.is_available():
         free, _total = torch.cuda.mem_get_info(torch.device(engine_config.device))
-        budget = int(free * engine_config.gpu_memory_utilization) - model_bytes - (512 << 20)
-        return max(budget // bytes_per_block, 64)
+        return kv_blocks_for(free, engine_config.gpu_memory_utilization, bytes_per_block)
     return 2048
 
 
@@ -152,9 +168,7 @@ class LLMEngine:
         # come, and `shutdown()` must kill them rather than wait on a broadcast of its own.
         self._tp_step_open = False
 
-        model_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
-        num_blocks = engine_config.num_gpu_blocks or default_num_blocks(
-            self.local_config, engine_config, model_bytes)
+        num_blocks = engine_config.num_gpu_blocks or default_num_blocks(self.local_config, engine_config)
         num_blocks = tpdist.all_reduce_min(num_blocks)  # every rank's cache has the same shape
         engine_config.num_gpu_blocks = num_blocks
         if engine_config.attn_backend == "naive":

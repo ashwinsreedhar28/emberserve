@@ -891,6 +891,17 @@ not move the median; and hosts vary — one 0.5B worker took 155.6 s from contai
 to healthy on the same image that boots in 16–26 s elsewhere.
 `deploy/runpod/README.md` has the full table and the anatomy of a `delayTime`.
 
+The 7B's throughput sweep on the same 4090 (Queue endpoint) found a bug of mine that
+only a small card could: TPOT 15.8 ms at 1 req/s is the card's floor (15.2 GB of weights
+over 1.0 TB/s), but saturation came out at 1,118 tok/s and 22.7 ms per token — ~30
+sequences in flight while the worker held all 200 jobs. The default KV budget had
+subtracted the weights from a `free`-memory reading taken after they were loaded; on an
+80 GB A100 that just left cache on the table (42 GB instead of 57 for the 7B), on a 24 GB
+card it drove the budget negative and the engine ran on its 64-block floor, 16K tokens of
+cache for a trace that averages 2.17 blocks per request. Fixed (`kv_blocks_for` in
+`engine.py`, CPU-tested against the 4090 numbers); the corrected sweep is pending a
+rebuild of the image.
+
 ### Benchmarks
 
 ```bash

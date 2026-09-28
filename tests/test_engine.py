@@ -255,3 +255,22 @@ def test_step_stats_token_split(chunked: bool) -> None:
     _check_token_split(eng, budget=16 if chunked else None)
     assert sum(s.num_decode_tokens for s in eng.stats) == 5 * 5  # 5 reqs x (6 - 1) decodes
     assert sum(s.num_prefill_tokens for s in eng.stats) == sum(len(p) for p in prompts(5, seed=13))
+
+
+def test_kv_budget_does_not_subtract_resident_weights() -> None:
+    """`free` is read after the weights are loaded; charging them again put the 7B on a
+    24 GB card at the 64-block floor (the Serverless 4090 run: ~30 sequences, 1,118 tok/s)."""
+    from pagedserve.engine import KV_WORKSPACE_BYTES, MIN_GPU_BLOCKS, kv_blocks_for
+
+    qwen7b = ModelConfig(hidden_size=3584, num_hidden_layers=28, num_attention_heads=28,
+                         num_key_value_heads=4)
+    bytes_per_block = qwen7b.kv_bytes_per_token(torch.float16) * 256
+    assert bytes_per_block == 28 * 2 * 4 * 128 * 2 * 256  # 14.7 MB per 256-token block
+    free_after_load = 9_500 << 20  # RTX 4090 with 15.2 GB of fp16 weights resident
+    blocks = kv_blocks_for(free_after_load, 0.90, bytes_per_block)
+    assert blocks == (int(free_after_load * 0.90) - KV_WORKSPACE_BYTES) // bytes_per_block
+    assert blocks >= 500  # >128K tokens of cache, not the 64-block floor
+    old_formula = max((int(free_after_load * 0.90) - (15_231 << 20) - KV_WORKSPACE_BYTES)
+                      // bytes_per_block, MIN_GPU_BLOCKS)
+    assert old_formula == MIN_GPU_BLOCKS
+    assert kv_blocks_for(0, 0.90, bytes_per_block) == MIN_GPU_BLOCKS

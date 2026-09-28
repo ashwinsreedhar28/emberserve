@@ -122,6 +122,29 @@ other five restarted the container, so with FlashBoot on the median cold start w
 better than with it off — it is a "may resume", and worth leaving on because it costs
 nothing when it doesn't.
 
+### 7B throughput (Queue endpoint, one RTX 4090, `STREAM_FLUSH_MS=100`, 200-request trace)
+
+| rate | tok/s | TTFT p50 / p99 | TPOT p50 / p99 |
+|---|---:|---:|---:|
+| 1 req/s | 171 | 749 ms / 5.95 s | 15.8 / 18.3 ms |
+| 2 | 331 | 1.19 / 6.26 s | 16.3 / 19.0 ms |
+| 4 | 606 | 1.39 / 6.65 s | 18.5 / 25.0 ms |
+| 8 (5.3 served) | 919 | 5.38 / 8.56 s | 21.7 / 27.2 ms |
+| 16 (6.3 served) | 1,085 | 6.58 / 13.8 s | 22.4 / 30.0 ms |
+| inf | 1,118 | 13.4 / 24.8 s | 22.7 / 26.7 ms |
+
+`results/runpod_serverless_7b_pagedserve.json`, measured with a KV-cache sizing bug
+(below). TPOT 15.8 ms at 1 req/s is the card: 15.2 GB of fp16 weights over the 4090's
+1.0 TB/s is 15 ms per decode step. TTFT is the queue endpoint's job dispatch (prefill is
+~50 ms), as with the 0.5B. The saturation number is wrong by about 3×: 1,118 tok/s at
+22.7 ms per token is ~30 sequences in flight, and the worker log shows the SDK holding
+all 200 jobs, so the engine was admitting 30. The default KV budget subtracted the
+weights from a `free` memory reading taken *after* they were loaded; on an 80 GB card
+that only cost some cache (7B: 42 GB instead of 57), on a 24 GB card it drove the budget
+negative and the engine fell to its 64-block floor — 16K tokens, and this trace averages
+2.17 blocks per request, so 29.5 of them at a time. Fixed in `pagedserve/engine.py`
+(`kv_blocks_for`, with a CPU test); the corrected row is pending a rebuild.
+
 ## Benchmark it
 
 ```bash
