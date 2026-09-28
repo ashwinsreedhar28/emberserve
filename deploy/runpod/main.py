@@ -67,13 +67,13 @@ def serve_command(model_dir: str, host: str = "127.0.0.1", port: int = PORT) -> 
     return cmd
 
 
-def wait_for_server(proc: subprocess.Popen, timeout_s: float) -> None:
+def wait_for_server(proc: subprocess.Popen, timeout_s: float, base_url: str = BASE_URL) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise SystemExit(f"pagedserve serve exited with code {proc.returncode} during startup")
         try:
-            if httpx.get(f"{BASE_URL}/health", timeout=2.0).status_code == 200:
+            if httpx.get(f"{base_url}/health", timeout=2.0).status_code == 200:
                 return
         except httpx.HTTPError:
             pass
@@ -87,11 +87,15 @@ def main() -> None:
         # Load-balancing endpoint: Runpod routes HTTP straight to this container's $PORT and
         # polls /ping, so the server itself is the worker (no job wrapper, no SDK; streaming
         # is the server's own SSE). Set PORT and PORT_HEALTH on the endpoint to the same value.
-        port = env("PORT", "8000")
-        cmd = serve_command(model_dir, host="0.0.0.0", port=int(port))
-        print("[worker] load-balancing mode, exec: " + " ".join(shlex.quote(c) for c in cmd), flush=True)
-        sys.stdout.flush()
-        os.execv(sys.executable, cmd)
+        # This process stays as a supervisor so the log carries the start-to-healthy time.
+        port = int(env("PORT", "8000"))
+        cmd = serve_command(model_dir, host="0.0.0.0", port=port)
+        print("[worker] load-balancing mode: " + " ".join(shlex.quote(c) for c in cmd), flush=True)
+        t0 = time.monotonic()
+        proc = subprocess.Popen(cmd)
+        wait_for_server(proc, float(env("STARTUP_TIMEOUT", "600")), f"http://127.0.0.1:{port}")
+        print(f"[worker] pagedserve up in {time.monotonic() - t0:.1f} s (load-balancing mode)", flush=True)
+        sys.exit(proc.wait())
     import runpod
 
     cmd = serve_command(model_dir)

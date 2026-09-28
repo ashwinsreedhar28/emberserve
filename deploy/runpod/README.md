@@ -66,17 +66,21 @@ the balancer admits about four requests per worker and queues the rest.
 
 `deploy/runpod/Dockerfile.7b` bakes Qwen2.5-7B-Instruct instead (~25 GB image); point a
 new endpoint's Dockerfile path at it. A 24 GB GPU holds the fp16 weights (15 GB) plus a
-~6 GB KV cache. `scripts/serverless_coldstart.py` measures cold starts properly: set the
-endpoint's idle timeout to 5 s, then
+~6 GB KV cache. `scripts/serverless_coldstart.py` measures cold starts the way
+worker-vllm's were measured: on a **queue** endpoint, Runpod's own `delayTime` and
+`executionTime` per `/runsync`, and `/health` polled to zero workers before every sample
+(a parked worker is not a cold start). Set the endpoint's idle timeout to 5 s, then
 
 ```bash
-python scripts/serverless_coldstart.py --base-url https://$E7.api.runpod.ai --api-key "$RUNPOD_API_KEY" \
-  --repeats 5 --idle-s 90 --label flashboot_on --out results/serverless_coldstart_7b_4090_flashboot_on.json
+python scripts/serverless_coldstart.py --mode queue --endpoint $E7 --api-key "$RUNPOD_API_KEY" \
+  --repeats 3 --idle-s 60 --label 7b_4090_flashboot_on --image "Qwen2.5-7B, ~25 GB image, weights baked in" \
+  --out results/serverless_coldstart_7b_4090_flashboot_on.json
 ```
 
-and again with FlashBoot toggled on the endpoint. Cold time is wall clock to the first
-response byte (worker scheduling, image start, model load, graph capture and the gateway's
-wait, all included), each followed by a warm request.
+then toggle FlashBoot on the endpoint and run it again with the other label. Both worker
+modes log `[worker] pagedserve up in X s` (container start to healthy); read it off the
+worker log and pass it as `--note`. `--mode lb` does the same series against a
+load-balancing endpoint by wall clock to the first byte (no delayTime there).
 
 ## Benchmark it
 
