@@ -738,6 +738,35 @@ prompt ids drawn from each model's own vocabulary.
 ² whole decode step at batch 1 (`mla_triton` + fused MoE + CUDA graphs): 63.6 ms with the per-expert loop, 9.4 with the grouped GEMM, 7.2 after the routing/alignment kernels, 6.2 after the split-K fix; vLLM's TPOT at 1 req/s is 7.1 ms, ours over HTTP 7.6. See [Moonlight](#moonlight-mla--moe-on-the-a100).
 ³ chunked prefill (2048-token cap) + async scheduling (`results/pagedserve_moonlight_v3.json`); the first run, prefill-priority and synchronous, was 2,457 (76%) and 26.3 ms.
 
+### Hosted APIs, for scale (a footnote)
+
+The same load generator, the same ShareGPT prompts and the same client, pointed at
+OpenAI-compatible endpoints instead of a local server (`--hosted --base-url ...`;
+`results/openrouter_*.json`, `results/hosted_*.json`). Hosted runs stop at the model's own
+EOS, so their tok/s is how much the model chose to say, not capacity, and is left out.
+Where two days disagree the range is shown. List prices are OpenRouter's on Sep 27, 2026;
+the self-hosted rows convert the A100's $1.59/hr into a per-output-token price at the
+measured throughput (prompt tokens ride free inside the hour).
+
+| endpoint | TTFT p50 | TPOT p50 | $/M output tokens | what it is |
+|---|---:|---:|---:|---|
+| pagedserve, Qwen2.5-0.5B, one A100 | 9 ms | 1.8–2.0 ms | $0.03 at saturation (16.6k tok/s) | this repo |
+| pagedserve, Qwen2.5-7B, one A100 | 39 ms | 10.2 ms | $2.50 at 1 req/s · $0.22 at 16 req/s · $0.14 at saturation (3,166 tok/s) | this repo |
+| vLLM, Qwen3-8B, Runpod Serverless | 770–930 ms | 8.2–8.7 ms | per-second GPU billing | Runpod's `worker-vllm`, through their proxy; a 100-request burst at a scaled-to-zero endpoint measured TTFT p50 **63.6 s** (cold start + scale-up) |
+| DeepSeek V4.1 Flash, OpenRouter | 530–1,070 ms | 4.1–6.9 ms | $0.29 (in: $0.035) | 50/50 at 1, 2 and 4 req/s |
+| Claude Haiku 4.5, OpenRouter | 940 ms | 7.8 ms | $5 (in: $1) | 20 requests at 0.3 req/s |
+| Kimi K3, OpenRouter | 880–1,010 ms | 5.8–14.0 ms | $9 (in: $1) | **rate-limited**: `new-account-rpm` 429s above ~0.5 req/s (36/50 at 1 req/s, 0/50 at 2, 26/30 at 0.5) |
+
+Two things the row for a rented A100 says. Per token, the cheapest frontier-class API
+($0.29/M) sits between the 7B at 16 req/s and the 7B at saturation, so self-hosting a 7B
+beats it on price only when the card stays above roughly half load, and what you get for
+it is a 7B. And the APIs' first token arrives 15–25× later than ours (they queue,
+batch and route at a scale where 500 ms is fine) while their per-token time is *lower*
+than our fp16 7B's 10.2 ms: 4–7 ms is what a large deployment gets from bigger batches
+on bigger hardware, and what this repo reaches only with int8 (6.6 ms) or two GPUs
+(7.4 ms). A hosted API also brings a rate limit you do not control, which is the only
+reason the Kimi column has three numbers of completed requests in it.
+
 At 7–8B the decode step is the weight read: 15–16 GB of fp16 at ~1.5 TB/s is 10–11 ms, and
 both engines land there at batch 1. The CPU-side costs that decide the 0.5B result are
 ~10% of the step at this size, and moving the engine to its own process changed nothing
@@ -871,7 +900,6 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 * Piecewise graphs at 7B: `--piecewise-bucket-step 256` recovers the 1% saturation loss (3,168 vs v7's 3,166 tok/s) but not the tail (TPOT 18.3 vs 16.5 ms at 16 req/s; `results/pagedserve_7b_flash_v8b.json`), so the mode stays off above 4 GB; the remaining cost is the static-buffer copies and the eager attention launches, which a full-step graph does not pay.
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
-* Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
 * Speculative decoding: n-gram lookup implemented (`--speculative-ngram`); 16% acceptance on ShareGPT text and a loss at 0.5B and 7B as built. Next: a fixed-k draft step captured as a CUDA-graph bucket, async scheduling kept on (verify on the device), then a draft-model proposer.
 * Weight-only int8: batch-1 step −37% on the 7B, TPOT 6.6 vs vLLM 10.2 ms at 1 req/s; the large-M GEMM still trails cuBLAS by 31% at batch 128, so saturation loses — next is a better large-M kernel (or dequantize-then-cuBLAS for prefill), then W8A8 with `torch._int_mm` for the compute-bound end.
 * Tensor parallelism: TP2 on the 7B is 1.42× at saturation and −24% on the batch-1 step vs vLLM's 1.55× and a 6.6 ms TPOT; the gap is 56 NCCL all-reduces per step at ~25 µs each. Next: a custom small-message all-reduce over NVLink (or all-reduce fused into the following RMSNorm), piecewise graphs for the TP mixed step, a prefill-step profile (TTFT did not improve under TP2), then MLA/MoE sharding.
