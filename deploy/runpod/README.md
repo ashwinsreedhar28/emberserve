@@ -148,7 +148,7 @@ test). The other edge of the same card: a hand-set `EXTRA_SERVE_ARGS=--num-block
 sees the 4090 as 22.04 GiB, and 14.18 GiB of weights plus the cache left nothing for the
 graph mempool. So the reserve is now explicit (`activation_reserve_bytes`: 1 GiB plus a
 prefill chunk's MLP activations and the largest decode batch's logits, 1.36 GiB for the
-7B), which sizes the 7B's cache on this card at 380 blocks (97K tokens).
+7B), which sizes the 7B's cache on this card at ~380 blocks (97K tokens). Released in v0.9.4: with no override the 7B endpoint booted at 410 blocks (105K tokens) on the host it landed on, through graph capture — the budget follows each host's free memory.
 
 Corrected, same endpoint with `--num-blocks 380` (what the fixed default computes for this
 card; `/metrics` reported 379 after the graph scratch block) —
