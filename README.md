@@ -885,7 +885,7 @@ a stopped container holds no 4090, so one sample sat 49 s while another tenant's
 it (`/health` calls that worker `throttled`) before Runpod moved the slot to another host. worker-vllm serving Qwen3-8B took
 138–144 s from container start to healthy on an A100 and an H100, re-downloading the
 weights and running torch.compile in full on every start (the network volume meant to
-cache them did not mount in that configuration), which is the point of baking the weights in. Two things the series taught: FlashBoot resumed the
+cache them did not mount while the endpoint's model cache setting was on; with it off, a cache hit took 114 s, compile loaded in ~1 s but the 15 GB checkpoint took ~30 s to read off the FUSE-mounted volume), which is the point of baking the weights in. Two things the series taught: FlashBoot resumed the
 paused container once in six tries (0.85 s) and restarted it the other five, so it did
 not move the median; and hosts vary — one 0.5B worker took 155.6 s from container start
 to healthy on the same image that boots in 16–26 s elsewhere.
