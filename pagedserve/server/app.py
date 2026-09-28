@@ -111,6 +111,10 @@ def create_app(async_engine: "AsyncLLMEngine | AsyncEngineCoreClient", model_nam
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/ping")  # Runpod's load-balancing endpoints poll this path (200 = take traffic)
+    async def ping() -> dict[str, str]:
+        return {"status": "ok"}
+
     @app.get("/v1/models")
     async def models() -> ModelList:
         return ModelList(data=[ModelCard(id=model_name, created=created)])

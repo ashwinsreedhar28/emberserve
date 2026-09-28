@@ -125,3 +125,28 @@ def test_serve_command_from_env(monkeypatch) -> None:
     assert cmd[cmd.index("--quantization") + 1] == "int8"
     assert cmd[cmd.index("--tensor-parallel-size") + 1] == "2"
     assert cmd[-3:] == ["--no-chunked-prefill", "--piecewise-bucket-step", "256"]
+
+
+async def test_stream_chunks_are_coalesced_by_time() -> None:
+    import asyncio
+
+    mod = _load("handler")
+
+    async def source():
+        for i in range(6):
+            yield f"data: {i}\n\n"
+            await asyncio.sleep(0.03)
+
+    out = [c async for c in mod._coalesced(source(), 0.1)]
+    assert "".join(out) == "".join(f"data: {i}\n\n" for i in range(6))
+    assert 1 < len(out) < 6  # ~0.1 s windows over 0.18 s of chunks: fewer yields than chunks
+    assert [c async for c in mod._coalesced(source(), 0)] == [f"data: {i}\n\n" for i in range(6)]
+
+
+async def test_ping_and_lb_command(proxied, monkeypatch) -> None:
+    client, _ = proxied
+    assert (await client.get("/ping")).status_code == 200
+    main = _load("main")
+    monkeypatch.setenv("PORT", "9000")
+    cmd = main.serve_command("/models/m", host="0.0.0.0", port=9000)
+    assert cmd[cmd.index("--host") + 1] == "0.0.0.0" and cmd[cmd.index("--port") + 1] == "9000"

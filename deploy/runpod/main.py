@@ -5,8 +5,10 @@ MODEL_REPO (download at cold start instead), DTYPE (float16), ATTN_BACKEND (page
 BLOCK_SIZE (256), MAX_MODEL_LEN (4096), MAX_NUM_SEQS (256), CUDA_GRAPHS (1), PREFIX_CACHING (0),
 QUANTIZATION (unset | int8), TENSOR_PARALLEL_SIZE (1), SERVED_MODEL_NAME (the model dir),
 EXTRA_SERVE_ARGS (appended verbatim), PAGEDSERVE_PORT (8000), MAX_CONCURRENCY (jobs per
-worker, 64), STARTUP_TIMEOUT (600 s). Chunked prefill, piecewise graphs, async scheduling and
-the engine-core process follow the CLI's CUDA defaults (README, "Run it").
+worker, 64), STARTUP_TIMEOUT (600 s), STREAM_FLUSH_MS (100; see handler.py). Chunked prefill,
+piecewise graphs, async scheduling and the engine-core process follow the CLI's CUDA defaults
+(README, "Run it"). RUNPOD_LB=1 turns the image into a load-balancing worker: `pagedserve serve`
+runs on 0.0.0.0:$PORT with no job wrapper (set PORT and PORT_HEALTH on the endpoint).
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from handler import make_handler  # noqa: E402
 
-PORT = int(os.environ.get("PAGEDSERVE_PORT", "8000"))
+PORT = int(os.environ.get("PAGEDSERVE_PORT", "8000"))  # the proxy's local server (queue mode)
 BASE_URL = f"http://127.0.0.1:{PORT}"
 
 
@@ -44,14 +46,14 @@ def resolve_model_dir() -> str:
     return model_dir
 
 
-def serve_command(model_dir: str) -> list[str]:
+def serve_command(model_dir: str, host: str = "127.0.0.1", port: int = PORT) -> list[str]:
     cmd = [sys.executable, "-m", "pagedserve.cli", "serve", "--model", model_dir,
            "--device", "cuda", "--dtype", env("DTYPE", "float16"),
            "--attn-backend", env("ATTN_BACKEND", "paged_flash"),
            "--block-size", env("BLOCK_SIZE", "256"),
            "--max-model-len", env("MAX_MODEL_LEN", "4096"),
            "--max-num-seqs", env("MAX_NUM_SEQS", "256"),
-           "--host", "127.0.0.1", "--port", str(PORT),
+           "--host", host, "--port", str(port),
            "--served-model-name", env("SERVED_MODEL_NAME", model_dir)]
     if env("CUDA_GRAPHS", "1") == "1":
         cmd.append("--enable-cuda-graphs")
@@ -80,9 +82,18 @@ def wait_for_server(proc: subprocess.Popen, timeout_s: float) -> None:
 
 
 def main() -> None:
+    model_dir = resolve_model_dir()
+    if env("RUNPOD_LB", "0") == "1":
+        # Load-balancing endpoint: Runpod routes HTTP straight to this container's $PORT and
+        # polls /ping, so the server itself is the worker (no job wrapper, no SDK; streaming
+        # is the server's own SSE). Set PORT and PORT_HEALTH on the endpoint to the same value.
+        port = env("PORT", "8000")
+        cmd = serve_command(model_dir, host="0.0.0.0", port=int(port))
+        print("[worker] load-balancing mode, exec: " + " ".join(shlex.quote(c) for c in cmd), flush=True)
+        sys.stdout.flush()
+        os.execv(sys.executable, cmd)
     import runpod
 
-    model_dir = resolve_model_dir()
     cmd = serve_command(model_dir)
     print("[worker] starting: " + " ".join(shlex.quote(c) for c in cmd), flush=True)
     t0 = time.monotonic()

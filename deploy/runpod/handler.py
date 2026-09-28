@@ -23,6 +23,7 @@ relays them to the caller); otherwise the parsed JSON response is yielded once.
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, AsyncIterator
 
 import httpx
@@ -30,6 +31,11 @@ import httpx
 DEFAULT_CHAT_ROUTE = "/v1/chat/completions"
 DEFAULT_COMPLETION_ROUTE = "/v1/completions"
 REQUEST_TIMEOUT_S = float(os.environ.get("REQUEST_TIMEOUT", "3600"))
+# Every yield of a streaming job is one call from the worker to Runpod's job-stream API
+# (~100 ms round trip, and rate-limited across an endpoint), so yielding per server write
+# capped a single stream at ~9 tokens/s while the engine sat idle. Chunks are coalesced for
+# this long before they go out; 0 disables it. (A load-balancing endpoint has no such hop.)
+STREAM_FLUSH_S = float(os.environ.get("STREAM_FLUSH_MS", "100")) / 1000.0
 
 
 def normalize_job_input(job_input: dict[str, Any]) -> tuple[str, str, dict[str, Any] | None]:
@@ -54,6 +60,29 @@ def normalize_job_input(job_input: dict[str, Any]) -> tuple[str, str, dict[str, 
 
 def _error(message: str, error_type: str = "worker_error") -> dict[str, Any]:
     return {"error": {"message": message, "type": error_type, "code": None}}
+
+
+async def _coalesced(chunks: AsyncIterator[str], flush_s: float) -> AsyncIterator[str]:
+    """Join `chunks` into one string per `flush_s` window (the first chunk of a window
+    starts its clock, so an idle stream still delivers its first token at once)."""
+    if flush_s <= 0:
+        async for chunk in chunks:
+            if chunk:
+                yield chunk
+        return
+    buf: list[str] = []
+    started = 0.0
+    async for chunk in chunks:
+        if not chunk:
+            continue
+        if not buf:
+            started = time.monotonic()
+        buf.append(chunk)
+        if time.monotonic() - started >= flush_s:
+            yield "".join(buf)
+            buf = []
+    if buf:
+        yield "".join(buf)
 
 
 def make_handler(client: httpx.AsyncClient, served_model: str | None = None,
@@ -82,9 +111,8 @@ def make_handler(client: httpx.AsyncClient, served_model: str | None = None,
                     yield _error(f"pagedserve returned HTTP {resp.status_code}: {detail}")
                     return
                 if wants_stream:
-                    async for chunk in resp.aiter_text():
-                        if chunk:
-                            yield chunk
+                    async for chunk in _coalesced(resp.aiter_text(), STREAM_FLUSH_S):
+                        yield chunk
                 else:
                     raw = await resp.aread()
                     yield httpx.Response(200, content=raw).json()
