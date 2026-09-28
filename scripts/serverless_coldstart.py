@@ -48,15 +48,28 @@ def lb_request(client: httpx.Client, model: str, max_tokens: int, timeout_s: flo
 
 
 def queue_request(client: httpx.Client, max_tokens: int, timeout_s: float) -> dict:
+    """One job through /runsync; when Runpod's 90 s runsync cap returns IN_QUEUE /
+    IN_PROGRESS (a long cold start), keep polling /status/<id> so the record carries the
+    job's final delayTime and the true wall time."""
     body = {"input": {"prompt": PROMPT, "sampling_params": {"max_tokens": max_tokens, "ignore_eos": True}}}
     t0 = time.perf_counter()
     r = client.post("/runsync", json=body, timeout=timeout_s)
-    t1 = time.perf_counter()
-    out = {"status": r.status_code, "total_s": t1 - t0}
     try:
         j = r.json()
     except ValueError:
         j = {}
+    job_id = j.get("id")
+    deadline = t0 + timeout_s
+    while r.status_code == 200 and j.get("status") in ("IN_QUEUE", "IN_PROGRESS") and job_id \
+            and time.perf_counter() < deadline:
+        time.sleep(2.0)
+        r = client.get(f"/status/{job_id}", timeout=30.0)
+        try:
+            j = r.json()
+        except ValueError:
+            j = {}
+    t1 = time.perf_counter()
+    out = {"status": r.status_code, "total_s": t1 - t0}
     out["ok"] = r.status_code == 200 and j.get("status") == "COMPLETED"
     out["job_status"] = j.get("status")
     out["delay_ms"] = j.get("delayTime")          # Runpod: queue wait incl. worker start
