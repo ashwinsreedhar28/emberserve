@@ -220,7 +220,7 @@ config and a full 7B-shaped projection; `PAGEDSERVE_INT8_KERNEL=0` is the torch 
 
 ### Tensor parallelism
 
-Needs a pod with two GPUs (2x A100 SXM); `nvidia-smi` must list both. The dense 7B on
+Needs a pod with two GPUs (2x A100 SXM; any type works, the comparison is TP1 vs TP2 vs vLLM TP2 on the same GPU); `nvidia-smi -L` must list both. The dense 7B on
 two ranks against one, and against vLLM on two:
 
 ```bash
@@ -240,11 +240,34 @@ python -m pagedserve.bench.run_vllm_baseline --server vllm --model models/Qwen2.
 deactivate
 ```
 
+Measured Sep 27 on 2× A100 SXM (results in `results/*_tp2.json`, README "Tensor
+parallelism"): batch-1 step 10.09 → 7.65 ms, saturation 3,166 → 4,485 tok/s (vLLM TP2:
+4,949; 6.6 ms TPOT at 1 req/s vs our 7.4). The 0.5B/7B TP1 rows from the single-A100 pod
+are the comparison; the same GPU type matters more than the same pod.
+
 `PAGEDSERVE_TP_LOG_DIR=/tmp` writes each worker's output to `tp_worker_<rank>.log` there
-(otherwise it shares the driver's stderr). If graph capture fails with an NCCL error, run
-without `--enable-cuda-graphs` first to separate the sharding from the capture: the
-collectives are captured inside the graphs (torch's NCCL process group supports capture
-once the communicator exists, which the warmup guarantees).
+(otherwise it shares the driver's stderr). `kill -USR1 <pid>` on any rank dumps every
+thread's Python stack (faulthandler is registered in `init_tp`), and
+`-o faulthandler_timeout=120` does the same for a pytest run that has gone quiet. What a
+hang looks like and what it was, from the first two-GPU session:
+
+* Both GPUs at **100%** with nothing printed: two NCCL kernels spinning on each other,
+  i.e. the ranks issued different collectives (here: the golden check projecting every
+  prompt position on the driver while the worker ran the plan's last row — different
+  all-gather shapes). Fixed by sending the choice through the plan (`step_logits`).
+* Both GPUs at **0%**, worker gone, driver stuck in `destroy_process_group` /
+  `_abort_process_group`: NCCL will not tear a communicator down while a CUDA graph that
+  captured its collectives exists. `shutdown()` now releases the graphs on every rank
+  first, then aborts the group (`ncclCommAbort`, after a device sync), then waits for the
+  worker processes; orderly destroy also blocks when the peer has already exited.
+* Both at 0% with the worker alive and the driver in a gloo broadcast: the driver raised
+  mid-step and `shutdown()` tried to say "stop" to a rank blocked in a collective. It now
+  kills the workers when a step was left open, so the exception surfaces.
+
+If graph capture fails with an NCCL error, run without `--enable-cuda-graphs` first to
+separate the sharding from the capture: the collectives are captured inside the graphs
+(torch's NCCL process group supports capture once the communicator exists, which the
+warmup guarantees).
 
 ## Saturation stalls: the step log and the GC knob
 

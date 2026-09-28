@@ -23,7 +23,7 @@ to measure how far a one-person implementation lands from it on the same GPU and
 
 Correctness gate: greedy output is token-for-token identical to Hugging Face on 7 prompts x
 64 tokens, and prompt logits match within 1e-3, on every backend (fp32 exact; fp16 held to a
-self-calibrated tie-break rule described below). 343 CPU tests on a 2-layer random-weight model (no download, no GPU) and ~90 GPU tests.
+self-calibrated tie-break rule described below). 345 CPU tests on a 2-layer random-weight model (no download, no GPU) and ~95 GPU tests, five of them on two GPUs.
 
 ## Headline numbers
 
@@ -312,8 +312,56 @@ CUDA graphs with the rest of the forward. Checkpoints are sliced as they are rea
 exits on its own. Exactness: the two-process CPU tests (`tests/test_tensor_parallel.py`)
 compare a TP=2 gloo engine token-for-token with the single-process engine through the
 plain, async, chunked-prefill and speculative paths and through the engine-core
-process. Latent attention and MoE are single-GPU for now. Numbers need a 2-GPU pod
-(`README_GPU.md`, "Tensor parallelism").
+process; on the GPU (`tests/test_tp_gpu.py`) the tiny model through full-step graphs,
+piecewise graphs + async and eager chunked prefill, and Qwen2.5-0.5B on two GPUs against
+one. The 7B golden gate through TP=2 is ALL OK (6/7 prompts exact, one fp16 tie-break: the
+row-parallel projections sum their halves in a different order). Latent attention and MoE
+are single-GPU for now.
+
+Measured on 2× A100 SXM (`results/pagedserve_7b_flash_tp2.json`, `results/vllm_7b_tp2.json`,
+`results/profile_7b_tp2.json`), against the single-GPU rows from the same GPU type:
+
+| Qwen2.5-7B fp16 | pagedserve TP1 | pagedserve TP2 | vLLM TP1 | vLLM TP2 |
+|---|---|---|---|---|
+| batch-1 decode step (`profile_step`) | 10.09 ms | **7.65 ms** | | |
+| TPOT p50 @ 1 req/s | 10.2 ms | **7.4 ms** | 10.2 ms | 6.6 ms |
+| TPOT p50 @ 16 req/s | 16.5 ms | 11.2 ms | 11.5 ms | 7.1 ms |
+| TTFT p50 @ 1 req/s | 38.7 ms | 38.6 ms | 37.2 ms | 24.9 ms |
+| throughput @ 16 req/s | 2,036 tok/s | 2,211 | 2,050 | 2,283 |
+| saturation (200-request burst) | 3,166 tok/s | **4,485** (1.42×) | 3,188 | 4,949 (1.55×) |
+
+![7B TP1/TP2 vs vLLM: TPOT vs offered load](results/plots/7b_tp/tpot_vs_rate.png)
+
+So the second GPU buys what the design says it should — the batch-1 step is the weight
+read and it fell 24% (the ideal is 50%; the rest is communication), saturation rose 42% —
+and vLLM gets more out of it: 91% of its TP2 throughput at saturation, parity to
+16 req/s, and behind on latency at every rate (7.4 vs 6.6 ms at 1 req/s, 11.2 vs 7.1 at
+16). The gap is the collective itself. A layer's two all-reduces are torch's NCCL ops,
+and at `[1, 3584]` fp16 an NCCL all-reduce over NVLink is latency, ~25 µs, times 56 per
+step ≈ 1.4 ms of the 7.65 ms; vLLM issues the same 56 through its custom NVLink
+all-reduce kernel (one CUDA kernel reading the peer's buffer directly, well under 10 µs
+each). With load the slope is steeper than vLLM's for the same reason multiplied: at 7B
+the mixed prefill+decode step runs eagerly (piecewise graphs are off above 4 GB), so
+each of its 56 all-reduces also pays a host-side launch, and `profile_step` shows the
+TP2 step *slower* than TP1 at batch 128 (13.3 vs ~10.8 ms), which is where the
+saturation ratio comes from. TTFT does not move under TP2 (38.6 vs 38.7 ms) while vLLM's
+drops from 37 to 25: the prefill step is on the same eager path, and it is the next thing
+to profile. The fix on the roadmap is the standard one, a custom all-reduce for small
+messages (or fusing the all-reduce into the RMSNorm that follows it), plus piecewise
+graphs for the TP mixed step so the collectives replay from the graph.
+
+Three things the first two-GPU run taught, all in the shutdown path rather than the math
+(the CPU tests had every collective right): NCCL will not destroy *or* abort a
+communicator while a CUDA graph that captured its collectives still exists (the process
+sat in `ncclCommDestroy` forever; `LLMEngine.release_graphs()` now runs on every rank
+before the group goes, and the group is aborted rather than destroyed, which also
+survives a peer that already exited); a driver that fails mid-step must kill its
+workers instead of broadcasting "stop" to ranks blocked in a collective nothing pairs
+with (otherwise the hang hides the exception); and the golden check's all-position
+logits must travel through the step plan (`LLMEngine.step_logits`), because calling the
+model directly on the driver while the worker ran the plan's last-row projection was an
+all-gather of `[n, vocab/2]` against `[1, vocab/2]` — two NCCL kernels spinning at 100%
+on both GPUs for as long as you let them.
 
 ## Correctness
 
@@ -681,7 +729,7 @@ prompt ids drawn from each model's own vocabulary.
 | model | arch | golden vs HF | batch-1 forward | weight-read floor | saturation tok/s, pagedserve / vLLM | TPOT p50 @ 8 req/s |
 |---|---|---|---:|---:|---:|---:|
 | Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **16,635 / 16,269 (102%)** ⁰ | **2.0** / 2.1 ms |
-| Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16) | 10.1 ms | ~10 ms | **3,166 / 3,188 (99%)** | 12.6 / 10.6 ms |
+| Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16; TP2: 6/7 exact, one tie-break) | 10.1 ms (TP2: 7.65) | ~10 ms | **3,166 / 3,188 (99%)**; TP2 on 2× A100: 4,485 / 4,949 (91%) | 12.6 / 10.6 ms (TP2: 9.8 / 7.3) |
 | DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | **2,797 / 2,823 (99%)** ¹ | 14.9 / 12.2 ms |
 | Moonshot Moonlight-16B-A3B-Instruct | deepseek_v3, 27L, MLA (kv_lora 512 + rope 64), 64 experts top-6 + 2 shared, 3B active | all tokens (bf16; 2–3 tie-breaks inside noise, both paths) | 6.2 ms ² | ~3 ms (3B active + 0.7 GB lm_head) | **2,697 / 3,223 (84%)** ³ | 18.8 / 13.4 ms ³ |
 
@@ -826,7 +874,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 * Hosted-API footnote (DeepSeek, Kimi via OpenRouter) through `--base-url`.
 * Speculative decoding: n-gram lookup implemented (`--speculative-ngram`); 16% acceptance on ShareGPT text and a loss at 0.5B and 7B as built. Next: a fixed-k draft step captured as a CUDA-graph bucket, async scheduling kept on (verify on the device), then a draft-model proposer.
 * Weight-only int8: batch-1 step −37% on the 7B, TPOT 6.6 vs vLLM 10.2 ms at 1 req/s; the large-M GEMM still trails cuBLAS by 31% at batch 128, so saturation loses — next is a better large-M kernel (or dequantize-then-cuBLAS for prefill), then W8A8 with `torch._int_mm` for the compute-bound end.
-* Tensor parallelism implemented (`--tensor-parallel-size 2`, dense models); 7B numbers on a 2-GPU pod pending; MLA/MoE sharding after that.
+* Tensor parallelism: TP2 on the 7B is 1.42× at saturation and −24% on the batch-1 step vs vLLM's 1.55× and a 6.6 ms TPOT; the gap is 56 NCCL all-reduces per step at ~25 µs each. Next: a custom small-message all-reduce over NVLink (or all-reduce fused into the following RMSNorm), piecewise graphs for the TP mixed step, a prefill-step profile (TTFT did not improve under TP2), then MLA/MoE sharding.
 * Runpod Serverless: worker + Dockerfile in `deploy/runpod/`, endpoint not yet deployed.
 
 ## License
