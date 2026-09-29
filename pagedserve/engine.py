@@ -27,7 +27,9 @@ from pagedserve import dist as tpdist
 from pagedserve.attn.base import AttentionBackend, AttnMetadata
 from pagedserve.attn.naive import NaiveAttentionBackend
 from pagedserve.attn.paged_torch import PagedTorchAttentionBackend
+from pagedserve import steptrace
 from pagedserve.config import EngineConfig, ModelConfig
+from pagedserve.devutil import index_tensor
 from pagedserve.kv.block_manager import BlockManager
 from pagedserve.kv.cache import PagedKVCache
 from pagedserve.model.qwen2 import Qwen2ForCausalLM
@@ -76,6 +78,7 @@ class _PendingStep:
     sampled_dev: torch.Tensor
     host: torch.Tensor | None = None
     event: torch.cuda.Event | None = None
+    trace: "steptrace.StepRecord | None" = None
 
     def tokens(self) -> list[int]:
         if self.event is not None:
@@ -184,6 +187,8 @@ class LLMEngine:
         # come, and `shutdown()` must kill them rather than wait on a broadcast of its own.
         self._tp_step_open = False
 
+        self.boot_phases: dict[str, float] = {}
+        t_phase = time.perf_counter()
         num_blocks = engine_config.num_gpu_blocks or default_num_blocks(self.local_config, engine_config)
         num_blocks = tpdist.all_reduce_min(num_blocks)  # every rank's cache has the same shape
         engine_config.num_gpu_blocks = num_blocks
@@ -203,6 +208,7 @@ class LLMEngine:
         self.scheduler = Scheduler(engine_config, self.block_manager)
         self.backend: AttentionBackend = self._make_backend(num_blocks)
         self.sampler = Sampler(self.device)
+        self.boot_phases["kv_cache_s"] = time.perf_counter() - t_phase  # sizing + allocation
         # Optional CUDA-graph decode runner (attn/cuda_graphs.py); installed on GPU only.
         self.graph_runner = None
         if use_graphs:
@@ -211,7 +217,9 @@ class LLMEngine:
                 self.model, self.backend, max_model_len=engine_config.max_model_len,
                 block_size=engine_config.block_size, scratch_block=self.scratch_block,
                 max_batch=engine_config.max_num_seqs, device=self.device)
+            t_phase = time.perf_counter()
             self.graph_runner.capture()
+            self.boot_phases["capture_full_graphs_s"] = time.perf_counter() - t_phase
         self.piecewise_runner = None
         if use_graphs and engine_config.piecewise_cuda_graphs:
             from pagedserve.attn.piecewise_graphs import PiecewiseGraphRunner, token_buckets
@@ -220,7 +228,9 @@ class LLMEngine:
                 self.model, self.backend, max_tokens=max_tokens,
                 buckets=token_buckets(max_tokens, engine_config.piecewise_bucket_step),
                 device=self.device)
+            t_phase = time.perf_counter()
             self.piecewise_runner.capture()
+            self.boot_phases["capture_piecewise_graphs_s"] = time.perf_counter() - t_phase
         elif engine_config.piecewise_cuda_graphs:
             warnings.warn("piecewise_cuda_graphs ignored: needs enable_cuda_graphs on CUDA",
                           stacklevel=2)
@@ -254,6 +264,26 @@ class LLMEngine:
         # Speculation counters (drafts proposed / accepted), for /metrics and the tests.
         self.spec_drafted = 0
         self.spec_accepted = 0
+        # Per-step trace (steptrace.py), only with PAGEDSERVE_STEP_TRACE set; driver only.
+        self._tracer: steptrace.StepTracer | None = None
+        self._open_trace()
+
+    def _open_trace(self) -> None:
+        path = steptrace.trace_path()
+        if path is None or not self.tp.is_driver:
+            return
+        if self._tracer is not None:
+            self._tracer.close()
+        self._tracer = steptrace.StepTracer(path, cuda=self.device.type == "cuda",
+                                            boot=self.boot_phases)
+
+    def _trace_record(self, so: SchedulerOutput, t_start: float, sched_ms: float) -> "steptrace.StepRecord":
+        graph = self.graph_runner is not None and not so.is_prefill
+        piecewise = self.piecewise_runner is not None and not graph
+        kind, n_dec, n_pre, n_pre_seqs, max_chunk = steptrace.classify(list(so.query_lens), graph, piecewise)
+        return steptrace.StepRecord(step=self._step_count, kind=kind, n_seqs=len(so.scheduled),
+                                    n_decode=n_dec, n_prefill_tokens=n_pre, n_prefill_seqs=n_pre_seqs,
+                                    max_chunk=max_chunk, t_start=t_start, host_sched_ms=sched_ms)
 
     # ---- construction -----------------------------------------------------------
     def _make_backend(self, num_blocks: int) -> AttentionBackend:
@@ -303,11 +333,18 @@ class LLMEngine:
         if engine_config.tensor_parallel_size > 1:
             return cls.launch_tp(tpdist.WorkerSpec(engine_config, model_dir=str(model_dir)),
                                  load_tokenizer=load_tokenizer)
+        t0 = time.perf_counter()
         model = load_model(model_dir, device=engine_config.device, dtype=engine_config.dtype)
+        if engine_config.device.startswith("cuda") and torch.cuda.is_available():
+            torch.cuda.synchronize()  # the load's copies are done: the phase is honest
+        load_s = time.perf_counter() - t0
+        quant_s = 0.0
         if engine_config.quantization:
             from pagedserve.model.quant import quantize_model
 
+            t0 = time.perf_counter()
             quantize_model(model, engine_config.quantization)
+            quant_s = time.perf_counter() - t0
         model_config = ModelConfig.from_hf_dir(model_dir)
         tokenizer = None
         if load_tokenizer and has_tokenizer(model_dir):
@@ -315,7 +352,11 @@ class LLMEngine:
                 tokenizer = Tokenizer(model_dir)
             except ImportError:
                 tokenizer = None
-        return cls(model, model_config, engine_config, tokenizer)
+        engine = cls(model, model_config, engine_config, tokenizer)
+        engine.boot_phases = {"load_weights_s": load_s, **({"quantize_s": quant_s} if quant_s else {}),
+                              **engine.boot_phases}
+        engine._open_trace()  # (re-)writes the trace header with the load phase included
+        return engine
 
     @classmethod
     def launch_tp(cls, spec: "tpdist.WorkerSpec", load_tokenizer: bool = True) -> "LLMEngine":
@@ -441,19 +482,39 @@ class LLMEngine:
     # ---- the step ---------------------------------------------------------------------
     @torch.inference_mode()
     def step(self) -> list[RequestOutput]:
-        if self.async_scheduling:
-            return self._step_async()
+        tr = self._tracer
+        if tr is None:
+            return self._step_async() if self.async_scheduling else self._step_sync()
+        tr.begin_step()
+        self._trace_current = None
+        try:
+            return self._step_async() if self.async_scheduling else self._step_sync()
+        finally:
+            tr.end_step(self._trace_current)
+
+    def _step_sync(self) -> list[RequestOutput]:
+        tr = self._tracer
+        t_sched = time.perf_counter()
         sched_out = self.scheduler.schedule()
         for req in sched_out.preempted:
             # Recompute-on-readmit: the backend must drop whatever it held for this seq.
             self.backend.free_sequence(req.seq_id)
         self.last_step_scheduled = not sched_out.is_empty
         if sched_out.is_empty:
+            if tr is not None:
+                tr.idle()
             return []
         self._step_count += 1
+        rec = None
+        if tr is not None:
+            t_built = time.perf_counter()
+            rec = self._trace_current = self._trace_record(sched_out, t_sched, (t_built - t_sched) * 1e3)
 
         input_ids, meta = self._build_inputs(sched_out)
         t0 = time.perf_counter()
+        if rec is not None:
+            rec.host_build_ms = (t0 - t_built) * 1e3
+            rec.ev_start = tr.event()
         logits = self._forward(input_ids, meta, sched_out)
         t1 = time.perf_counter()
         # Only rows whose prefill completes this step get a token; a partial prefill
@@ -467,16 +528,23 @@ class LLMEngine:
         else:
             idx = [i for i, c in enumerate(complete) if c]
             reqs = [sched_out.scheduled[i] for i in idx]
-            sampled_rows = self.sampler.sample(logits[idx], reqs) if idx else []
+            sampled_rows = (self.sampler.sample(logits.index_select(0, index_tensor(idx, torch.long, logits.device)), reqs)
+                            if idx else [])
             sampled = [None] * len(complete)
             for i, tok in zip(idx, sampled_rows, strict=True):
                 sampled[i] = tok
         t2 = time.perf_counter()
+        if rec is not None:
+            rec.ev_end = tr.event()
+            rec.host_launch_ms = (t1 - t0) * 1e3
 
         self._advance(sched_out)
         outputs = self._postprocess(sched_out, sampled)
         if self.spec_k:
             self._propose_drafts(sched_out)
+        if rec is not None:
+            rec.host_resolve_ms = (time.perf_counter() - t1) * 1e3  # sample (a sync) + postprocess
+            tr.finish(rec)
         if self.keep_stats:
             st = self.block_manager.stats()
             self.stats.append(StepStats(
@@ -563,15 +631,25 @@ class LLMEngine:
         and turned into outputs. Requests that finished meanwhile (aborted, or ended by
         the previous step's token) are skipped when this step resolves.
         """
+        tr = self._tracer
+        t_sched = time.perf_counter()
         sched_out = self.scheduler.schedule()
         for req in sched_out.preempted:
             self.backend.free_sequence(req.seq_id)
         self.last_step_scheduled = not sched_out.is_empty
         launched: _PendingStep | None = None
+        rec = None
         if not sched_out.is_empty:
             self._step_count += 1
+            if tr is not None:
+                t_built = time.perf_counter()
+                rec = self._trace_current = self._trace_record(sched_out, t_sched,
+                                                               (t_built - t_sched) * 1e3)
             input_ids, meta = self._build_inputs(sched_out)
             t0 = time.perf_counter()
+            if rec is not None:
+                rec.host_build_ms = (t0 - t_built) * 1e3
+                rec.ev_start = tr.event()
             logits = self._forward(input_ids, meta, sched_out)
             complete = sched_out.prefill_complete
             if all(complete):
@@ -580,8 +658,10 @@ class LLMEngine:
             else:
                 idx = [i for i, c in enumerate(complete) if c]
                 reqs = [sched_out.scheduled[i] for i in idx]
-                sampled_dev = (self.sampler.sample_tensor(logits[idx], reqs) if idx
-                               else torch.empty(0, dtype=torch.int64, device=logits.device))
+                # (an index tensor from a Python list would be a synchronizing copy)
+                sampled_dev = (self.sampler.sample_tensor(
+                    logits.index_select(0, index_tensor(idx, torch.long, logits.device)), reqs)
+                    if idx else torch.empty(0, dtype=torch.int64, device=logits.device))
             host = event = None
             if self._host_bufs:
                 host = self._host_bufs[self._host_idx]
@@ -590,6 +670,9 @@ class LLMEngine:
                 event = torch.cuda.Event()
                 event.record()
             t1 = time.perf_counter()
+            if rec is not None:
+                rec.ev_end = tr.event()
+                rec.host_launch_ms = (t1 - t0) * 1e3
             self._advance(sched_out)
             # The rows sampled here own the pending tokens now; every other scheduled row
             # (a partial chunk) has nothing outstanding.
@@ -597,7 +680,7 @@ class LLMEngine:
                 req.pending_row = None
             for j, req in enumerate(reqs):
                 req.pending_row = j
-            launched = _PendingStep(sched_out, reqs, sampled_dev, host, event)
+            launched = _PendingStep(sched_out, reqs, sampled_dev, host, event, trace=rec)
             if self.keep_stats:
                 st = self.block_manager.stats()
                 self.stats.append(StepStats(
@@ -611,7 +694,14 @@ class LLMEngine:
         if self._pending is not None:
             # Rows re-sampled by the step just launched keep their (new) pending_row.
             keep = {id(r) for r in launched.sampled_reqs} if launched is not None else set()
+            t_res = time.perf_counter()
             outputs = self._resolve(self._pending, keep)
+            prev = self._pending.trace
+            if prev is not None and tr is not None:
+                prev.host_resolve_ms = (time.perf_counter() - t_res) * 1e3
+                tr.finish(prev)
+        if launched is None and tr is not None:
+            tr.idle()  # nothing queued behind: the next step's GPU gap is not host lag
         self._pending = launched
         return outputs
 

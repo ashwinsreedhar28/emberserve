@@ -30,6 +30,7 @@ import torch
 from torch import Tensor
 
 from pagedserve.attn.base import AttnMetadata
+from pagedserve.devutil import index_tensor
 
 DEFAULT_BUCKETS = (1, 2, 4, 8, 16, 32, 64, 128, 256)
 
@@ -207,7 +208,7 @@ class CUDAGraphRunner:
             self.context_lens[:batch].copy_(meta.context_lens_t)
         else:
             self.context_lens[:batch].copy_(
-                torch.tensor(meta.context_lens, dtype=torch.int32, device=self.device))
+                index_tensor(meta.context_lens, torch.int32, self.device))
         if batch < bucket:
             self._fill_padding(batch)
         self.graphs[bucket].replay()

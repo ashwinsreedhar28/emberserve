@@ -42,6 +42,7 @@ from torch import Tensor
 
 from pagedserve.attn.base import AttentionBackend, AttnMetadata
 from pagedserve.config import ModelConfig
+from pagedserve.devutil import index_tensor
 from pagedserve.kv.cache import PagedKVCache
 
 # Upstream flash-attn paged-KV page size constraint (see module docstring).
@@ -83,7 +84,7 @@ def required_block_multiple(flash_attn_module=None) -> int:
 def context_lens_tensor(meta: AttnMetadata, device: torch.device) -> Tensor:
     """`meta.context_lens_t` (device int32) — built once per step and cached on meta."""
     if meta.context_lens_t is None:
-        meta.context_lens_t = torch.tensor(meta.context_lens, dtype=torch.int32, device=device)
+        meta.context_lens_t = index_tensor(meta.context_lens, torch.int32, device)
     return meta.context_lens_t
 
 
@@ -98,7 +99,9 @@ def block_tables_nonneg(meta: AttnMetadata) -> Tensor:
 class MixedPlan:
     """Per-step index plan for `_prefill_kvcache`: which packed rows are single-query decode
     rows (batched into one call) and which are multi-query prefill rows (padded among
-    themselves), with each group's context lengths and block tables already gathered."""
+    themselves), with each group's context lengths and block tables already gathered. The
+    index tensors come from `devutil.index_tensor`: built with `torch.tensor(..., device=
+    cuda)` they synchronized the stream once per mixed step (see devutil)."""
 
     __slots__ = ("dec_tokens", "dec_ctx", "dec_bt", "pre_rows", "pre_seqs", "pre_max_q",
                  "pre_ctx", "pre_bt", "pre_tokens", "pre_cu_q", "pre_cu_k", "pre_max_k")
@@ -135,12 +138,12 @@ class MixedPlan:
                 plan.pre_rows.append((start, n))
             start += n
         if dec_seqs:
-            idx = torch.tensor(dec_seqs, dtype=torch.long, device=device)
-            plan.dec_tokens = torch.tensor(dec_tokens, dtype=torch.long, device=device)
+            idx = index_tensor(dec_seqs, torch.long, device)
+            plan.dec_tokens = index_tensor(dec_tokens, torch.long, device)
             plan.dec_ctx = ctx.index_select(0, idx)
             plan.dec_bt = bt.index_select(0, idx)
         if plan.pre_seqs:
-            idx = torch.tensor(plan.pre_seqs, dtype=torch.long, device=device)
+            idx = index_tensor(plan.pre_seqs, torch.long, device)
             plan.pre_max_q = max(n for _, n in plan.pre_rows)
             plan.pre_ctx = ctx.index_select(0, idx)
             plan.pre_bt = bt.index_select(0, idx)
@@ -161,9 +164,9 @@ class MixedPlan:
             toks.extend(range(start, start + n))
             cu_q.append(cu_q[-1] + n)
             cu_k.append(cu_k[-1] + meta.context_lens[i])
-        self.pre_tokens = torch.tensor(toks, dtype=torch.long, device=device)
-        self.pre_cu_q = torch.tensor(cu_q, dtype=torch.int32, device=device)
-        self.pre_cu_k = torch.tensor(cu_k, dtype=torch.int32, device=device)
+        self.pre_tokens = index_tensor(toks, torch.long, device)
+        self.pre_cu_q = index_tensor(cu_q, torch.int32, device)
+        self.pre_cu_k = index_tensor(cu_k, torch.int32, device)
         self.pre_max_k = max(meta.context_lens[i] for i in self.pre_seqs)
 
 

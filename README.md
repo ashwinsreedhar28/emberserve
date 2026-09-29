@@ -260,8 +260,10 @@ graphs; `results/profile_7b_fp16.json`, `profile_7b_int8_v2.json`,
 | 1 | 10.2 ms | 10.2 ms | **6.6 ms** |
 | 4 | 10.2 | 11.1 | **7.9** |
 | 8 | 10.6 | 12.6 | 12.2 |
-| 16 | 11.5 | 16.5 | 26.3 |
+| 16 | 11.5¹ | 16.5¹ | 26.3 |
 | all at t=0, tok/s | 3,188 | 3,166 | 2,548 |
+
+¹ Sep 27; on Sep 29, same pod, vLLM 0.30.0: 16.05 vs 15.85 ms (see [The 7B tail, re-measured](#the-7b-tail-re-measured)).
 
 The first kernel halved the bytes and cut the batch-1 step 23%, not 50%: it launched
 56–72 programs for the A100's 108 SMs (`N / BN` tiles of a one-row output) and read at
@@ -325,10 +327,14 @@ Measured on 2× A100 SXM (`results/pagedserve_7b_flash_tp2.json`, `results/vllm_
 |---|---|---|---|---|
 | batch-1 decode step (`profile_step`) | 10.09 ms | **7.65 ms** | | |
 | TPOT p50 @ 1 req/s | 10.2 ms | **7.4 ms** | 10.2 ms | 6.6 ms |
-| TPOT p50 @ 16 req/s | 16.5 ms | 11.2 ms | 11.5 ms | 7.1 ms |
+| TPOT p50 @ 16 req/s | 16.5 ms¹ | 11.2 ms | 11.5 ms¹ | 7.1 ms |
 | TTFT p50 @ 1 req/s | 38.7 ms | 38.6 ms | 37.2 ms | 24.9 ms |
 | throughput @ 16 req/s | 2,036 tok/s | 2,211 | 2,050 | 2,283 |
 | saturation (200-request burst) | 3,166 tok/s | **4,485** (1.42×) | 3,188 | 4,949 (1.55×) |
+
+¹ Sep 27. Re-measured on one pod on Sep 29 against vLLM 0.30.0: 15.85 vs 16.05 ms, mean
+of four each ([The 7B tail, re-measured](#the-7b-tail-re-measured)); the TP2 columns
+were not re-run.
 
 ![7B TP1/TP2 vs vLLM: TPOT vs offered load](results/plots/7b_tp/tpot_vs_rate.png)
 
@@ -780,7 +786,8 @@ for a 42 ms tail. The first chunked run measured 2x *slower*: the mixed-step att
 padded every sequence's queries to the chunk length (100k padded queries per layer at 200
 decodes plus one chunk); the fix batches the decode rows and pads only the chunk rows.
 Async scheduling then took it to 99% (3,166 tok/s) and 16.5 ms at 16 req/s
-(`results/pagedserve_7b_flash_v7.json`). Piecewise CUDA graphs, the fix for the same
+(`results/pagedserve_7b_flash_v7.json`) — against the Sep 27 vLLM run's 11.5 ms, a gap
+that did not survive re-measurement ([below](#the-7b-tail-re-measured)). Piecewise CUDA graphs, the fix for the same
 eager mixed steps at 0.5B, *lose* 1% here and lengthen the tail (19.9 ms at 16 req/s): a
 7B chunk is compute-bound, so padding it up to a token bucket costs real FLOPs, whereas at
 0.5B the launches it removes were the whole cost. Hence the default is by size (piecewise
@@ -791,6 +798,56 @@ of the cost. Any `model_type: qwen2 | llama | mistral | deepseek_v2 | deepseek_v
 DeepSeek-V2-Lite are the same code paths as the rows above.
 
 ![7B TPOT vs offered load](results/plots/7b/tpot_vs_rate.png)
+
+#### The 7B tail, re-measured
+
+The Sep 27 comparison left one open item: TPOT p50 16.5 ms against vLLM's 11.5 at
+16 req/s. Before touching the engine, a per-step trace went in (`PAGEDSERVE_STEP_TRACE`,
+`scripts/step_trace_report.py`: every step's kind, batch shape, host phases, CUDA-event GPU
+time and the GPU idle gap before it) and the question was re-asked on one A100 SXM pod on
+Sep 29, with vLLM 0.30.0 installed the same way, alternating the two engines
+(`results/tail/`):
+
+| Qwen2.5-7B, 16 req/s, same pod | TPOT p50 | TTFT p50 | inter-chunk gap p50 / p90 / p99 (3 runs) | server TPOT mean |
+|---|---:|---:|---:|---:|
+| vLLM 0.30.0 (4 runs) | 16.05 ms (16.04–16.06) | 67.7 ms (66.4–68.7) | 11.9 / 26.6 / 48.9 ms | 15.35 ms |
+| pagedserve (4 runs) | **15.85 ms** (15.83–15.88) | **59.3 ms** (58.5–60.0) | 12.1 / 20.7 / 49.5 ms | 15.40 ms |
+
+The gap does not reproduce: at 16 req/s the two engines are at parity on TPOT (vLLM's
+server-side mean is 0.05 ms lower, the client-side p50 0.2 ms higher) and pagedserve's
+TTFT is 8 ms lower. The Sep 27 vLLM numbers (11.5 ms TPOT, 35 ms TTFT) came from a
+different pod on an unrecorded vLLM version — the setup script installs the latest — and
+stay in the tables above as what was measured then; `results/tail/vllm_version.txt` now
+records the version. The inter-chunk gaps (new in the load generator: the time between
+consecutive streamed chunks, i.e. each engine's step time as a client sees it) say why
+both land at ~16 ms: a decode step of the 7B is 12 ms, and a step that also carries a
+new prompt is 20–50 ms, in vLLM as in pagedserve.
+
+What the trace showed about pagedserve's own steps (`results/tail/report.txt`), at
+16 req/s:
+
+* **The GPU is never waiting for the host.** The idle gap before a step is 0.03 ms at the
+  mean and the p90, for decode and mixed steps alike: async scheduling keeps it fed.
+* **Mixed steps did synchronize the stream, and it cost TTFT, not TPOT.** Building the
+  mixed step's attention index tensors with `torch.tensor(list, device="cuda")` is a
+  copy plus a stream sync (`PAGEDSERVE_SYNC_DEBUG=1` found exactly three per mixed step,
+  none per decode step). Pinned, non-blocking copies (`pagedserve/devutil.py`) remove
+  them; the one run of the old path (`PAGEDSERVE_LEGACY_SYNC_COPIES=1`) measured TTFT p50
+  67.8 ms and TPOT 16.06 against 58.5–60.0 and 15.83–15.88 over four runs with the fix.
+* **The time is GPU work in the mixed steps.** 14% of steps carry a prompt; they average
+  39 decode rows plus a 301-token chunk and 28.1 ms of GPU time, against 11.1 ms for a
+  decode-only step. Per kernel (`scripts/profile_mixed_step.py`, 39 rows + 300 tokens):
+  of the 15.5 ms a mixed step adds, 12.8 ms is the linear layers at 196 TFLOP/s (63% of
+  the A100's fp16 peak; one cuBLAS tile shape, 256×128, is 18.9 ms of the step, and 339
+  rows fill its second 256-row tile a third of the way), 1.4 ms is attention (the prompt
+  rows go through flash-attn's split-KV kernel, padded, beside a second call for the
+  decode rows), and ~2.3 ms is unfused elementwise work (SiLU, RMSNorm, index copies).
+
+So the item closes as parity, not a fix. What is left is shared by both engines and is
+where a 7B step could beat vLLM's: GEMM tile quantization at odd row counts (the chunk
+size decides it), one paged varlen attention call per layer instead of two
+(`scripts/bench_mixed_attn.py`: 173 vs ≤393 µs per layer at 32 rows + 270 tokens, host
+launch time 139 vs 393 µs), and fusing the elementwise ops of an eager mixed step.
 
 ## Run it
 
@@ -975,7 +1032,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 ## Roadmap
 
 * 0.5B saturation is at parity (v9, 99% of vLLM on real text). The API process still caps at 26–29k tok/s on the pod's CPU and the core waits on the pipe a quarter of the time: a second API worker sharing the engine core, or the per-token path (detokenize + encode) inside the core's process, would lift the ceiling for both engines' comparison.
-* Piecewise graphs at 7B: `--piecewise-bucket-step 256` recovers the 1% saturation loss (3,168 vs v7's 3,166 tok/s) but not the tail (TPOT 18.3 vs 16.5 ms at 16 req/s; `results/pagedserve_7b_flash_v8b.json`), so the mode stays off above 4 GB; the remaining cost is the static-buffer copies and the eager attention launches, which a full-step graph does not pay.
+* 7B mixed steps (the tail at 16 req/s, now at parity with vLLM 0.30.0): the per-kernel profile says a mixed step's GEMMs run at 196 TFLOP/s with a 256-row tile a third full at 339 rows, attention takes two flash calls where one paged varlen call would do, and the elementwise ops run unfused. Each is shared with vLLM, so each is a chance to be ahead rather than to catch up. Piecewise graphs at 7B stay off above 4 GB (`--piecewise-bucket-step 256` recovered the 1% saturation loss but not the tail; `results/pagedserve_7b_flash_v8b.json`).
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
 * Speculative decoding: n-gram lookup implemented (`--speculative-ngram`); 16% acceptance on ShareGPT text and a loss at 0.5B and 7B as built. Next: a fixed-k draft step captured as a CUDA-graph bucket, async scheduling kept on (verify on the device), then a draft-model proposer.
