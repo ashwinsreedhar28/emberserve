@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import socket
 import sys
 import threading
@@ -33,20 +34,11 @@ from pagedserve.config import EngineConfig  # noqa: E402
 from pagedserve.server.app import create_app  # noqa: E402
 from pagedserve.server.async_engine import AsyncEngineCoreClient  # noqa: E402
 from pagedserve.server.engine_core import EngineSpec  # noqa: E402
+from pagedserve.server.fake_engine import ByteTokenizer  # noqa: E402
+from pagedserve.server.multi import MultiServer  # noqa: E402
 
 
-class _StubTokenizer:
-    """Bytes as tokens: enough for the detokenizer to run its real code path."""
-    eos_token_id = 1
-
-    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
-        return list(text.encode())
-
-    def decode(self, ids: list[int], skip_special_tokens: bool = False) -> str:
-        return bytes(i % 256 for i in ids).decode(errors="replace")
-
-    def decode_batch(self, batch: list[list[int]], skip_special_tokens: bool = False) -> list[str]:
-        return [self.decode(ids, skip_special_tokens) for ids in batch]
+_StubTokenizer = ByteTokenizer  # (kept for older notes)
 
 
 def main() -> int:
@@ -56,6 +48,10 @@ def main() -> int:
     ap.add_argument("--max-tokens", type=int, default=128)
     ap.add_argument("--client-procs", type=int, default=4)
     ap.add_argument("--repeats", type=int, default=3)
+    ap.add_argument("--api-workers", type=int, default=0,
+                    help="N >= 1: run the server as `serve --api-workers N` (supervisor, one core, N API "
+                         "processes; ratios between N are the point). 0 (default): the original "
+                         "in-process server thread, which also reports API CPU per token")
     ap.add_argument("--port", type=int, default=0)
     ap.add_argument("--cprofile", default=None, metavar="OUT",
                     help="cProfile the server's event-loop thread; prints the top functions and saves the stats")
@@ -67,7 +63,10 @@ def main() -> int:
             port = s.getsockname()[1]
     ecfg = EngineConfig(device="cpu", dtype=torch.float32, num_gpu_blocks=4096, max_num_seqs=1024,
                         max_model_len=4096)
-    client = AsyncEngineCoreClient(EngineSpec(ecfg, tiny=True, fake_step_ms=args.step_ms), _StubTokenizer())
+    espec = EngineSpec(ecfg, tiny=True, fake_step_ms=args.step_ms)
+    if args.api_workers >= 1:
+        return run_multi(args, espec, port)
+    client = AsyncEngineCoreClient(espec, ByteTokenizer())
     app = create_app(client, "fake")
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     prof = None
@@ -126,6 +125,53 @@ def main() -> int:
         prof.dump_stats(args.cprofile)
         st = pstats.Stats(prof)
         st.sort_stats("tottime").print_stats(30)
+    return 0
+
+
+def _proc_cpu_s(pids: list[int]) -> float | None:
+    """utime + stime of these processes from /proc (Linux); None elsewhere."""
+    tick = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+    total = 0.0
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                parts = f.read().rsplit(")", 1)[1].split()
+            total += (int(parts[11]) + int(parts[12])) / tick
+        except OSError:
+            return None
+    return total
+
+
+def run_multi(args: argparse.Namespace, espec: EngineSpec, port: int) -> int:
+    srv = MultiServer(espec, ByteTokenizer(), "fake", "127.0.0.1", port, args.api_workers,
+                      log_level="warning")
+    srv.start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        if not asyncio.run(wait_for_health(base, 120)):
+            print("server did not start", file=sys.stderr)
+            return 1
+        offered = args.n * 1e3 / args.step_ms
+        print(f"fake core: {args.n} requests x 1 token / {args.step_ms} ms = {offered:,.0f} tok/s offered; "
+              f"{args.max_tokens} tokens each; API workers {args.api_workers}; client procs {args.client_procs}")
+        pids = [p.pid for p in srv.workers]
+        for i in range(args.repeats):
+            trace = generate_trace(args.n, seed=i, request_rate=None, max_prompt_len=64,
+                                   max_output_len=args.max_tokens, vocab_size=256)
+            for r in trace:
+                r.output_len = args.max_tokens
+            c0 = _proc_cpu_s(pids)
+            t0 = time.perf_counter()
+            recs = run_http_benchmark_procs(base, "fake", trace, args.client_procs, timeout_s=300)
+            s = summarize(recs)
+            c1 = _proc_cpu_s(pids)
+            cpu = (f"API cpu/token {1e6 * (c1 - c0) / max(s.output_tokens, 1):.0f} us (all workers)"
+                   if c0 is not None and c1 is not None else "API cpu/token n/a")
+            print(f"run {i + 1}: delivered {s.throughput_tok_s:8,.0f} tok/s  ({100 * s.throughput_tok_s / offered:.0f}% of offered)  "
+                  f"TTFT p50/p99 {s.ttft_ms.p50:.0f}/{s.ttft_ms.p99:.0f} ms  TPOT p50/p99 {s.tpot_ms.p50:.2f}/{s.tpot_ms.p99:.2f} ms  "
+                  f"ok {s.completed}/{s.num_requests}  wall {time.perf_counter() - t0:.1f}s  {cpu}")
+    finally:
+        srv.stop()
     return 0
 
 

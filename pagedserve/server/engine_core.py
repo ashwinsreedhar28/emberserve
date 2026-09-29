@@ -93,12 +93,54 @@ def build_engine(spec: EngineSpec):
     return LLMEngine.from_pretrained(spec.model_dir, spec.engine_config, load_tokenizer=False)
 
 
-def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connection) -> None:
-    """Subprocess main. Protocol out: ("ready", info) once; then ("step", rows, snapshot)
-    per step, ("idle", snapshot) when the queue drains, ("failed", [request_ids], message)
-    for requests the engine could not serve, ("fatal", message) if the loop dies."""
+def _run_engine_core(spec: EngineSpec, cmd_conns: "Connection | list[Connection]",
+                     out_conns: "Connection | list[Connection]") -> None:
+    """Subprocess main. One (commands in, outputs out) pipe pair per API worker; with a
+    single pair this is the one-API-process server. Protocol out, per worker: ("ready",
+    info) once; then ("step", rows, snapshot) per step carrying only that worker's rows,
+    ("idle", snapshot) when the queue drains, ("failed", [request_ids], message) for its
+    requests the engine could not serve, ("fatal", message) if the loop dies.
+
+    With several API workers (`serve --api-workers N`, `serve_multi`) every request is
+    owned by the worker that added it: its rows, failures and stuck-queue aborts go back on
+    that worker's pipe only. A worker whose pipe closes has its requests aborted; the core
+    exits when every worker is gone (or on "stop", which only the single-worker client
+    sends)."""
+    from multiprocessing.connection import wait as mp_wait
+
+    if not isinstance(cmd_conns, list):
+        cmd_conns, out_conns = [cmd_conns], [out_conns]
+    n_workers = len(cmd_conns)
     parent = os.getppid()
     engine = None
+    live = list(range(n_workers))
+    owner: dict[str, int] = {}  # request id -> the worker that added it
+
+    def send(w: int, msg: tuple) -> None:
+        if w not in live:
+            return
+        try:
+            out_conns[w].send(msg)
+        except (BrokenPipeError, EOFError, OSError):
+            drop_worker(w)
+
+    def drop_worker(w: int) -> None:
+        if w in live:
+            live.remove(w)
+        if engine is None:
+            return
+        for rid in [r for r, o in owner.items() if o == w]:
+            owner.pop(rid, None)
+            engine.abort_request(rid)
+
+    def by_owner(request_ids: list[str]) -> dict[int, list[str]]:
+        out: dict[int, list[str]] = {}
+        for rid in request_ids:
+            w = owner.get(rid)
+            if w is not None:
+                out.setdefault(w, []).append(rid)
+        return out
+
     try:
         engine = build_engine(spec)
         engine.keep_stats = False
@@ -108,11 +150,12 @@ def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connectio
         if boot:  # where startup went (the cold-start budget), one line in the server log
             print("[boot] " + " · ".join(f"{k.removesuffix('_s')} {v:.2f} s" for k, v in boot.items()),
                   file=sys.stderr, flush=True)
-        out_conn.send(("ready", {"eos_token_ids": sorted(engine.eos_token_ids),
-                                 "boot_phases": boot,
-                                 "max_model_len": engine.config.max_model_len,
-                                 "vocab_size": engine.model_config.vocab_size,
-                                 "pid": os.getpid()}))
+        info = {"eos_token_ids": sorted(engine.eos_token_ids), "boot_phases": boot,
+                "max_model_len": engine.config.max_model_len,
+                "vocab_size": engine.model_config.vocab_size, "pid": os.getpid(),
+                "api_workers": n_workers}
+        for w in range(n_workers):
+            send(w, ("ready", info))
         sched = engine.scheduler
 
         def snapshot() -> dict[str, int | float]:
@@ -122,35 +165,55 @@ def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connectio
                     "kv_blocks_used": st.num_used, "kv_block_utilization": st.utilization,
                     "spec_drafted": engine.spec_drafted, "spec_accepted": engine.spec_accepted}
 
-        def handle(cmd: tuple) -> bool:
-            """Apply one command; True means stop."""
+        def handle(w: int, cmd: tuple) -> bool:
+            """Apply one command from worker `w`; True means stop."""
             kind = cmd[0]
             if kind == "stop":
                 return True
             if kind == "add":
                 req: CoreRequest = cmd[1]
+                if req.request_id in owner:
+                    send(w, ("failed", [req.request_id], f"duplicate request id {req.request_id!r}"))
+                    return False
                 try:
                     engine.add_request(req.request_id, req.prompt_token_ids, req.params,
                                        arrival_time=req.arrival_time)
+                    owner[req.request_id] = w
                 except Exception as exc:  # noqa: BLE001 - reported per request
-                    out_conn.send(("failed", [req.request_id], f"{type(exc).__name__}: {exc}"))
+                    send(w, ("failed", [req.request_id], f"{type(exc).__name__}: {exc}"))
             elif kind == "abort":
-                engine.abort_request(cmd[1])
+                if owner.get(cmd[1]) == w:
+                    owner.pop(cmd[1], None)
+                    engine.abort_request(cmd[1])
+            return False
+
+        def drain(timeout: float) -> bool:
+            """Apply every command waiting on any worker's pipe; True means stop."""
+            conns = {cmd_conns[w]: w for w in live}
+            for conn in mp_wait(list(conns), timeout):
+                w = conns[conn]
+                try:
+                    while conn.poll():
+                        if handle(w, conn.recv()):
+                            return True
+                except (EOFError, OSError):
+                    drop_worker(w)
             return False
 
         idle_reported = False
-        while True:
+        while live:
             if not engine.has_unfinished_requests():
                 if not idle_reported:  # metrics stay current while nothing is stepping
-                    out_conn.send(("idle", snapshot()))
+                    snap = snapshot()
+                    for w in list(live):
+                        send(w, ("idle", snap))
                     idle_reported = True
                 # Idle: block for a command (zero CPU), checking that the parent is alive.
-                while not cmd_conn.poll(0.5):
+                while live and not mp_wait([cmd_conns[w] for w in live], 0.5):
                     if os.getppid() != parent:
                         return
-            while cmd_conn.poll():  # drain everything that arrived since the last step
-                if handle(cmd_conn.recv()):
-                    return
+            if drain(0):
+                return
             if not engine.has_unfinished_requests():
                 continue
             idle_reported = False
@@ -171,31 +234,74 @@ def _run_engine_core(spec: EngineSpec, cmd_conn: Connection, out_conn: Connectio
                     # (the API process reports "fatal") rather than serving garbage.
                     raise
                 in_flight = [r.request_id for r in list(sched.running) + list(sched.waiting)]
+                groups = by_owner(in_flight)
                 engine.reset()
-                out_conn.send(("failed", in_flight,
-                               f"engine step failed: {type(exc).__name__}: {exc}"))
+                owner.clear()
+                for w, rids in groups.items():
+                    send(w, ("failed", rids, f"engine step failed: {type(exc).__name__}: {exc}"))
                 continue
             if not outputs:
                 if idle_before and waiting_before and not engine.last_step_scheduled:
                     stuck = sched.waiting[0].request_id
                     engine.abort_request(stuck)
-                    out_conn.send(("failed", [stuck],
-                                   "prompt is too long for the KV cache; it can never be scheduled"))
+                    w = owner.pop(stuck, None)
+                    if w is not None:
+                        send(w, ("failed", [stuck],
+                                 "prompt is too long for the KV cache; it can never be scheduled"))
                 continue
-            rows: list[StepRow] = [
-                (o.request_id, list(o.new_token_ids), o.finished,
-                 o.finish_reason.value if o.finish_reason else None)
-                for o in outputs]
-            out_conn.send(("step", rows, snapshot()))
+            snap = snapshot()
+            if n_workers == 1:
+                rows: list[StepRow] = [
+                    (o.request_id, list(o.new_token_ids), o.finished,
+                     o.finish_reason.value if o.finish_reason else None)
+                    for o in outputs]
+                for o in outputs:
+                    if o.finished:
+                        owner.pop(o.request_id, None)
+                send(0, ("step", rows, snap))
+                continue
+            per: dict[int, list[StepRow]] = {}
+            for o in outputs:
+                w = owner.get(o.request_id)
+                if w is None:
+                    continue  # its worker is gone
+                per.setdefault(w, []).append(
+                    (o.request_id, list(o.new_token_ids), o.finished,
+                     o.finish_reason.value if o.finish_reason else None))
+                if o.finished:
+                    owner.pop(o.request_id, None)
+            for w, rows in per.items():
+                send(w, ("step", rows, snap))
     except Exception:  # noqa: BLE001
-        try:
-            out_conn.send(("fatal", traceback.format_exc()))
-        except Exception:  # noqa: BLE001
-            pass
+        msg = ("fatal", traceback.format_exc())
+        for w in list(live):
+            try:
+                out_conns[w].send(msg)
+            except Exception:  # noqa: BLE001
+                pass
         raise
     finally:
         if engine is not None:
             engine.shutdown()  # tensor-parallel workers, if any
+
+
+def spawn_core(spec: EngineSpec, n_workers: int = 1) -> tuple[Any, list[tuple[Connection, Connection]]]:
+    """Start the engine core with one (commands, outputs) pipe pair per API worker. Returns
+    the process and, per worker, (command sender, output receiver) for its client."""
+    ctx = mp.get_context("spawn")
+    cmd_recvs, out_sends, chans = [], [], []
+    for _ in range(n_workers):
+        cmd_recv, cmd_send = ctx.Pipe(duplex=False)
+        out_recv, out_send = ctx.Pipe(duplex=False)
+        cmd_recvs.append(cmd_recv)
+        out_sends.append(out_send)
+        chans.append((cmd_send, out_recv))
+    proc = ctx.Process(target=_run_engine_core, args=(spec, cmd_recvs, out_sends),
+                       name="pagedserve-engine-core", daemon=True)
+    proc.start()
+    for c in cmd_recvs + out_sends:
+        c.close()
+    return proc, chans
 
 
 class EngineCoreProcess:
@@ -217,13 +323,7 @@ class EngineCoreProcess:
         return self._proc is not None and self._proc.is_alive()
 
     def start(self, ready_timeout_s: float = 900.0) -> dict[str, Any]:
-        cmd_recv, cmd_send = self._ctx.Pipe(duplex=False)
-        out_recv, out_send = self._ctx.Pipe(duplex=False)
-        self._proc = self._ctx.Process(target=_run_engine_core, args=(self.spec, cmd_recv, out_send),
-                                       name="pagedserve-engine-core", daemon=True)
-        self._proc.start()
-        cmd_recv.close()
-        out_send.close()
+        self._proc, [(cmd_send, out_recv)] = spawn_core(self.spec, 1)
         self._cmd_send, self._out_recv = cmd_send, out_recv
         deadline = time.monotonic() + ready_timeout_s
         while True:
@@ -269,3 +369,73 @@ class EngineCoreProcess:
                 c.close()
         self._proc = None
         self._cmd_send = self._out_recv = None
+
+
+class AttachedCore:
+    """An API worker's handle on a core it did not start (`serve_multi`): the same
+    interface as `EngineCoreProcess` over one pipe pair of a shared core. `stop()` only
+    closes this worker's pipes; the core's lifetime belongs to the supervisor, and the core
+    aborts whatever this worker still had in flight when its pipe closes."""
+
+    def __init__(self, cmd_send: Connection, out_recv: Connection, core_pid: int) -> None:
+        import threading
+
+        self._cmd_send: Connection | None = cmd_send
+        self._out_recv: Connection | None = out_recv
+        self.core_pid = core_pid
+        self.info: dict[str, Any] = {}
+        self._dead = False
+        self._send_lock = threading.Lock()
+
+    @property
+    def alive(self) -> bool:
+        if self._dead or self._out_recv is None:
+            return False
+        try:
+            os.kill(self.core_pid, 0)
+        except OSError:
+            return False
+        return True
+
+    def start(self, ready_timeout_s: float = 900.0) -> dict[str, Any]:
+        deadline = time.monotonic() + ready_timeout_s
+        while True:
+            msg = self.recv(timeout=1.0)
+            if msg is not None:
+                if msg[0] == "ready":
+                    self.info = msg[1]
+                    return self.info
+                if msg[0] == "fatal":
+                    raise RuntimeError(f"engine core failed to start:\n{msg[1]}")
+            elif not self.alive:
+                raise RuntimeError("engine core process exited during startup")
+            if time.monotonic() > deadline:
+                raise TimeoutError("engine core did not become ready")
+
+    def send(self, msg: tuple) -> None:
+        if msg[0] == "stop":
+            return  # a worker does not stop the shared core
+        assert self._cmd_send is not None
+        with self._send_lock:
+            self._cmd_send.send(msg)
+
+    def recv(self, timeout: float | None = None) -> tuple | None:
+        if self._out_recv is None:
+            return None
+        try:
+            if timeout is not None and not self._out_recv.poll(timeout):
+                return None
+            return self._out_recv.recv()
+        except (EOFError, OSError):
+            self._dead = True
+            return None
+
+    def stop(self, timeout_s: float = 10.0) -> None:  # noqa: ARG002 - same signature
+        for c in (self._cmd_send, self._out_recv):
+            if c is not None:
+                try:
+                    c.close()
+                except OSError:
+                    pass
+        self._cmd_send = self._out_recv = None
+        self._dead = True

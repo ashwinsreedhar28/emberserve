@@ -132,6 +132,10 @@ def build_parser() -> argparse.ArgumentParser:
                             "the GIL contention between SSE delivery and the step loop. Default: on "
                             "for --device cuda, off otherwise")
     serve.add_argument("--no-engine-process", dest="engine_process", action="store_false")
+    serve.add_argument("--api-workers", type=int, default=1,
+                       help="API processes sharing one engine core (tokenizer, stop strings and SSE "
+                            "per process, connections spread by SO_REUSEPORT); > 1 implies "
+                            "--engine-process. See server/multi.py")
 
     gen = sub.add_parser("generate", help="generate a completion for one prompt")
     _add_engine_args(gen)
@@ -153,6 +157,15 @@ def cmd_serve(args: argparse.Namespace) -> int:
     engine_process = args.engine_process
     if engine_process is None:
         engine_process = args.device.startswith("cuda")
+    if args.api_workers > 1:
+        if args.engine_process is False:
+            raise SystemExit("--api-workers > 1 needs the engine in its own process")
+        from pagedserve.server.engine_core import EngineSpec
+        from pagedserve.server.multi import MultiServer
+
+        spec = EngineSpec(engine_config_from_args(args), model_dir=args.model)
+        return MultiServer(spec, args.model, args.served_model_name or args.model, args.host,
+                           args.port, args.api_workers).run()
     app = build_app_from_args(args.model, engine_config_from_args(args), args.served_model_name,
                               engine_process=engine_process)
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

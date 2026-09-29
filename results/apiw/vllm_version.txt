@@ -1,0 +1,2 @@
+Name: vllm
+Version: 0.30.0

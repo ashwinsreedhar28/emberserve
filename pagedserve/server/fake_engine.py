@@ -137,3 +137,20 @@ class FakeEngine:
                                       text_delta="", metrics=metrics))
         s.running = still
         return outs
+
+
+class ByteTokenizer:
+    """Bytes as tokens: enough for the detokenizer to run its real code path with the fake
+    engine (`scripts/bench_api_layer.py`); module-level so API worker processes can unpickle
+    it."""
+
+    eos_token_id = 1
+
+    def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
+        return list(text.encode())
+
+    def decode(self, ids: list[int], skip_special_tokens: bool = False) -> str:
+        return bytes(i % 256 for i in ids).decode(errors="replace")
+
+    def decode_batch(self, batch: list[list[int]], skip_special_tokens: bool = False) -> list[str]:
+        return [self.decode(ids, skip_special_tokens) for ids in batch]
