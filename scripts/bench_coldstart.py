@@ -68,13 +68,16 @@ def commands(system: str, args: argparse.Namespace) -> tuple[list[str], dict[str
     raise ValueError(system)
 
 
-async def first_token(base: str, model: str, deadline: float) -> tuple[float, float, float]:
+async def first_token(base: str, model: str, deadline: float,
+                      proc: subprocess.Popen | None = None) -> tuple[float, float, float]:
     """Poll /health, then stream a 1-token completion. Perf-counter times: healthy, first
     byte, done."""
     async with httpx.AsyncClient(base_url=base, timeout=httpx.Timeout(30.0, connect=1.0)) as c:
         while True:
             if time.perf_counter() > deadline:
                 raise TimeoutError("server did not become healthy")
+            if proc is not None and proc.poll() is not None:
+                raise RuntimeError(f"server exited with code {proc.returncode} before it was healthy")
             try:
                 if (await c.get("/health")).status_code == 200:
                     break
@@ -147,7 +150,7 @@ def main() -> int:
             rec: dict = {"system": system, "run": r + 1, "cmd": cmd, "env": extra_env}
             try:
                 th, tf, td = asyncio.run(first_token(f"http://127.0.0.1:{args.port}", args.model,
-                                                     t0 + args.timeout_s))
+                                                     t0 + args.timeout_s, proc))
                 rec.update(ok=True, healthy_s=th - t0, first_token_s=tf - t0, done_s=td - t0)
             except Exception as exc:  # noqa: BLE001
                 rec.update(ok=False, error=f"{type(exc).__name__}: {exc}")

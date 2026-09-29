@@ -11,6 +11,9 @@ Q=models/Qwen3-8B
 M7=models/Qwen2.5-7B-Instruct
 V=/opt/vllm/bin/vllm
 mkdir -p results/coldstart results/qwen3
+# vLLM's torch (cu130) needs a CUDA 13 driver (>= 580); a 12.8 pod fails every vLLM run.
+/opt/vllm/bin/python -c "import torch; torch.cuda.init(); print('vllm torch', torch.__version__, 'sees', torch.cuda.get_device_name())" \
+  || { nvidia-smi | head -4; echo "vLLM's torch can't use this driver: deploy a pod with CUDA 13.0"; exit 1; }
 [[ -f $Q/config.json ]] || python scripts/download_model.py --repo Qwen/Qwen3-8B
 [[ -f $M7/config.json ]] || python scripts/download_model.py --repo Qwen/Qwen2.5-7B-Instruct
 /opt/vllm/bin/pip show vllm 2>/dev/null | head -2 > results/qwen3/vllm_version.txt || true
