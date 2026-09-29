@@ -51,7 +51,9 @@ weight-read floor and pagedserve reaches 99% of vLLM at saturation with chunked 
 async scheduling; DeepSeek-R1-Distill-Llama-8B (llama path) is also at 99%, and Moonlight-16B-A3B (DeepSeek-V3's
 latent attention + MoE) reaches 84% on the synthetic trace and 89% on real text with a
 batch-1 step of 6.2 ms against vLLM's 7.1 ms TPOT. The [gap analysis](#the-gap-against-vllm) has the per-phase profile and the nine
-fixes it drove, in order; [Models](#models) has the per-model table.
+fixes it drove, in order; [Models](#models) has the per-model table. With two API
+processes (`serve --api-workers 2`) the 0.5B reaches 28.0k tok/s on real text against
+vLLM 0.30.0's 25.1k on the same pod, 112% ([Two API processes](#two-api-processes---api-workers)).
 
 ## How it works
 
@@ -630,6 +632,43 @@ still waits on the pipe a quarter of the time; the next step there is a second A
 or the per-token path inside the core's process, but at this point the two engines are
 delivering the same tokens per second through the same kind of bottleneck.
 
+#### Two API processes (`--api-workers`)
+
+So the next step was to split that process. `pagedserve serve --api-workers N`
+(`pagedserve/server/multi.py`) runs one engine core and N API processes: a supervisor
+binds one listening socket and every worker accepts on it, so whichever event loop is free
+takes the next connection. The core keeps one pipe pair per worker and sends each only the
+rows of the requests it added; a worker that dies has its requests aborted and the others
+keep serving; `/metrics` on any worker sums every worker's counters through shared memory,
+so the benchmark's server-side numbers stay right. (Not uvicorn's own `--workers`: each of
+its workers would build the app, and with it an engine core of its own.)
+
+With a clock instead of a model (`scripts/bench_api_layer.py --api-workers N`, 400k tok/s
+offered, `results/apiw/api_layer.txt`), the pod's API layer scales almost linearly: 37.8k
+tok/s with one worker, 75.0k with two (1.98×), 116k with four, at a flat ~25 µs of CPU per
+token. With the model, 0.5B, A100 SXM, the same pod for both engines, three saturation
+repeats each (`results/apiw/`), vLLM 0.30.0 with one and two API servers
+(`--api-server-count`):
+
+| 0.5B, 200 requests at t=0 | synthetic trace | ShareGPT text |
+|---|---:|---:|
+| pagedserve, 1 API worker | 16,585 tok/s | 25,256 |
+| pagedserve, **2 API workers** | **19,153** (+15%) | **28,025** (+11%) |
+| pagedserve, 4 API workers | 18,696 | 28,025 |
+| vLLM, 1 API server | 19,213 | 24,993 |
+| vLLM, 2 API servers | 19,380 | 25,069 |
+
+On real text two workers put pagedserve at **112% of vLLM** (28.0k vs 25.1k tok/s, vLLM
+given the same second API server), with client TPOT p50 3.8 ms against vLLM's 4.4–4.8. On
+the synthetic trace they restore parity: 19.2k against vLLM's 19.2–19.4k, or 95% against
+the ~20.2k of vLLM's runs after its first (each vLLM session's first synthetic run was
+17.3–17.6k). This pod's vLLM is faster on that trace than the Sep 27 run (19.2k against
+16.3k), which one API worker, at 16.6k as before, no longer matched. A second vLLM API
+server changes nothing for vLLM, and four pagedserve workers nothing over two: past two
+workers the limit is the engine core and its pipe (the core's step is ~2.5 ms at 200
+sequences, and it still pickles and sends every step's rows), which is the next place to
+look. `--api-workers` defaults to 1.
+
 The saturation TTFT column (630 vs 433 ms) turned out to be the load generator, not the
 server. Both engines' `/metrics` now carry latency sums measured from the request's
 arrival at the API process, and server-side the two engines' mean saturation TTFT is the
@@ -883,6 +922,9 @@ python -m pagedserve.cli serve --model models/Qwen2.5-0.5B-Instruct --device cud
   --attn-backend paged_triton --block-size 16 --enable-cuda-graphs --enable-prefix-caching
 ```
 
+Add `--api-workers 2` for high-concurrency serving of a small model: two API processes in
+front of the one engine core ([Two API processes](#two-api-processes---api-workers)).
+
 ### On Runpod Serverless
 
 `deploy/runpod/` has a worker and a Dockerfile that bakes a model into the image. The
@@ -1031,7 +1073,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 
 ## Roadmap
 
-* 0.5B saturation is at parity (v9, 99% of vLLM on real text). The API process still caps at 26–29k tok/s on the pod's CPU and the core waits on the pipe a quarter of the time: a second API worker sharing the engine core, or the per-token path (detokenize + encode) inside the core's process, would lift the ceiling for both engines' comparison.
+* 0.5B saturation: `--api-workers 2` lifted it past vLLM on real text (28.0k vs 25.1k tok/s, 112%) and back to parity on the synthetic trace ([Two API processes](#two-api-processes---api-workers)). Four workers add nothing over two, so the next limit is the engine core's per-step pickling and sending; shared memory for the step's rows, or fewer bytes per row, is the next experiment.
 * 7B mixed steps (the tail at 16 req/s, now at parity with vLLM 0.30.0): the per-kernel profile says a mixed step's GEMMs run at 196 TFLOP/s with a 256-row tile a third full at 339 rows, attention takes two flash calls where one paged varlen call would do, and the elementwise ops run unfused. Each is shared with vLLM, so each is a chance to be ahead rather than to catch up. Piecewise graphs at 7B stay off above 4 GB (`--piecewise-bucket-step 256` recovered the 1% saturation loss but not the tail; `results/pagedserve_7b_flash_v8b.json`).
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
 * Chunked-prefill ablation on a long-prompt trace.
