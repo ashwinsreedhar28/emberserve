@@ -16,6 +16,7 @@ import itertools
 
 import torch
 
+from pagedserve.devutil import index_tensor
 from pagedserve.sched.request import FinishReason, Request
 
 _GENERATOR_KEY = "_generator"
@@ -127,12 +128,12 @@ class Sampler:
         greedy = [i for i, p in enumerate(params) if p.is_greedy]
         rand = [i for i, p in enumerate(params) if not p.is_greedy]
         if greedy:
-            g_idx = torch.tensor(greedy, device=logits.device)
+            g_idx = index_tensor(greedy, torch.long, logits.device)
             tokens[g_idx] = torch.argmax(logits[g_idx], dim=-1)
-        r_idx = torch.tensor(rand, device=logits.device)
+        r_idx = index_tensor(rand, torch.long, logits.device)
         sub = logits[r_idx]
-        temps = torch.tensor([params[i].temperature for i in rand],
-                             device=logits.device).unsqueeze(1)
+        temps = index_tensor([params[i].temperature for i in rand], torch.float32,
+                             logits.device).unsqueeze(1)
         sub = _filter_rows(sub / temps, [params[i].top_k for i in rand],
                            [params[i].top_p for i in rand])
         probs = torch.softmax(sub, dim=-1)
