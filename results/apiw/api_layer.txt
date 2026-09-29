@@ -1,0 +1,12 @@
+fake core: 200 requests x 1 token / 0.5 ms = 400,000 tok/s offered; 512 tokens each; API workers 1; client procs 4
+run 1: delivered   38,675 tok/s  (10% of offered)  TTFT p50/p99 238/641 ms  TPOT p50/p99 4.13/4.36 ms  ok 200/200  wall 5.3s  API cpu/token 26 us (all workers)
+run 2: delivered   36,895 tok/s  (9% of offered)  TTFT p50/p99 92/562 ms  TPOT p50/p99 4.79/4.96 ms  ok 200/200  wall 5.5s  API cpu/token 27 us (all workers)
+run 3: delivered   37,801 tok/s  (9% of offered)  TTFT p50/p99 200/706 ms  TPOT p50/p99 4.17/4.41 ms  ok 200/200  wall 5.6s  API cpu/token 26 us (all workers)
+fake core: 200 requests x 1 token / 0.5 ms = 400,000 tok/s offered; 512 tokens each; API workers 2; client procs 4
+run 1: delivered   76,625 tok/s  (19% of offered)  TTFT p50/p99 74/209 ms  TPOT p50/p99 2.13/2.28 ms  ok 200/200  wall 4.0s  API cpu/token 25 us (all workers)
+run 2: delivered   72,179 tok/s  (18% of offered)  TTFT p50/p99 69/145 ms  TPOT p50/p99 2.36/2.47 ms  ok 200/200  wall 4.3s  API cpu/token 25 us (all workers)
+run 3: delivered   76,042 tok/s  (19% of offered)  TTFT p50/p99 70/127 ms  TPOT p50/p99 2.23/2.31 ms  ok 200/200  wall 4.0s  API cpu/token 25 us (all workers)
+fake core: 200 requests x 1 token / 0.5 ms = 400,000 tok/s offered; 512 tokens each; API workers 4; client procs 4
+run 1: delivered  123,108 tok/s  (31% of offered)  TTFT p50/p99 49/119 ms  TPOT p50/p99 1.20/1.28 ms  ok 200/200  wall 3.6s  API cpu/token 28 us (all workers)
+run 2: delivered  124,862 tok/s  (31% of offered)  TTFT p50/p99 57/72 ms  TPOT p50/p99 1.01/1.07 ms  ok 200/200  wall 3.7s  API cpu/token 24 us (all workers)
+run 3: delivered  101,066 tok/s  (25% of offered)  TTFT p50/p99 49/78 ms  TPOT p50/p99 1.64/1.67 ms  ok 200/200  wall 3.8s  API cpu/token 28 us (all workers)
