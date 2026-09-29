@@ -9,6 +9,7 @@ the event loop with one `loop.call_soon_threadsafe` and land in per-request
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import queue
 import threading
 import time
@@ -109,6 +110,34 @@ class _Counters:
         return {"ttft_s_sum": self.ttft_s_sum, "ttft_count": self.ttft_count,
                 "tpot_s_sum": self.tpot_s_sum, "tpot_count": self.tpot_count,
                 "e2e_s_sum": self.e2e_s_sum, "e2e_count": self.e2e_count}
+
+
+class SharedCounters:
+    """Every API worker's `_Counters` side by side in shared memory, so `/metrics` on any
+    worker reports the server's totals (`serve --api-workers N`): each worker writes only
+    its own row after it changes a counter, and a read sums the rows. Created by the
+    supervisor and handed to the workers at spawn."""
+
+    FIELDS = tuple(f.name for f in dataclasses.fields(_Counters))
+
+    def __init__(self, n_workers: int, ctx=None) -> None:
+        import multiprocessing as mp
+
+        self.n_workers = n_workers
+        self.arr = (ctx or mp.get_context("spawn")).RawArray("d", n_workers * len(self.FIELDS))
+
+    def publish(self, worker: int, c: _Counters) -> None:
+        base = worker * len(self.FIELDS)
+        for i, name in enumerate(self.FIELDS):
+            self.arr[base + i] = getattr(c, name)
+
+    def total(self) -> _Counters:
+        k = len(self.FIELDS)
+        sums = [sum(self.arr[w * k + i] for w in range(self.n_workers)) for i in range(k)]
+        vals = {}
+        for name, v in zip(self.FIELDS, sums):
+            vals[name] = v if name.endswith("_sum") else int(round(v))
+        return _Counters(**vals)
 
 
 @dataclass(frozen=True)
@@ -349,12 +378,17 @@ class AsyncEngineCoreClient:
     delivers `RequestOutput`s into per-request asyncio queues exactly like the in-process
     engine does."""
 
-    def __init__(self, spec: "EngineSpec", tokenizer: Tokenizer | None) -> None:
+    def __init__(self, spec: "EngineSpec", tokenizer: Tokenizer | None, core=None,
+                 shared: "tuple[SharedCounters, int] | None" = None) -> None:
+        """`core`: a handle on a core started elsewhere (`engine_core.AttachedCore`, one API
+        worker of several); by default this client starts its own. `shared`: this worker's
+        row in the server-wide counters (`SharedCounters`, index)."""
         from pagedserve.server.engine_core import EngineCoreProcess
 
         self.spec = spec
         self.tokenizer = tokenizer
-        self.core = EngineCoreProcess(spec)
+        self.core = core if core is not None else EngineCoreProcess(spec)
+        self._shared = shared
         self.detok = IncrementalDetokenizer(tokenizer)
         self._loop: asyncio.AbstractEventLoop | None = None
         self._reader: threading.Thread | None = None
@@ -430,6 +464,7 @@ class AsyncEngineCoreClient:
                                                     arrival=now)
         self._counters.requests_received += 1
         self._counters.prompt_tokens += len(prompt_ids)
+        self._publish()
         self.core.send(("add", CoreRequest(request_id, prompt_ids, sampling_params, now)))
         finished = False
         try:
@@ -446,16 +481,27 @@ class AsyncEngineCoreClient:
             self._reqs.pop(request_id, None)
         self.detok.reset(request_id)
         self._counters.requests_aborted += 1
+        self._publish()
         try:
             self.core.send(("abort", request_id))
         except Exception:  # noqa: BLE001 - core gone; nothing to abort
             pass
 
+    def _publish(self) -> None:
+        if self._shared is not None:
+            shared, idx = self._shared
+            shared.publish(idx, self._counters)
+
     def metrics(self) -> dict[str, int | float | bool]:
         c, snap = self._counters, self._snapshot
+        if self._shared is not None:
+            self._publish()
+            c = self._shared[0].total()
         total = max(int(snap["kv_blocks_total"]), 1)
         return {
             "engine_running": self.is_running,
+            "api_workers": self._shared[0].n_workers if self._shared is not None else 1,
+            "api_worker": self._shared[1] if self._shared is not None else 0,  # who answered
             "requests_running": snap["num_running"],
             "requests_waiting": snap["num_waiting"],
             "requests_received_total": c.requests_received,
@@ -517,6 +563,7 @@ class AsyncEngineCoreClient:
                     self._snapshot = msg[1]
                 elif kind == "failed":
                     self._counters.step_errors += 1
+                    self._publish()
                     with self._reqs_lock:
                         for rid in msg[1]:
                             self._reqs.pop(rid, None)
@@ -579,4 +626,5 @@ class AsyncEngineCoreClient:
             outputs.append(RequestOutput(
                 request_id=cr.request_id, new_token_ids=toks, output_token_ids=cr.output_ids,
                 finished=finished, finish_reason=fr, text_delta=delta, metrics=metrics))
+        self._publish()
         self._post(self._deliver, outputs)
