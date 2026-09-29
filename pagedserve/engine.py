@@ -188,6 +188,7 @@ class LLMEngine:
         self._tp_step_open = False
 
         self.boot_phases: dict[str, float] = {}
+        self.boot_notes = ""
         t_phase = time.perf_counter()
         num_blocks = engine_config.num_gpu_blocks or default_num_blocks(self.local_config, engine_config)
         num_blocks = tpdist.all_reduce_min(num_blocks)  # every rank's cache has the same shape
@@ -353,8 +354,14 @@ class LLMEngine:
             except ImportError:
                 tokenizer = None
         engine = cls(model, model_config, engine_config, tokenizer)
-        engine.boot_phases = {"load_weights_s": load_s, **({"quantize_s": quant_s} if quant_s else {}),
-                              **engine.boot_phases}
+        stats = getattr(model, "load_stats", None)  # the streaming loader's (model/fastload.py)
+        read = {"weights_read_s": stats.seconds} if stats is not None else {}
+        engine.boot_phases = {"load_weights_s": load_s, **read,
+                              **({"quantize_s": quant_s} if quant_s else {}), **engine.boot_phases}
+        if stats is not None:
+            engine.boot_notes = (f"weights {stats.bytes / 1e9:.2f} GB in {stats.seconds:.2f} s = "
+                                 f"{stats.gb_per_s:.2f} GB/s ({stats.threads} readers, "
+                                 f"{stats.buffer_mb:g} MB buffers)")
         engine._open_trace()  # (re-)writes the trace header with the load phase included
         return engine
 
