@@ -54,6 +54,8 @@ batch-1 step of 6.2 ms against vLLM's 7.1 ms TPOT. The [gap analysis](#the-gap-a
 fixes it drove, in order; [Models](#models) has the per-model table. With two API
 processes (`serve --api-workers 2`) the 0.5B reaches 28.0k tok/s on real text against
 vLLM 0.30.0's 25.1k on the same pod, 112% ([Two API processes](#two-api-processes---api-workers)).
+And it starts fast: a 7B goes from process start to first token in 10.3 s against vLLM's
+49.8–67 s on the same A100 ([Cold start](#cold-start-process-start-to-first-token-resultscoldstart)).
 
 ## How it works
 
@@ -736,6 +738,43 @@ already described (29.4 vs 23.9 ms at 16 req/s).
 
 ![Moonlight on ShareGPT text: TPOT vs offered load](results/plots/moonlight_text/tpot_vs_rate.png)
 
+### Cold start: process start to first token (`results/coldstart/`)
+
+A server that scales to zero pays its startup on every cold request, so the number that
+matters is the time from starting the process to the first streamed token. Measured on one
+A100 SXM pod on Sep 29 with `scripts/bench_coldstart.py` (fresh process per run, `/health`
+polled every 50 ms, then one streamed 1-token completion), Qwen2.5-7B-Instruct fp16,
+weights on local disk and in the page cache for every run, three runs each; vLLM 0.30.0:
+
+| 7B, process start → first token | runs 2–3 (warm caches) | run 1 |
+|---|---:|---:|
+| **pagedserve** | **10.3 s** (10.0, 10.6) | 10.9 s |
+| vLLM, defaults (torch.compile, piecewise + full CUDA graphs) | 67.0 s (71.7, 62.4) | 188.0 s |
+| vLLM tuned per its cold-start guides (compile cache, capture sizes 1–64, Run:ai streamer) | 83.0 s (81.9, 84.1) | 101.3 s |
+| vLLM `--enforce-eager` (no compile, no graphs) | 49.8 s (49.8, 49.9) | 49.1 s |
+
+pagedserve is 4.8× faster than vLLM's fastest-booting configuration (which then serves
+without CUDA graphs) and 6.5× faster than its default once vLLM's compile cache is warm;
+first run against first run (vLLM compiling from scratch), 17×. Two things make the difference. pagedserve has no
+compile step (its graphs capture in 1.7–1.9 s), and weights now stream: the reference
+loader read the 7B's 15.2 GB at 0.68 GB/s (22.5 s) whether or not the file was in the page
+cache, and vLLM's own load took 21.8–24.3 s the same way. `pagedserve/model/fastload.py`
+reads the safetensors headers, plans where every byte goes, fills a ring of pinned host
+buffers from parallel `preadv` threads and copies each buffer to the GPU on a side stream
+while the next ones are read, casting bf16 → fp16 on the device: **1.04 s, 14.6 GB/s**
+(`results/coldstart/bench_load_7b.txt`; 4–16 readers and 64–256 MB buffers all land at
+12–14.7 GB/s once warm), and the 7B golden gate is ALL OK through it. The "tuned" vLLM row
+is slower than the default one; the Run:ai streamer ran at its default concurrency, which
+was not tuned here.
+
+Where pagedserve's 10.3 s goes: its own boot phases are ~4 s (weights 1.8–2.1 s, graph
+capture 1.7–1.9 s, KV cache 0.05 s); the rest is before the engine exists — `import torch`
+1.35 s in each of the two processes, CUDA context 0.6 s, and 2.45 s loading the tokenizer
+through `transformers`, all in sequence (`results/coldstart/startup_imports.txt`). Loading
+the tokenizer with `tokenizers` directly and starting the engine core before it are the
+next steps. Not yet measured: a cold page cache (a fresh Serverless host reading the image
+from disk), and Serverless `delayTime` with the new loader.
+
 ### What the numbers taught us
 
 * **Launch overhead dominates a 0.5B model, then kernel count does.** The 4090 decode step
@@ -1073,6 +1112,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 
 ## Roadmap
 
+* Cold start: 7B first token in 10.3 s (vLLM 49.8–67 s warm). Next: the tokenizer through `tokenizers` instead of `transformers` (2.45 s), the engine core started before the API process loads anything, graph capture in the background while the first requests run eagerly, then a cold-page-cache measurement and Serverless `delayTime` with the streaming loader; CUDA checkpoint/restore after that.
 * 0.5B saturation: `--api-workers 2` lifted it past vLLM on real text (28.0k vs 25.1k tok/s, 112%) and back to parity on the synthetic trace ([Two API processes](#two-api-processes---api-workers)). Four workers add nothing over two, so the next limit is the engine core's per-step pickling and sending; shared memory for the step's rows, or fewer bytes per row, is the next experiment.
 * 7B mixed steps (the tail at 16 req/s, now at parity with vLLM 0.30.0): the per-kernel profile says a mixed step's GEMMs run at 196 TFLOP/s with a 256-row tile a third full at 339 rows, attention takes two flash calls where one paged varlen call would do, and the elementwise ops run unfused. Each is shared with vLLM, so each is a chance to be ahead rather than to catch up. Piecewise graphs at 7B stay off above 4 GB (`--piecewise-bucket-step 256` recovered the 1% saturation loss but not the tail; `results/pagedserve_7b_flash_v8b.json`).
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
