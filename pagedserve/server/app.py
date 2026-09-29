@@ -233,7 +233,7 @@ def create_app(async_engine: "AsyncLLMEngine | AsyncEngineCoreClient", model_nam
 
 def build_app_from_args(model_dir: str, engine_config: EngineConfig,
                         served_model_name: str | None = None,
-                        engine_process: bool = False) -> FastAPI:
+                        engine_process: bool = False, core=None) -> FastAPI:
     """Load a model from `model_dir` and wrap it in a served app. With `engine_process`
     the engine runs in its own process (`server/engine_core.py`) and this process keeps
     only the tokenizer."""
@@ -244,7 +244,7 @@ def build_app_from_args(model_dir: str, engine_config: EngineConfig,
         from pagedserve.tokenizer import Tokenizer, has_tokenizer
 
         tokenizer = Tokenizer(model_dir) if has_tokenizer(model_dir) else None
-        client = AsyncEngineCoreClient(EngineSpec(engine_config, model_dir=model_dir), tokenizer)
+        client = AsyncEngineCoreClient(EngineSpec(engine_config, model_dir=model_dir), tokenizer, core=core)
         return create_app(client, served_model_name or model_dir)
     engine = LLMEngine.from_pretrained(model_dir, engine_config)
     return create_app(AsyncLLMEngine(engine), served_model_name or model_dir)

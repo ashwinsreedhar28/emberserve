@@ -116,8 +116,10 @@ class ModelConfig:
     # hidden_size / num_attention_heads, filled in by __post_init__; a field (not a property)
     # so a tensor-parallel shard (`shard()`), which divides the head counts, keeps it.
     head_dim: int = 0
+    # Qwen3: RMSNorm over each head's query and key vectors (weights [head_dim]) before RoPE.
+    qk_norm: bool = False
 
-    SUPPORTED_MODEL_TYPES = ("qwen2", "llama", "mistral", "deepseek_v2", "deepseek_v3")
+    SUPPORTED_MODEL_TYPES = ("qwen2", "qwen3", "llama", "mistral", "deepseek_v2", "deepseek_v3")
 
     def is_moe_layer(self, layer_idx: int) -> bool:
         return (self.moe is not None and layer_idx >= self.first_k_dense_replace
@@ -177,16 +179,17 @@ class ModelConfig:
         if cfg.get("mlp_bias", False):
             raise ValueError("mlp_bias=True is not supported")
         is_deepseek = model_type in ("deepseek_v2", "deepseek_v3")
-        if not is_deepseek and cfg.get("head_dim") not in (
-                None, cfg["hidden_size"] // cfg["num_attention_heads"]):
-            raise ValueError("head_dim != hidden_size / num_attention_heads is not supported")
+        # An explicit head_dim may differ from hidden / heads (Qwen3-0.6B: 1024 / 16 heads of 128);
+        # every projection is sized from head_dim, so that is supported for the dense families.
+        head_dim = 0 if is_deepseek else int(cfg.get("head_dim") or 0)
+        qwen = model_type in ("qwen2", "qwen3")
         eos = cfg.get("eos_token_id")
         if isinstance(eos, list):
             eos_ids = tuple(int(e) for e in eos)
         elif isinstance(eos, int):
             eos_ids = (eos,)
         else:
-            eos_ids = (151645,) if model_type == "qwen2" else ()
+            eos_ids = (151645,) if qwen else ()
         if not eos_ids:
             raise ValueError("config.json has no eos_token_id")
         rope_scaling = cfg.get("rope_scaling")
@@ -214,7 +217,7 @@ class ModelConfig:
             num_key_value_heads=cfg.get("num_key_value_heads", cfg["num_attention_heads"]),
             max_position_embeddings=cfg.get("max_position_embeddings", 32768),
             rms_norm_eps=cfg.get("rms_norm_eps", 1e-6),
-            rope_theta=cfg.get("rope_theta", 1_000_000.0 if model_type == "qwen2" else 10_000.0),
+            rope_theta=cfg.get("rope_theta", 1_000_000.0 if qwen else 10_000.0),
             tie_word_embeddings=cfg.get("tie_word_embeddings", model_type == "qwen2"),
             attention_bias=cfg.get("attention_bias", model_type == "qwen2"),
             eos_token_id=eos_ids[0],
@@ -226,6 +229,8 @@ class ModelConfig:
             moe=moe,
             first_k_dense_replace=first_k_dense,
             moe_layer_freq=moe_freq,
+            head_dim=head_dim,
+            qk_norm=model_type == "qwen3",
         )
 
     @classmethod
