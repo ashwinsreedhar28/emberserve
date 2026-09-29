@@ -1,0 +1,12 @@
+B=32 decode rows at ctx 600 + one 270-token chunk, heads 28/4x128, block 256
+varlen_paged vs ours: max abs diff 2.44e-04 (OK)
+decode_only    gpu     89.8 us/layer  host     90.3 us/layer  x28 layers = gpu   2.51 ms, host   2.53 ms
+prefill_only   gpu    150.9 us/layer  host    151.1 us/layer  x28 layers = gpu   4.23 ms, host   4.23 ms
+ours           gpu    393.3 us/layer  host    393.5 us/layer  x28 layers = gpu  11.01 ms, host  11.02 ms
+varlen_paged   gpu    173.3 us/layer  host    138.7 us/layer  x28 layers = gpu   4.85 ms, host   3.88 ms
+B=64 decode rows at ctx 800 + one 512-token chunk, heads 28/4x128, block 256
+varlen_paged vs ours: max abs diff 0.00e+00 (OK)
+decode_only    gpu    110.7 us/layer  host     82.3 us/layer  x28 layers = gpu   3.10 ms, host   2.30 ms
+prefill_only   gpu    151.5 us/layer  host    151.6 us/layer  x28 layers = gpu   4.24 ms, host   4.25 ms
+ours           gpu    382.3 us/layer  host    382.3 us/layer  x28 layers = gpu  10.71 ms, host  10.70 ms
+varlen_paged   gpu    408.2 us/layer  host    138.8 us/layer  x28 layers = gpu  11.43 ms, host   3.89 ms

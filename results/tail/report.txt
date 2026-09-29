@@ -1,0 +1,41 @@
+== results/tail/trace_16.jsonl
+boot: load_weights 29.04 s · kv_cache 0.05 s · capture_full_graphs 3.60 s
+1251 steps, 34369 decode tokens, 197 prompt chunks in 175 steps
+kind                      count  share   dec pre_tok  sched  build  launch resolve    gpu gpu_p90   gap gap_p90
+decode_graph               1076    86%    26       0   0.06   0.28    0.39    9.12  11.09   12.05  0.03    0.03
+mixed                       175    14%    39     301   0.09   0.46   19.11   14.95  28.12   45.58  0.03    0.03
+engine TPOT 15.06 ms = decode floor 11.68 + prompt-step GPU excess 3.35 + prompt-step idle gaps 0.01 + decode-step idle gaps 0.02
+mixed step over a decode-only step of its batch: mean 16.52 ms, p50 12.25, p90 34.23; per prompt chunk 14.67 ms
+== results/tail/trace_16_legacy.jsonl
+boot: load_weights 28.51 s · kv_cache 0.05 s · capture_full_graphs 1.53 s
+1236 steps, 34369 decode tokens, 197 prompt chunks in 168 steps
+kind                      count  share   dec pre_tok  sched  build  launch resolve    gpu gpu_p90   gap gap_p90
+decode_graph               1068    86%    26       0   0.06   0.28    0.40    9.22  11.10   12.08  0.03    0.03
+mixed                       168    14%    39     314   0.09   0.46   28.84    6.46  29.68   47.09  0.05    0.04
+engine TPOT 15.28 ms = decode floor 11.69 + prompt-step GPU excess 3.54 + prompt-step idle gaps 0.01 + decode-step idle gaps 0.03
+mixed step over a decode-only step of its batch: mean 18.10 ms, p50 12.79, p90 35.21; per prompt chunk 15.43 ms
+== results/tail/trace_16_legacy_syncdebug.jsonl
+boot: load_weights 28.26 s · kv_cache 0.05 s · capture_full_graphs 1.52 s
+698 steps, 11904 decode tokens, 55 prompt chunks in 52 steps
+kind                      count  share   dec pre_tok  sched  build  launch resolve    gpu gpu_p90   gap gap_p90
+decode_graph                646    93%    17       0   0.04   0.22    0.34    9.44  10.72   11.20  0.03    0.03
+mixed                        52     7%    22     294   0.06   0.56   28.13    5.43  27.64   42.37  0.14    0.04
+engine TPOT 12.73 ms = decode floor 10.99 + prompt-step GPU excess 1.71 + prompt-step idle gaps 0.01 + decode-step idle gaps 0.03
+mixed step over a decode-only step of its batch: mean 16.85 ms, p50 12.75, p90 31.97; per prompt chunk 15.93 ms
+syncs in mixed (3.00/step): devutil.py:35 x156
+== results/tail/trace_16_syncdebug.jsonl
+boot: load_weights 28.54 s · kv_cache 0.06 s · capture_full_graphs 1.58 s
+704 steps, 11903 decode tokens, 55 prompt chunks in 50 steps
+kind                      count  share   dec pre_tok  sched  build  launch resolve    gpu gpu_p90   gap gap_p90
+decode_graph                654    93%    17       0   0.04   0.22    0.34    9.36  10.71   11.21  0.03    0.03
+mixed                        50     7%    22     306   0.06   0.69   19.76   14.30  26.89   45.25  0.05    0.04
+engine TPOT 12.57 ms = decode floor 10.97 + prompt-step GPU excess 1.57 + prompt-step idle gaps 0.00 + decode-step idle gaps 0.03
+mixed step over a decode-only step of its batch: mean 16.03 ms, p50 12.29, p90 34.48; per prompt chunk 14.57 ms
+== results/tail/trace_8.jsonl
+boot: load_weights 28.50 s · kv_cache 0.05 s · capture_full_graphs 1.56 s
+2439 steps, 34369 decode tokens, 198 prompt chunks in 190 steps
+kind                      count  share   dec pre_tok  sched  build  launch resolve    gpu gpu_p90   gap gap_p90
+decode_graph               2249    92%    14       0   0.04   0.22    0.34    9.20  10.67   11.16  0.03    0.04
+mixed                       190     8%    17     279   0.05   0.36   19.09   14.09  25.14   39.80  0.03    0.04
+engine TPOT 12.23 ms = decode floor 10.86 + prompt-step GPU excess 1.35 + prompt-step idle gaps 0.00 + decode-step idle gaps 0.03
+mixed step over a decode-only step of its batch: mean 14.36 ms, p50 9.34, p90 28.87; per prompt chunk 13.78 ms
