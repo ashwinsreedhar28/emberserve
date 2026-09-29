@@ -23,6 +23,10 @@ class RequestRecord:
     output_tokens: int
     success: bool = True
     error: str | None = None
+    # Gaps between consecutive streamed chunks after the first (ms). One engine step per
+    # chunk while the server keeps up, so their distribution is the server's step-time
+    # distribution as a client sees it: the p90/p99 are the steps that carried prompts.
+    chunk_gaps_ms: list[float] = field(default_factory=list)
 
     @property
     def ttft_s(self) -> float | None:
@@ -77,14 +81,18 @@ class BenchSummary:
     slo_tpot_ms: float | None = None
     prompt_tokens: int = 0
     output_tokens: int = 0
+    itl_ms: Stat = field(default_factory=Stat)  # inter-chunk gaps over every stream
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     def one_line(self, name: str = "") -> str:
+        itl = ""
+        if self.itl_ms.p50 == self.itl_ms.p50:  # not NaN: a streamed run
+            itl = f" itl p50/p90/p99={self.itl_ms.p50:.1f}/{self.itl_ms.p90:.1f}/{self.itl_ms.p99:.1f}ms"
         return (f"{name:>22s} tok/s={self.throughput_tok_s:8.1f} req/s={self.requests_per_s:6.2f}"
                 f" ttft p50/p99={self.ttft_ms.p50:7.1f}/{self.ttft_ms.p99:7.1f}ms"
-                f" tpot p50/p99={self.tpot_ms.p50:6.1f}/{self.tpot_ms.p99:6.1f}ms"
+                f" tpot p50/p99={self.tpot_ms.p50:6.1f}/{self.tpot_ms.p99:6.1f}ms{itl}"
                 f" ok={self.completed}/{self.num_requests}")
 
 
@@ -122,7 +130,8 @@ def summarize(records: list[RequestRecord], slo_ttft_ms: float | None = None,
         total_throughput_tok_s=(in_tok + out_tok) / wall,
         ttft_ms=Stat.of(ttft), tpot_ms=Stat.of(tpot), e2e_ms=Stat.of(e2e),
         goodput_rps=goodput, slo_ttft_ms=slo_ttft_ms, slo_tpot_ms=slo_tpot_ms,
-        prompt_tokens=in_tok, output_tokens=out_tok)
+        prompt_tokens=in_tok, output_tokens=out_tok,
+        itl_ms=Stat.of([g for r in ok for g in r.chunk_gaps_ms]))
 
 
 def records_to_json(records: list[RequestRecord]) -> list[dict]:
