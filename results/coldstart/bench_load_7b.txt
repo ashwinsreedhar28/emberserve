@@ -1,0 +1,15 @@
+models/Qwen2.5-7B-Instruct -> cuda float16, 128 CPUs
+run 1 reference              22.54 s    0.68 GB/s
+run 1 stream t=   4 buf=64MB    1.06 s   14.42 GB/s
+run 1 stream t=   4 buf=256MB    1.79 s    8.51 GB/s
+run 1 stream t=   8 buf=64MB    1.12 s   13.54 GB/s
+run 1 stream t=   8 buf=256MB    1.60 s    9.53 GB/s
+run 1 stream t=  16 buf=64MB    1.29 s   11.80 GB/s
+run 1 stream t=  16 buf=256MB    2.51 s    6.06 GB/s
+run 2 reference              21.95 s    0.69 GB/s
+run 2 stream t=   4 buf=64MB    1.26 s   12.13 GB/s
+run 2 stream t=   4 buf=256MB    1.13 s   13.49 GB/s
+run 2 stream t=   8 buf=64MB    1.07 s   14.22 GB/s
+run 2 stream t=   8 buf=256MB    1.17 s   13.07 GB/s
+run 2 stream t=  16 buf=64MB    1.04 s   14.66 GB/s
+run 2 stream t=  16 buf=256MB    1.04 s   14.64 GB/s

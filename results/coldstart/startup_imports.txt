@@ -1,0 +1,2 @@
+import torch 1.39s  cuda init 0.72s  flash+triton 0.08s  pagedserve app 0.26s  tokenizer 2.47s
+import torch 1.34s  cuda init 0.58s  flash+triton 0.08s  pagedserve app 0.24s  tokenizer 2.44s
