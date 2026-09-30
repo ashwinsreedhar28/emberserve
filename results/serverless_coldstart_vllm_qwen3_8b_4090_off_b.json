@@ -1,0 +1,67 @@
+{
+ "kind": "serverless_coldstart",
+ "mode": "queue",
+ "endpoint": "rvy2p7bfia91fm",
+ "label": "vllm_qwen3_8b_4090_flashboot_off_b",
+ "image": "worker-vllm v2.28.0, Qwen3-8B downloaded from HF at start, model cache off",
+ "note": "",
+ "max_tokens": 16,
+ "idle_s": 60.0,
+ "runs": [
+  {
+   "health_before": {
+    "jobs": {
+     "completed": 6,
+     "failed": 0,
+     "inProgress": 0,
+     "inQueue": 0,
+     "retried": 0
+    },
+    "workers": {
+     "idle": 1,
+     "initializing": 0,
+     "ready": 1,
+     "running": 0,
+     "throttled": 0,
+     "unhealthy": 0
+    }
+   },
+   "cold": {
+    "status": 200,
+    "total_s": 141.63767870888114,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 140743,
+    "execution_ms": 581,
+    "worker_id": "jodgmz6md7oivx"
+   },
+   "warm": {
+    "status": 200,
+    "total_s": 2.764669042080641,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 17,
+    "execution_ms": 545,
+    "worker_id": "jodgmz6md7oivx"
+   }
+  }
+ ],
+ "summary": {
+  "cold_s": {
+   "n": 1,
+   "min": 141.63767870888114,
+   "median": 141.63767870888114,
+   "max": 141.63767870888114
+  },
+  "cold_delay_ms": {
+   "median": 140743,
+   "values": [
+    140743
+   ]
+  },
+  "warm_total_s": {
+   "median": 2.764669042080641
+  },
+  "failures": 0
+ }
+}
