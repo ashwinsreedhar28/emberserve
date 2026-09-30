@@ -16,6 +16,7 @@ the engine, and the GPU never waits for the scheduler.
 from __future__ import annotations
 
 import gc
+import os
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -143,6 +144,42 @@ def kv_blocks_for(free_bytes: int, utilization: float, bytes_per_block: int,
     return max(budget // bytes_per_block, MIN_GPU_BLOCKS)
 
 
+GRAPHS_BEFORE_WEIGHTS_ENV = "PAGEDSERVE_GRAPHS_BEFORE_WEIGHTS"
+
+
+def graphs_before_weights(engine_config: EngineConfig) -> bool:
+    """Whether `from_pretrained` builds the engine (KV cache, CUDA graphs) before loading the
+    weights (`LLMEngine._from_pretrained_graphs_first`).
+
+    PAGEDSERVE_GRAPHS_BEFORE_WEIGHTS=1 or 0 decides; unset, it is on exactly when the
+    checkpoint may still be downloading (PAGEDSERVE_WAIT_WEIGHTS_S, set by the Serverless
+    worker's small image), where the capture then runs while the engine would otherwise
+    wait. With the weights on disk it saves nothing (capture and load run back to back
+    either way), so the default order stays. Never for tensor parallelism (the ranks load
+    shards through a different path), int8 (quantizing replaces the weight tensors after
+    the load) or latent-attention models (loading folds a rope permutation into the
+    weights and flips a flag the forward branches on, so a graph captured before would
+    record the unfolded path)."""
+    flag = os.environ.get(GRAPHS_BEFORE_WEIGHTS_ENV, "").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return False
+    if flag not in ("1", "true", "yes", "on") and not os.environ.get("PAGEDSERVE_WAIT_WEIGHTS_S"):
+        return False
+    if engine_config.tensor_parallel_size != 1 or engine_config.quantization:
+        return False
+    if engine_config.model_dir is None:
+        return False
+    return ModelConfig.from_hf_dir(engine_config.model_dir).mla is None
+
+
+def _tensor_addresses(model: torch.nn.Module) -> dict[str, int]:
+    """Storage address of every parameter and buffer, by name."""
+    out = {f"p:{n}": p.data_ptr() for n, p in model.named_parameters(remove_duplicate=False)}
+    out.update({f"b:{n}": b.data_ptr() for n, b in model.named_buffers(remove_duplicate=False)
+                if b is not None})
+    return out
+
+
 def default_num_blocks(model_config: ModelConfig, engine_config: EngineConfig) -> int:
     """How many KV blocks to allocate when the user did not say.
 
@@ -210,28 +247,10 @@ class LLMEngine:
         self.backend: AttentionBackend = self._make_backend(num_blocks)
         self.sampler = Sampler(self.device)
         self.boot_phases["kv_cache_s"] = time.perf_counter() - t_phase  # sizing + allocation
-        # Optional CUDA-graph decode runner (attn/cuda_graphs.py); installed on GPU only.
         self.graph_runner = None
-        if use_graphs:
-            from pagedserve.attn.cuda_graphs import CUDAGraphRunner
-            self.graph_runner = CUDAGraphRunner(
-                self.model, self.backend, max_model_len=engine_config.max_model_len,
-                block_size=engine_config.block_size, scratch_block=self.scratch_block,
-                max_batch=engine_config.max_num_seqs, device=self.device)
-            t_phase = time.perf_counter()
-            self.graph_runner.capture()
-            self.boot_phases["capture_full_graphs_s"] = time.perf_counter() - t_phase
         self.piecewise_runner = None
-        if use_graphs and engine_config.piecewise_cuda_graphs:
-            from pagedserve.attn.piecewise_graphs import PiecewiseGraphRunner, token_buckets
-            max_tokens = max(engine_config.max_num_batched_tokens, engine_config.max_num_seqs)
-            self.piecewise_runner = PiecewiseGraphRunner(
-                self.model, self.backend, max_tokens=max_tokens,
-                buckets=token_buckets(max_tokens, engine_config.piecewise_bucket_step),
-                device=self.device)
-            t_phase = time.perf_counter()
-            self.piecewise_runner.capture()
-            self.boot_phases["capture_piecewise_graphs_s"] = time.perf_counter() - t_phase
+        if use_graphs:
+            self._capture_graphs()
         elif engine_config.piecewise_cuda_graphs:
             warnings.warn("piecewise_cuda_graphs ignored: needs enable_cuda_graphs on CUDA",
                           stacklevel=2)
@@ -287,6 +306,30 @@ class LLMEngine:
                                     max_chunk=max_chunk, t_start=t_start, host_sched_ms=sched_ms)
 
     # ---- construction -----------------------------------------------------------
+    def _capture_graphs(self) -> None:
+        """Install and capture the CUDA-graph decode runner (attn/cuda_graphs.py) and, when
+        configured, the piecewise runner for mixed steps (attn/piecewise_graphs.py)."""
+        cfg = self.config
+        from pagedserve.attn.cuda_graphs import CUDAGraphRunner
+
+        self.graph_runner = CUDAGraphRunner(
+            self.model, self.backend, max_model_len=cfg.max_model_len,
+            block_size=cfg.block_size, scratch_block=self.scratch_block,
+            max_batch=cfg.max_num_seqs, device=self.device)
+        t_phase = time.perf_counter()
+        self.graph_runner.capture()
+        self.boot_phases["capture_full_graphs_s"] = time.perf_counter() - t_phase
+        if cfg.piecewise_cuda_graphs:
+            from pagedserve.attn.piecewise_graphs import PiecewiseGraphRunner, token_buckets
+            max_tokens = max(cfg.max_num_batched_tokens, cfg.max_num_seqs)
+            self.piecewise_runner = PiecewiseGraphRunner(
+                self.model, self.backend, max_tokens=max_tokens,
+                buckets=token_buckets(max_tokens, cfg.piecewise_bucket_step),
+                device=self.device)
+            t_phase = time.perf_counter()
+            self.piecewise_runner.capture()
+            self.boot_phases["capture_piecewise_graphs_s"] = time.perf_counter() - t_phase
+
     def _make_backend(self, num_blocks: int) -> AttentionBackend:
         name = self.config.attn_backend
         cfg = self.local_config
@@ -334,6 +377,8 @@ class LLMEngine:
         if engine_config.tensor_parallel_size > 1:
             return cls.launch_tp(tpdist.WorkerSpec(engine_config, model_dir=str(model_dir)),
                                  load_tokenizer=load_tokenizer)
+        if graphs_before_weights(engine_config):
+            return cls._from_pretrained_graphs_first(model_dir, engine_config, load_tokenizer)
         t0 = time.perf_counter()
         model = load_model(model_dir, device=engine_config.device, dtype=engine_config.dtype)
         if engine_config.device.startswith("cuda") and torch.cuda.is_available():
@@ -365,6 +410,73 @@ class LLMEngine:
                                  + (f", {stats.wait_seconds:.2f} s waiting for the download"
                                     if stats.wait_seconds else "") + ")")
         engine._open_trace()  # (re-)writes the trace header with the load phase included
+        return engine
+
+    @classmethod
+    def _from_pretrained_graphs_first(cls, model_dir: str | Path, engine_config: EngineConfig,
+                                      load_tokenizer: bool) -> "LLMEngine":
+        """`from_pretrained` with the engine built *before* the weights are loaded: the KV
+        cache is sized and allocated and the CUDA graphs are captured on the model's empty
+        (zeroed) parameters, then the checkpoint is streamed into those same parameters.
+
+        Why: on a Serverless worker with a small image the engine waits for the weights to
+        download, and everything after the last shard lands is on the critical path. For
+        Qwen3-8B on an RTX 4090 that tail was 4.9-7.0 s, 3.3-4.5 s of it graph capture,
+        which needs only the parameters' addresses and shapes, not their values. Captured
+        first, it runs inside the wait (see `graphs_before_weights`).
+
+        Exact: a CUDA graph replays the kernels recorded at capture against the same
+        addresses, and the loader copies into each parameter's existing storage (never
+        rebinding it), so after the load the graphs compute on the real weights. Kernel
+        choices depend on shapes, not values. The KV cache is sized from the same free
+        memory as when it is sized after the load, since the parameters are already
+        allocated; the loader's own device memory is one buffer (64 MB) for casting,
+        inside the activation reserve. As a guard, every parameter and buffer address is
+        compared before and after the load, and the graphs are captured again if any moved."""
+        from pagedserve.model.weights import build_empty_model, load_weights_into
+
+        device, dtype = engine_config.device, engine_config.dtype
+        cuda = device.startswith("cuda") and torch.cuda.is_available()
+        t0 = time.perf_counter()
+        model = build_empty_model(model_dir, device=device, dtype=dtype)
+        with torch.no_grad():
+            for p in model.parameters():  # finite values for the warmup forwards
+                p.zero_()
+        build_s = time.perf_counter() - t0
+        model_config = ModelConfig.from_hf_dir(model_dir)
+        tokenizer = None
+        if load_tokenizer and has_tokenizer(model_dir):
+            try:
+                tokenizer = Tokenizer(model_dir)
+            except ImportError:
+                tokenizer = None
+        engine = cls(model, model_config, engine_config, tokenizer)  # KV cache, graphs
+        before = _tensor_addresses(model)
+        t0 = time.perf_counter()
+        load_weights_into(model, model_dir, device=device, dtype=dtype)
+        if cuda:
+            torch.cuda.synchronize()
+        load_s = time.perf_counter() - t0
+        recaptured = False
+        if _tensor_addresses(model) != before and engine.graph_runner is not None:
+            warnings.warn("a parameter's storage moved while the weights loaded: capturing "
+                          "the CUDA graphs again", stacklevel=2)
+            engine.release_graphs()
+            engine._capture_graphs()
+            recaptured = True
+        stats = getattr(model, "load_stats", None)
+        engine.boot_phases = {"build_model_s": build_s, **engine.boot_phases,
+                              "load_weights_s": load_s,
+                              **({"weights_read_s": stats.seconds} if stats is not None else {})}
+        notes = ["engine built before the weights" + (", graphs captured again" if recaptured else "")]
+        if stats is not None:
+            notes.insert(0, f"weights {stats.bytes / 1e9:.2f} GB in {stats.seconds:.2f} s = "
+                            f"{stats.gb_per_s:.2f} GB/s ({stats.threads} readers, "
+                            f"{stats.buffer_mb:g} MB buffers"
+                            + (f", {stats.wait_seconds:.2f} s waiting for the download"
+                               if stats.wait_seconds else "") + ")")
+        engine.boot_notes = "; ".join(notes)
+        engine._open_trace()
         return engine
 
     @classmethod

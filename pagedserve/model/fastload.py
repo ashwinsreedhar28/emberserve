@@ -18,8 +18,15 @@ This loader reads the files itself:
     and records an event per batch; a buffer is refilled only after its event has passed,
     so reading, the PCIe transfer and the next reads overlap;
   * bytes land directly in the parameter when the checkpoint dtype is the parameter's
-    dtype; otherwise (Qwen2.5 ships bf16, the engine runs fp16) they land in a device
-    staging tensor that is cast into the parameter on the GPU when its last piece arrives.
+    dtype; otherwise (Qwen2.5 ships bf16, the engine runs fp16) each piece lands in one
+    buffer-sized device staging tensor and is cast into its slice of the parameter on the
+    GPU, in stream order. A piece that does not start and end on an element boundary (only
+    possible with a buffer size that is not a multiple of the element size) or a
+    non-contiguous target falls back to staging the whole tensor and casting it when its
+    last piece arrives. Staging whole tensors cost a 1.24 GB device buffer for Qwen3-8B's
+    embedding, which the caching allocator then kept, so the KV cache sized after the load
+    came out that much smaller, and a KV cache sized *before* the load (the engine can
+    capture its CUDA graphs while the weights download) would have had to leave room for it.
 
 The result is bounded by the slower of the disk (or page cache) and PCIe instead of by one
 Python thread.
@@ -91,6 +98,7 @@ class LoadStats:
     threads: int = 0
     buffer_mb: float = 0
     direct_bytes: int = 0
+    whole_staged_bytes: int = 0  # cast bytes that needed a whole-tensor staging buffer
     wait_seconds: float = 0.0  # time spent waiting for files still downloading
     files: list[str] = field(default_factory=list)
 
@@ -252,6 +260,8 @@ def _stream_file(batches, bufs, views, pool, stream, device, cuda, stats) -> Non
     """Read one file's batches into the pinned ring and copy them out (the pipeline in the
     module docstring). Returns once every copy of this file has completed."""
     nbuf = len(bufs)
+    whole = _needs_whole_staging(batches)
+    chunk: torch.Tensor | None = None  # the per-piece cast buffer, stream-ordered reuse
 
     def read(i: int, wait: "torch.cuda.Event | None") -> None:
         if wait is not None:
@@ -280,12 +290,22 @@ def _stream_file(batches, bufs, views, pool, stream, device, cuda, stats) -> Non
                         dst = t.target.view(-1).view(torch.uint8)[toff:toff + n]
                         dst.copy_(src, non_blocking=cuda)
                         stats.direct_bytes += n
+                    elif id(t) not in whole:
+                        # One piece: bytes into the small staging buffer, then cast into the
+                        # matching elements of the parameter. Both run on `stream`, so the
+                        # next piece's copy into `chunk` waits for this cast.
+                        if chunk is None:
+                            chunk = torch.empty(len(buf), dtype=torch.uint8, device=device)
+                        chunk[:n].copy_(src, non_blocking=cuda)
+                        s = t.dtype.itemsize
+                        t.target.view(-1)[toff // s:(toff + n) // s].copy_(chunk[:n].view(t.dtype))
                     else:
+                        stats.whole_staged_bytes += n
                         if t.staging is None:
                             t.staging = torch.empty(t.nbytes, dtype=torch.uint8, device=device)
                         t.staging[toff:toff + n].copy_(src, non_blocking=cuda)
                     t.filled += n
-                    if t.filled == t.nbytes and not t.direct:
+                    if t.filled == t.nbytes and t.staging is not None:
                         t.target.copy_(t.staging.view(t.dtype).view(t.shape))
                         t.staging = None
                 ev = None
@@ -304,6 +324,20 @@ def _stream_file(batches, bufs, views, pool, stream, device, cuda, stats) -> Non
                 f.result()
             except Exception:  # noqa: BLE001 - the original exception is the one raised
                 pass
+
+
+def _needs_whole_staging(batches) -> set[int]:
+    """ids of the tensors to cast that cannot be cast piece by piece: a piece that splits an
+    element, or a target whose elements are not laid out in checkpoint order."""
+    out: set[int] = set()
+    for batch in batches:
+        for t, toff, n, _ in batch:
+            if t.direct or id(t) in out:
+                continue
+            s = t.dtype.itemsize
+            if toff % s or n % s or not t.target.is_contiguous():
+                out.add(id(t))
+    return out
 
 
 class _Null:

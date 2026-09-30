@@ -142,6 +142,18 @@ default is too small for 16 GB), and the first successful one captured piecewise
 for 15.5 s because the engine sized the checkpoint by the files present — none yet — and
 took it for a small model; it now reads the index's `total_size`. One fresh-host sample per image so far.
 
+**Graphs before the weights (built, not yet measured).** Graph capture needs the
+parameters' addresses and shapes, not their values, so with `PAGEDSERVE_WAIT_WEIGHTS_S` set
+the engine now sizes the KV cache and captures its graphs on the empty (zeroed) model and
+then streams the checkpoint into the same storage (`LLMEngine._from_pretrained_graphs_first`;
+addresses are checked after the load and the graphs re-captured if any moved). That moves
+the ~4 s of capture from after the last shard into the download. The loader also casts
+bf16 → fp16 one 64 MB piece at a time instead of staging whole tensors, which had left a
+1.24 GB block (Qwen3-8B's embedding) cached when the KV cache was sized, so the KV cache
+should now get about 1.1 GB more in either order (to confirm: `kv_blocks_total` in
+`/metrics`). Exactness: `tests/test_graphs_before_weights_gpu.py` and the golden gate with
+`PAGEDSERVE_GRAPHS_BEFORE_WEIGHTS=1 ... check_golden.py --cuda-graphs`.
+
 What is left in pagedserve's 17 s, cheapest first: the first request's executionTime is
 1.8–2.1 s against vLLM's 0.5 s (most likely Triton kernels compiling on first use into an
 empty cache; warm them into the image), graph capture could run in the background while

@@ -261,14 +261,15 @@ def build_model(config: ModelConfig) -> nn.Module:
     return Qwen2ForCausalLM(config)
 
 
-def load_model(model_dir: str | os.PathLike, device: torch.device | str = "cpu",
-               dtype: torch.dtype = torch.float32) -> nn.Module:
-    """Build the model for an HF snapshot directory, weights loaded, in eval mode.
+def build_empty_model(model_dir: str | os.PathLike, device: torch.device | str = "cpu",
+                      dtype: torch.dtype = torch.float32) -> nn.Module:
+    """The model for an HF snapshot directory (only `config.json` is read), parameters
+    allocated on `device` in `dtype` and randomly initialised, nothing loaded yet.
 
     Parameters are created directly on `device` in `dtype`: a 16B MoE model built in fp32 on
     the host first (the obvious `Model(config).to(device, dtype)`) needs 64 GB of RAM before
     a single weight is read. Under tensor parallelism the model is this rank's shard
-    (`ModelConfig.shard`) and every checkpoint tensor is sliced as it is read."""
+    (`ModelConfig.shard`)."""
     from pagedserve import dist as tpdist
 
     config = ModelConfig.from_hf_dir(model_dir).shard(tpdist.get_tp().size)
@@ -279,7 +280,22 @@ def load_model(model_dir: str | os.PathLike, device: torch.device | str = "cpu",
             model = build_model(config)
     finally:
         torch.set_default_dtype(prev)
+    return model.eval()
+
+
+def load_weights_into(model: nn.Module, model_dir: str | os.PathLike,
+                      device: torch.device | str = "cpu",
+                      dtype: torch.dtype = torch.float32) -> nn.Module:
+    """Load the checkpoint into `build_empty_model`'s model, in place: every parameter keeps
+    its storage (the CUDA graphs `LLMEngine` may already have captured point at it). Under
+    tensor parallelism every checkpoint tensor is sliced as it is read."""
     load_hf_weights(model, model_dir, dtype=dtype, device=device)
     if hasattr(model, "fold_rope_permutation"):  # DeepSeek: rope layout into the weights
         model.fold_rope_permutation()
     return model.eval()
+
+
+def load_model(model_dir: str | os.PathLike, device: torch.device | str = "cpu",
+               dtype: torch.dtype = torch.float32) -> nn.Module:
+    """Build the model for an HF snapshot directory, weights loaded, in eval mode."""
+    return load_weights_into(build_empty_model(model_dir, device, dtype), model_dir, device, dtype)

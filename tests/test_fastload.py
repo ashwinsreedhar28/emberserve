@@ -71,6 +71,27 @@ def test_bf16_checkpoint_is_cast_like_the_reference(tmp_path: Path, monkeypatch:
         assert st.direct_bytes == 0  # every tensor went through staging + cast
 
 
+@pytest.mark.parametrize("buffer_mb,whole", [(64, False), (0.001, False), (0.002, True)])
+def test_cast_goes_piece_by_piece_unless_a_piece_splits_an_element(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, buffer_mb: float, whole: bool) -> None:
+    """bf16 into fp16 is cast one buffer-sized piece at a time (no whole-tensor staging
+    buffer: 1.24 GB for Qwen3-8B's embedding). A 2,097-byte buffer (0.002 MB) splits bf16
+    elements across pieces, so those tensors fall back to whole-tensor staging; either way
+    the parameters equal the reference loader's."""
+    _dump_snapshot(tiny_model(seed=8), tmp_path)
+    f = tmp_path / "model.safetensors"
+    from safetensors.torch import load_file
+
+    save_file({k: v.to(torch.bfloat16) for k, v in load_file(f).items()}, str(f))
+    ref = _reference(tmp_path, monkeypatch, dtype=torch.float16)
+    m = _fresh(tmp_path, dtype=torch.float16)
+    st = stream_weights(m, tmp_path, "cpu", threads=2, buffer_mb=buffer_mb)
+    _same(m, ref)
+    assert st.direct_bytes == 0
+    assert (st.whole_staged_bytes > 0) == whole
+    assert st.whole_staged_bytes < st.bytes  # even the odd buffer leaves some pieces aligned
+
+
 def test_errors_match_reference(tmp_path: Path) -> None:
     model = tiny_model(seed=5)
     _dump_snapshot(model, tmp_path, drop={"model.layers.0.mlp.up_proj.weight"})

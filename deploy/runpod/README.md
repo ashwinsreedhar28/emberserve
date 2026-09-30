@@ -84,6 +84,14 @@ device"). A failed download now stops the worker at once instead of leaving the 
 waiting. Measured on a warm host: delayTime 47.4 / 37.9 / 32.9 s (worker-vllm 154.3 /
 140.7 s); fresh host 91.7 s (worker-vllm 210.4 s), 68.7 s of it the image pull.
 
+Since those runs (not measured yet): with `PAGEDSERVE_WAIT_WEIGHTS_S` set the engine is
+built *before* the weights, so the KV cache and the CUDA graphs (3.3–4.5 s of the
+4.9–7.0 s after the last shard landed) are done while the download is still running
+(`LLMEngine._from_pretrained_graphs_first`). The `[boot]` line then starts with
+`build_model`, has `load_weights` after the capture, and notes "engine built before the
+weights". `PAGEDSERVE_GRAPHS_BEFORE_WEIGHTS=0` on the endpoint restores the old order
+without a rebuild, for an A/B on the same image.
+
 ## 7B image and the cold-start series
 
 `deploy/runpod/Dockerfile.7b` bakes Qwen2.5-7B-Instruct instead (~25 GB image); point a
