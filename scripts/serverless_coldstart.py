@@ -115,6 +115,10 @@ def queue_request(client: httpx.Client, max_tokens: int, timeout_s: float, want_
     out["execution_ms"] = j.get("executionTime")  # Runpod: handler time
     out["worker_id"] = j.get("workerId")
     out["submit_wall"] = submit_wall
+    # A job a live worker picks up has a delayTime of tens of ms; a cold start is tens of
+    # seconds. Below 5 s the endpoint had not scaled to zero (idle timeout too long, or a
+    # worker parked past --zero-wait-s), and the sample is not a cold start.
+    out["cold"] = out["ok"] and (out["delay_ms"] or 0) >= 5000
     if want_timeline:
         tl = _timeline_of(j.get("output"))
         out["timeline"] = tl
@@ -184,6 +188,10 @@ def main() -> None:
                 print(f"[coldstart] {i + 1}/{args.repeats}: cold total {cold['total_s']:.1f} s, delayTime "
                       f"{cold.get('delay_ms')} ms, executionTime {cold.get('execution_ms')} ms, {cold.get('job_status')}; "
                       f"warm total {warm['total_s'] * 1e3:.0f} ms, delayTime {warm.get('delay_ms')} ms", file=sys.stderr)
+                if cold["ok"] and not cold["cold"]:
+                    print(f"[coldstart]   NOT A COLD START: a worker was still up (delayTime {cold.get('delay_ms')} ms); "
+                          "excluded from the cold summary. Check the endpoint's idle timeout (5 s for a series).",
+                          file=sys.stderr)
                 if cold.get("phases_s"):
                     print("[coldstart]   phases: " + ", ".join(f"{k} {v:.1f} s" for k, v in cold["phases_s"].items()),
                           file=sys.stderr)
@@ -198,8 +206,9 @@ def main() -> None:
             runs.append({"health_before": health, "cold": cold, "warm": warm})
 
     key = "ttfb_s" if args.mode == "lb" else "total_s"
-    cold_ok = [r["cold"][key] for r in runs if r["cold"]["ok"]]
-    delays = [r["cold"]["delay_ms"] for r in runs if r["cold"]["ok"] and r["cold"].get("delay_ms") is not None]
+    is_cold = lambda r: r["cold"]["ok"] and r["cold"].get("cold", True)  # noqa: E731 (lb mode: no delayTime)
+    cold_ok = [r["cold"][key] for r in runs if is_cold(r)]
+    delays = [r["cold"]["delay_ms"] for r in runs if is_cold(r) and r["cold"].get("delay_ms") is not None]
     warm_ok = [r["warm"]["total_s"] for r in runs if r["warm"]["ok"]]
     summary = {
         "cold_s": {"n": len(cold_ok), "min": min(cold_ok, default=None),
@@ -207,8 +216,9 @@ def main() -> None:
         "cold_delay_ms": {"median": st.median(delays) if delays else None, "values": delays},
         "warm_total_s": {"median": st.median(warm_ok) if warm_ok else None},
         "failures": sum(1 for r in runs if not r["cold"]["ok"]),
+        "not_cold": sum(1 for r in runs if r["cold"]["ok"] and not r["cold"].get("cold", True)),
     }
-    ph = [r["cold"]["phases_s"] for r in runs if r["cold"].get("phases_s")]
+    ph = [r["cold"]["phases_s"] for r in runs if is_cold(r) and r["cold"].get("phases_s")]
     if ph:
         summary["phases_median_s"] = {k: st.median(p[k] for p in ph if k in p)
                                       for k in dict.fromkeys(k for p in ph for k in p)}
@@ -222,7 +232,7 @@ def main() -> None:
     print(f"[coldstart] {args.label or args.endpoint}: cold median {fmt(cs['median'])} s "
           f"(min {fmt(cs['min'])}, max {fmt(cs['max'])}), delayTime median {summary['cold_delay_ms']['median']} ms, "
           f"warm {summary['warm_total_s']['median'] and round(summary['warm_total_s']['median'] * 1e3)} ms, "
-          f"failures {summary['failures']}; wrote {args.out}", file=sys.stderr)
+          f"failures {summary['failures']}, not cold {summary['not_cold']}; wrote {args.out}", file=sys.stderr)
 
 
 if __name__ == "__main__":
