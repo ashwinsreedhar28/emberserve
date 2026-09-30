@@ -7,6 +7,8 @@
 # CUDA runtime base plus the Python packages; the build stage exists only to fetch the
 # flash-attn wheel matching this torch (its setup.py needs the devel toolchain to run).
 #
+# The endpoint needs container disk for the weights: 40 GB for Qwen3-8B (16.4 GB; the Xet
+# chunk cache is off so nothing is stored twice).
 # Endpoint env: MODEL_REPO (default Qwen/Qwen3-8B), optional HF_TOKEN, MODEL_REVISION,
 # DOWNLOAD_WORKERS (8), plus everything main.py documents. Dockerfile.slim-devel is the same
 # on the devel base, in case this one fails to build or Triton cannot compile at runtime.
@@ -20,7 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
 ENV MODEL_DIR=/models/model \
     MODEL_REPO=Qwen/Qwen3-8B \
     PYTHONUNBUFFERED=1 \
-    HF_XET_HIGH_PERFORMANCE=1
+    HF_XET_HIGH_PERFORMANCE=1 \
+    HF_XET_CHUNK_CACHE_SIZE_BYTES=0
 
 WORKDIR /app
 COPY pyproject.toml README.md ./

@@ -65,6 +65,8 @@ def resolve_model_dir() -> str:
     fetcher = Fetcher(repo, model_dir, revision=revision, workers=int(env("DOWNLOAD_WORKERS", "8")))
     shards = fetcher.fetch_small()
     fetcher.start_shards(shards)
+    global FETCHER
+    FETCHER = fetcher
     os.environ.setdefault("PAGEDSERVE_WAIT_WEIGHTS_S", env("WEIGHTS_TIMEOUT", "900"))
     print(f"[worker] fetching {len(shards)} shards of {repo} in the background; the engine starts now",
           flush=True)
@@ -116,11 +118,17 @@ def _import_sdk(box: dict) -> None:
     box["runpod"] = runpod
 
 
+FETCHER = None  # the background weight download, when MODEL_REPO is fetched at start
+
+
 def wait_for_server(proc: subprocess.Popen, timeout_s: float, base_url: str = BASE_URL) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise SystemExit(f"pagedserve serve exited with code {proc.returncode} during startup")
+        if FETCHER is not None and FETCHER.error is not None:
+            proc.kill()  # the engine would wait for shards that will never arrive
+            raise SystemExit(f"weight download failed: {FETCHER.error}")
         try:
             if httpx.get(f"{base_url}/health", timeout=2.0).status_code == 200:
                 return

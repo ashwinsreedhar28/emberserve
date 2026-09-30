@@ -5,7 +5,8 @@ FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
 ENV MODEL_DIR=/models/model \
     MODEL_REPO=Qwen/Qwen3-8B \
     PYTHONUNBUFFERED=1 \
-    HF_XET_HIGH_PERFORMANCE=1
+    HF_XET_HIGH_PERFORMANCE=1 \
+    HF_XET_CHUNK_CACHE_SIZE_BYTES=0
 
 WORKDIR /app
 COPY pyproject.toml README.md ./

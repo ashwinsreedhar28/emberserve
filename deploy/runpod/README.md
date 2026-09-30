@@ -78,7 +78,10 @@ download rate.
 Endpoint: GitHub repo, Dockerfile path `deploy/runpod/Dockerfile.slim` (or
 `Dockerfile.slim-devel`, the same on the devel base, if the runtime base fails to build or
 Triton cannot compile its launcher), env `MODEL_REPO=Qwen/Qwen3-8B` (the default), an
-optional `HF_TOKEN` for Hugging Face's rate limits. Not yet measured.
+optional `HF_TOKEN` for Hugging Face's rate limits, and **container disk 40 GB** (the
+default is too small for 16.4 GB of weights: the first try failed with "No space left on
+device"). A failed download now stops the worker at once instead of leaving the engine
+waiting. Not yet measured.
 
 ## 7B image and the cold-start series
 
