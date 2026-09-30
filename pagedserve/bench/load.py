@@ -40,15 +40,27 @@ def _parse_sse_line(line: str) -> dict | None:
 
 def _chunk_text(obj: dict) -> str | None:
     """Text delta from a completions or chat-completions stream chunk; None if the chunk
-    carries no choice (e.g. a usage-only trailer)."""
+    carries no token: a usage-only trailer, a chat chunk that only announces the role, or a
+    closing chunk with an empty delta and a finish reason. (Counting those made the role
+    chunk the "first token" and the closing chunk an extra one.) A token whose text is
+    empty (a partial UTF-8 sequence held back) still counts, as ""."""
     choices = obj.get("choices") or []
     if not choices:
         return None
     c = choices[0]
+    finishing = c.get("finish_reason") is not None
     if "text" in c:
-        return c["text"] or ""
+        text = c["text"] or ""
+        return None if (finishing and not text) else text
     delta = c.get("delta") or {}
-    return delta.get("content") or ""
+    content = delta.get("content")
+    if not content and (finishing or "role" in delta or content is None):
+        return None
+    return content or ""
+
+
+def _chunk_finished(obj: dict) -> bool:
+    return any(c.get("finish_reason") is not None for c in obj.get("choices") or [])
 
 
 async def _one_request(client: httpx.AsyncClient, model: str, req: TraceRequest,
@@ -72,6 +84,7 @@ async def _one_request(client: httpx.AsyncClient, model: str, req: TraceRequest,
     usage_in: int | None = None
     unparsed = ""  # non-SSE text seen before any token (an empty stream's reason)
     gaps: list[float] = []
+    completed = not stream  # a stream must end with [DONE] or a finish reason
     try:
         if stream:
             async with client.stream("POST", path, json=body) as resp:
@@ -87,13 +100,21 @@ async def _one_request(client: httpx.AsyncClient, model: str, req: TraceRequest,
                             unparsed += line.strip()[:300 - len(unparsed)]
                         continue
                     if obj.get("done"):
+                        completed = True
                         break
+                    if obj.get("error"):  # an error event inside a 200 stream
+                        err = obj["error"]
+                        raise RuntimeError(f"stream error: {err.get('message', err) if isinstance(err, dict) else err}")
                     now = time.perf_counter()
                     usage = obj.get("usage")
                     if usage:
                         usage_out = usage.get("completion_tokens", usage_out)
                         usage_in = usage.get("prompt_tokens", usage_in)
+                    if _chunk_finished(obj):
+                        completed = True
                     if _chunk_text(obj) is None:
+                        if completed and first is not None:
+                            last = now  # the closing chunk ends the request
                         continue
                     n_chunks += 1
                     if first is None:
@@ -112,13 +133,19 @@ async def _one_request(client: httpx.AsyncClient, model: str, req: TraceRequest,
             usage_in = usage.get("prompt_tokens")
     except Exception as e:  # noqa: BLE001 - any failure is a failed record
         return RequestRecord(req.request_id, t_send, first, None, req.prompt_len, n_chunks,
-                             success=False, error=f"{type(e).__name__}: {e}")
+                             success=False, error=f"{type(e).__name__}: {e}",
+                             end_s=time.perf_counter())
     out_tokens = usage_out if usage_out is not None else n_chunks
     in_tokens = usage_in if usage_in is not None else req.prompt_len
     if last is None:
         return RequestRecord(req.request_id, t_send, first, None, in_tokens, out_tokens,
                              success=False,
-                             error="empty stream" + (f": {unparsed!r}" if unparsed else ""))
+                             error="empty stream" + (f": {unparsed!r}" if unparsed else ""),
+                             end_s=time.perf_counter())
+    if not completed:  # cut off: tokens arrived, but neither [DONE] nor a finish reason
+        return RequestRecord(req.request_id, t_send, first, None, in_tokens, out_tokens,
+                             success=False, error="stream ended before completion",
+                             end_s=time.perf_counter())
     return RequestRecord(req.request_id, t_send, first, last, in_tokens, out_tokens,
                          chunk_gaps_ms=gaps)
 

@@ -15,6 +15,10 @@ except Exception:  # noqa: BLE001
     _HAS_CUDA = False
 if _HAS_CUDA and os.environ.get("PAGEDSERVE_FORCE_INTERPRETER") != "1":
     pytest.skip("CUDA present: interpreter tests skipped", allow_module_level=True)
+import importlib.util  # noqa: E402
+
+if importlib.util.find_spec("triton") is None:  # before the env var: it would leak into
+    pytest.skip("triton not installed", allow_module_level=True)  # other modules' tests
 os.environ["TRITON_INTERPRET"] = "1"  # noqa: E402
 
 import torch  # noqa: E402

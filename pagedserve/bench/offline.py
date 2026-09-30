@@ -40,11 +40,15 @@ def run_offline_benchmark(engine: LLMEngine, trace: list[TraceRequest],
     t0 = time.perf_counter()
     n_done = 0
 
-    def admit(req: TraceRequest, now: float) -> None:
+    def admit(req: TraceRequest, now: float) -> None:  # noqa: ARG001 - admission time
         sp = dataclasses.replace(template, max_tokens=req.output_len, ignore_eos=True)
         assert req.prompt_ids is not None, "offline benchmark needs prompt ids in the trace"
-        engine.add_request(req.request_id, req.prompt_ids, sp, arrival_time=now)
-        recs[req.request_id] = RequestRecord(req.request_id, now, None, None,
+        # Latency counts from when the request was offered, not from when it was admitted:
+        # a static batch's queue wait (and a continuous batch's wait for the running step)
+        # used to be left out, which flattered static batching.
+        arrived = t0 + req.arrival_s
+        engine.add_request(req.request_id, req.prompt_ids, sp, arrival_time=arrived)
+        recs[req.request_id] = RequestRecord(req.request_id, arrived, None, None,
                                              req.prompt_len, 0)
 
     while pending or engine.has_unfinished_requests():

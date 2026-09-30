@@ -148,10 +148,17 @@ def render_prompt(req: TraceRequest, tokenizer: Any = None) -> str | list[int]:
         assert req.prompt_ids is not None, "trace has no prompt ids; pass a tokenizer"
         return req.prompt_ids
     prefix_words = [_WORDS[i % len(_WORDS)] for i in range(req.shared_prefix_len)]
-    # Salt the body with the request index so prompts differ beyond the shared prefix.
-    salt = int(req.request_id.rsplit("-", 1)[-1]) if req.request_id[-1].isdigit() else 0
     n_body = max(req.prompt_len - req.shared_prefix_len, 1)
-    body_words = [_WORDS[(salt * 7 + i * 3) % len(_WORDS)] for i in range(n_body)]
+    body_ids = (req.prompt_ids or [])[req.shared_prefix_len:]
+    if body_ids:
+        # The body comes from the trace's own seeded token ids, so bodies are as distinct
+        # as the ids are and change with the seed. (They used to depend only on the request
+        # index modulo the 40-word list: 40 distinct bodies, the same for every seed, which
+        # a prefix-caching server could serve from its cache.)
+        body_words = [_WORDS[body_ids[i % len(body_ids)] % len(_WORDS)] for i in range(n_body)]
+    else:
+        salt = int(req.request_id.rsplit("-", 1)[-1]) if req.request_id[-1].isdigit() else 0
+        body_words = [_WORDS[(salt * 7 + i * 3) % len(_WORDS)] for i in range(n_body)]
     text = " ".join(prefix_words + body_words)
     ids = tokenizer.encode(text)
     while len(ids) < req.prompt_len:

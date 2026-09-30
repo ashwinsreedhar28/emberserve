@@ -37,16 +37,19 @@ def check_logits(engine: LLMEngine, prompt_ids: list[int], ref: torch.Tensor, at
     return diff
 
 
-def top2_margin(engine: LLMEngine, ids: list[int]) -> float:
-    """Gap between the two largest next-token logits after `ids` under this engine."""
+def tie_gap(engine: LLMEngine, ids: list[int], got: int, want: int) -> float:
+    """How far the weaker of the two disputed tokens (`got` from this engine, `want` from
+    the reference) sits below the top next-token logit after `ids` under this engine. Small
+    means both are at the top within noise: a numeric tie-break between those two tokens.
+    (Measuring only the top-2 gap would also excuse an unrelated wrong token whenever the
+    top two happened to be close.)"""
     req = engine.add_request("margin", ids, SamplingParams.greedy(1))
     so = engine.scheduler.schedule()
     with torch.inference_mode():
-        logits = engine.step_logits(so)
+        logits = engine.step_logits(so)[0].float()
     engine.abort_request(req.request_id)
     engine.backend.free_sequence(req.seq_id)
-    top = torch.topk(logits[0].float(), 2).values
-    return float(top[0] - top[1])
+    return float(logits.max() - torch.minimum(logits[got], logits[want]))
 
 
 def run_golden_check(model_dir: str, backend: str, device: str, dtype: torch.dtype,
@@ -98,9 +101,13 @@ def run_golden_check(model_dir: str, backend: str, device: str, dtype: torch.dty
             continue
         first = next((k for k, (a, b) in enumerate(zip(r.output_token_ids, e["output_ids"]))
                       if a != b), min(len(r.output_token_ids), len(e["output_ids"])))
-        margin = top2_margin(engine, e["prompt_ids"] + e["output_ids"][:first])
+        if first >= min(len(r.output_token_ids), len(e["output_ids"])):
+            margin = float("inf")  # one output ended early: not a tie between two tokens
+        else:
+            margin = tie_gap(engine, e["prompt_ids"] + e["output_ids"][:first],
+                             r.output_token_ids[first], e["output_ids"][first])
         if margin < tie_margin:
-            print(f"[{backend}] prompt {i}: tie-break at token {first} (top-2 margin {margin:.3f} "
+            print(f"[{backend}] prompt {i}: tie-break at token {first} (tie gap {margin:.3f} "
                   f"< 2x logits error {tie_margin:.3f}) - numerics, not a bug")
         else:
             ok = False

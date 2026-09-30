@@ -40,6 +40,22 @@ def env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+def snapshot_complete(model_dir: str | os.PathLike) -> bool:
+    """A whole checkpoint is there: config.json plus every weight file the safetensors index
+    names (or model.safetensors). config.json alone is not enough: the fetcher writes it
+    first, so a directory left by an interrupted download has it and no shards."""
+    d = Path(model_dir)
+    if not (d / "config.json").exists():
+        return False
+    index = d / "model.safetensors.index.json"
+    if index.exists():
+        import json
+
+        names = set(json.loads(index.read_text())["weight_map"].values())
+        return all((d / n).exists() for n in names)
+    return (d / "model.safetensors").exists()
+
+
 def resolve_model_dir() -> str:
     """The snapshot to serve: baked into the image, or fetched at cold start.
 
@@ -49,10 +65,14 @@ def resolve_model_dir() -> str:
     WEIGHTS_STREAM=0 downloads everything first instead."""
     model_dir = env("MODEL_DIR", "/models/model")
     repo = os.environ.get("MODEL_REPO")
-    if not repo or (Path(model_dir) / "config.json").exists():
+    if not repo or snapshot_complete(model_dir):
         return model_dir
     revision = os.environ.get("MODEL_REVISION") or None
-    if env("WEIGHTS_STREAM", "1") != "1":
+    # Only the streaming loader on one rank can wait for shards still downloading; tensor
+    # parallelism and the reference loader read the files present, so they download first.
+    streaming = (env("WEIGHTS_STREAM", "1") == "1" and env("TENSOR_PARALLEL_SIZE", "1") == "1"
+                 and os.environ.get("PAGEDSERVE_LOADER", "stream") != "safetensors")
+    if not streaming:
         from huggingface_hub import snapshot_download
 
         snapshot_download(repo, local_dir=model_dir, revision=revision,

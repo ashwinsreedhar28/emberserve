@@ -25,8 +25,8 @@ relays them to the caller); otherwise the parsed JSON response is yielded once.
 
 from __future__ import annotations
 
+import asyncio
 import os
-import time
 from typing import Any, AsyncIterator
 
 import httpx
@@ -73,26 +73,64 @@ def _error(message: str, error_type: str = "worker_error") -> dict[str, Any]:
 
 
 async def _coalesced(chunks: AsyncIterator[str], flush_s: float) -> AsyncIterator[str]:
-    """Join `chunks` into one string per `flush_s` window (the first chunk of a window
-    starts its clock, so an idle stream still delivers its first token at once)."""
+    """Join `chunks` into one string per `flush_s` window. The stream's first chunk goes out
+    at once (the first token is not held back), and a window is flushed when it expires,
+    whether or not another chunk has arrived: it used to be checked only when the next
+    chunk came in, so a token followed by a slow step could sit in the buffer far past
+    `flush_s`. The source is read by a task of its own so that a timer can interrupt the
+    wait without cancelling the source's iterator."""
     if flush_s <= 0:
         async for chunk in chunks:
             if chunk:
                 yield chunk
         return
-    buf: list[str] = []
-    started = 0.0
-    async for chunk in chunks:
-        if not chunk:
-            continue
-        if not buf:
-            started = time.monotonic()
-        buf.append(chunk)
-        if time.monotonic() - started >= flush_s:
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue = asyncio.Queue()
+    end = object()
+
+    async def pump() -> None:
+        try:
+            async for chunk in chunks:
+                if chunk:
+                    await q.put(chunk)
+        except Exception as exc:  # noqa: BLE001 - re-raised on the consumer side
+            await q.put(exc)
+            return
+        await q.put(end)
+
+    task = asyncio.create_task(pump())
+    try:
+        first = True
+        buf: list[str] = []
+        deadline: float | None = None
+        while True:
+            timeout = None if deadline is None else max(0.0, deadline - loop.time())
+            try:
+                item = await asyncio.wait_for(q.get(), timeout)
+            except asyncio.TimeoutError:
+                yield "".join(buf)
+                buf, deadline = [], None
+                continue
+            if item is end:
+                break
+            if isinstance(item, Exception):
+                raise item
+            if first:
+                first = False
+                yield item
+                continue
+            if not buf:
+                deadline = loop.time() + flush_s
+            buf.append(item)
+        if buf:
             yield "".join(buf)
-            buf = []
-    if buf:
-        yield "".join(buf)
+    finally:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:  # noqa: BLE001 - the consumer stopped early
+                pass
 
 
 def make_handler(client: httpx.AsyncClient, served_model: str | None = None,

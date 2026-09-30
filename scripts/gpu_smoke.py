@@ -39,8 +39,9 @@ def make(model_dir: str, name: str, block: int, graphs: bool, max_seqs: int) -> 
     return LLMEngine.from_pretrained(model_dir, cfg)
 
 
-def top2_margin(eng: LLMEngine, ids: list[int]) -> float:
-    """Gap between the two largest next-token logits after `ids`, under `eng` (fp32)."""
+def tie_gap(eng: LLMEngine, ids: list[int], got: int, want: int) -> float:
+    """How far the weaker of the two disputed tokens sits below the top next-token logit
+    after `ids`, under `eng` (fp32): small only when both are tied at the top."""
     eng.reset()
     req = eng.add_request("margin", ids, SamplingParams.greedy(1))
     so = eng.scheduler.schedule()
@@ -50,8 +51,7 @@ def top2_margin(eng: LLMEngine, ids: list[int]) -> float:
         logits = eng.model.compute_logits(hidden, meta)[0].float()
     eng.abort_request(req.request_id)
     eng.reset()
-    top = torch.topk(logits, 2).values
-    return float(top[0] - top[1])
+    return float(logits.max() - torch.minimum(logits[got], logits[want]))
 
 
 def main() -> int:
@@ -99,10 +99,11 @@ def main() -> int:
     for name, toks in outputs.items():
         if toks == ref:
             continue
-        pos = next(i for i, (a, b) in enumerate(zip(toks, ref)) if a != b)
-        margin = top2_margin(engines["naive"], prompt_ids + ref[:pos])
+        pos = next((i for i, (a, b) in enumerate(zip(toks, ref)) if a != b), min(len(toks), len(ref)))
+        margin = (tie_gap(engines["naive"], prompt_ids + ref[:pos], toks[pos], ref[pos])
+                  if pos < min(len(toks), len(ref)) else float("inf"))
         if margin < args.tie_margin:
-            print(f"[{name:20s}] tie-break at token {pos} (top-2 logit margin {margin:.2e} "
+            print(f"[{name:20s}] tie-break at token {pos} (tie gap {margin:.2e} "
                   f"< {args.tie_margin:.0e}) - numerics, not a bug")
         else:
             clean = False

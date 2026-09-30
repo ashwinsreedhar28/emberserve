@@ -86,6 +86,28 @@ def test_trace_shared_prefix_and_render() -> None:
     assert txt.split()[:8] == txt0.split()[:8]
 
 
+def test_rendered_text_prompts_follow_the_seed() -> None:
+    """Synthetic text bodies used to depend only on the request index modulo 40, so 100
+    equal-length requests rendered 40 distinct prompts, identical for every seed: a
+    prefix-caching server served repeats. They now come from the seeded token ids."""
+    class WordTok:
+        def encode(self, s: str) -> list[int]:
+            return [hash(w) % 1000 for w in s.split()]
+
+        def decode(self, ids: list[int]) -> str:
+            return " ".join("w" for _ in ids)
+
+    def render(seed: int) -> list[str]:
+        t = generate_trace(100, seed=seed, vocab_size=VOCAB, max_prompt_len=64)
+        for r in t:  # equal lengths, as in the reviewer's repro
+            r.prompt_len, r.prompt_ids = 48, (r.prompt_ids * 48)[:48]
+        return [render_prompt(r, WordTok()) for r in t]
+
+    a, b = render(0), render(1000)
+    assert len(set(a)) == 100 and len(set(b)) == 100
+    assert not set(a) & set(b)
+
+
 # ---- metrics -------------------------------------------------------------------------
 def test_summarize_percentiles_and_goodput() -> None:
     recs = []
@@ -162,6 +184,18 @@ def test_static_vs_continuous_steps() -> None:
     assert len(steps_c) < len(steps_s)
     # Static batching never had more than one batch in flight.
     assert max(s.num_seqs for s in steps_s) <= 8
+
+
+def test_offline_latency_counts_from_the_offer() -> None:
+    """Arrival used to be the admission time, so requests waiting for an earlier static
+    batch had their wait left out of TTFT (a reviewer's repro: three requests offered at
+    t=0 got three different arrival times)."""
+    trace = tiny_trace(3)  # all offered at t=0
+    stat = make_engine("paged_torch", max_num_seqs=1)
+    recs, _ = run_offline_benchmark(stat, trace, static_batching=True)
+    assert len({r.arrival_s for r in recs}) == 1
+    ttft = [r.ttft_s for r in recs]
+    assert ttft[0] < ttft[1] < ttft[2]  # the queued ones waited, and it shows
 
 
 # ---- ablation CLI --------------------------------------------------------------------
@@ -460,3 +494,55 @@ def test_sharegpt_trace_samples_and_filters(tmp_path):
     assert all(r.arrival_s == 0.0 for r in tr2)
     with pytest.raises(ValueError):
         sharegpt_trace(str(path), 100, Tok(), seed=1)
+
+
+# ---- SSE accounting (review fixes) -------------------------------------------------------
+def _sse_transport(events: list[tuple[float, str]]) -> httpx.MockTransport:
+    """A server that streams `events` ((delay before, data payload) pairs) as SSE."""
+    async def body():
+        for delay, data in events:
+            await asyncio.sleep(delay)
+            yield f"data: {data}\n\n".encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body(), headers={"content-type": "text/event-stream"})
+
+    return httpx.MockTransport(handler)
+
+
+def _one(events: list[tuple[float, str]], path: str = "/v1/chat/completions"):
+    from pagedserve.bench.trace import TraceRequest
+
+    trace = [TraceRequest("r0", prompt_len=3, output_len=2, arrival_s=0.0, prompt_text="hi")]
+    return asyncio.run(run_http_benchmark("http://test", "m", trace, transport=_sse_transport(events),
+                                          progress=False, path=path))[0]
+
+
+def test_role_only_chunk_is_not_the_first_token() -> None:
+    role = '{"choices":[{"delta":{"role":"assistant","content":""},"finish_reason":null}]}'
+    tok = '{"choices":[{"delta":{"content":"%s"},"finish_reason":null}]}'
+    fin = '{"choices":[{"delta":{},"finish_reason":"length"}]}'
+    r = _one([(0.0, role), (0.15, tok % "hello"), (0.01, tok % " there"), (0.0, fin), (0.0, "[DONE]")])
+    assert r.success and r.ttft_s is not None and r.ttft_s >= 0.14  # the content, not the role
+    assert r.output_tokens == 2  # no usage: two content chunks, not role + 2 + finish
+
+
+def test_error_event_and_cut_off_stream_are_failures() -> None:
+    tok = '{"choices":[{"delta":{"content":"hello"},"finish_reason":null}]}'
+    err = '{"error":{"message":"engine died","type":"server_error"}}'
+    r = _one([(0.0, tok), (0.01, err)])
+    assert not r.success and "engine died" in r.error and r.end_s is not None
+    r = _one([(0.0, tok)])  # no finish reason, no [DONE]
+    assert not r.success and "before completion" in r.error
+
+
+def test_failures_count_in_the_run_duration() -> None:
+    """A failure that ends after the last success used to fall out of the duration
+    (results/openrouter_kimi_k3_r05.json: 46.04 s of 61.37 s wall, 141 vs ~106 tok/s)."""
+    recs = [RequestRecord("a", arrival_s=0.0, first_token_s=0.5, finish_s=10.0,
+                          prompt_tokens=5, output_tokens=100),
+            RequestRecord("b", arrival_s=1.0, first_token_s=None, finish_s=None,
+                          prompt_tokens=5, output_tokens=0, success=False, error="timeout",
+                          end_s=20.0)]
+    s = summarize(recs)
+    assert s.duration_s == 20.0 and s.throughput_tok_s == 5.0 and s.completed == 1

@@ -29,6 +29,10 @@ if _HAS_CUDA and os.environ.get("PAGEDSERVE_FORCE_INTERPRETER") != "1":
     pytest.skip("CUDA present: interpreter tests skipped so TRITON_INTERPRET does not leak "
                 "into the GPU tests (set PAGEDSERVE_FORCE_INTERPRETER=1 to run them alone)",
                 allow_module_level=True)
+import importlib.util  # noqa: E402
+
+if importlib.util.find_spec("triton") is None:  # before the env var: it would leak into
+    pytest.skip("triton not installed", allow_module_level=True)  # other modules' tests
 os.environ["TRITON_INTERPRET"] = "1"  # noqa: E402  (must precede the triton import)
 
 from collections import defaultdict  # noqa: E402

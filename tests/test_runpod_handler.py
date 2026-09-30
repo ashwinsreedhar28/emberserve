@@ -143,6 +143,57 @@ async def test_stream_chunks_are_coalesced_by_time() -> None:
     assert [c async for c in mod._coalesced(source(), 0)] == [f"data: {i}\n\n" for i in range(6)]
 
 
+async def test_stream_flush_does_not_wait_for_the_next_chunk() -> None:
+    """The first chunk goes out at once, and a buffered chunk goes out when its window ends
+    even if the next chunk is late (it used to wait for that chunk: a 100 ms window held a
+    token ~350 ms in a reviewer's repro)."""
+    import asyncio
+
+    mod = _load("handler")
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+
+    async def source():
+        yield "a"
+        await asyncio.sleep(0.02)
+        yield "b"
+        await asyncio.sleep(0.5)  # a slow step
+        yield "c"
+
+    seen = []
+    async for c in mod._coalesced(source(), 0.1):
+        seen.append((c, loop.time() - t0))
+    assert [c for c, _ in seen] == ["a", "b", "c"]
+    assert seen[0][1] < 0.05  # first token: immediately
+    assert seen[1][1] < 0.25  # "b": when its 0.1 s window ends, not when "c" arrives (~0.52 s)
+
+
+async def test_stream_coalescer_passes_source_errors_and_stops_early() -> None:
+    import asyncio
+
+    mod = _load("handler")
+
+    async def failing():
+        yield "a"
+        await asyncio.sleep(0.01)
+        raise RuntimeError("upstream broke")
+
+    got = []
+    with pytest.raises(RuntimeError, match="upstream broke"):
+        async for c in mod._coalesced(failing(), 0.1):
+            got.append(c)
+    assert got == ["a"]
+
+    async def endless():
+        while True:
+            yield "x"
+            await asyncio.sleep(0.001)
+
+    gen = mod._coalesced(endless(), 0.05)
+    assert await gen.__anext__() == "x"
+    await gen.aclose()  # the pump task is cancelled, nothing left running
+
+
 async def test_ping_and_lb_command(proxied, monkeypatch) -> None:
     client, _ = proxied
     assert (await client.get("/ping")).status_code == 200
@@ -274,3 +325,53 @@ def test_fetcher_reports_a_failed_download(tmp_path) -> None:
                       list_files=lambda r, rev: ["config.json", "model-1.safetensors"])
     f.start_shards(f.fetch_small())
     assert f.done.wait(5) and isinstance(f.error, OSError)
+
+
+def test_snapshot_complete_needs_every_indexed_shard(tmp_path) -> None:
+    """config.json is fetched first, so a directory left by an interrupted download has it
+    and no shards; it used to count as a finished snapshot and skip the fetch."""
+    main = _load("main")
+    d = tmp_path / "m"
+    d.mkdir()
+    (d / "config.json").write_text("{}")
+    assert not main.snapshot_complete(d)
+    (d / "model.safetensors.index.json").write_text(json.dumps(
+        {"weight_map": {"a": "model-00001-of-00002.safetensors", "b": "model-00002-of-00002.safetensors"}}))
+    (d / "model-00001-of-00002.safetensors").write_bytes(b"x")
+    assert not main.snapshot_complete(d)
+    (d / "model-00002-of-00002.safetensors").write_bytes(b"x")
+    assert main.snapshot_complete(d)
+    single = tmp_path / "s"
+    single.mkdir()
+    (single / "config.json").write_text("{}")
+    (single / "model.safetensors").write_bytes(b"x")
+    assert main.snapshot_complete(single) and not main.snapshot_complete(tmp_path / "nothing")
+
+
+@pytest.mark.parametrize("env", [{"TENSOR_PARALLEL_SIZE": "2"}, {"PAGEDSERVE_LOADER": "safetensors"}])
+def test_weights_download_first_when_the_loader_cannot_wait(tmp_path, monkeypatch, env) -> None:
+    """Only the streaming loader on one rank waits for shards still downloading; with tensor
+    parallelism or the reference loader the engine read an empty directory and failed."""
+    import huggingface_hub
+
+    main = _load("main")
+    calls = []
+
+    def fake_snapshot_download(repo, local_dir, revision=None, allow_patterns=None):
+        calls.append(repo)
+        Path(local_dir, "config.json").write_text("{}")
+        Path(local_dir, "model.safetensors").write_bytes(b"x")
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    for k in ("TENSOR_PARALLEL_SIZE", "PAGEDSERVE_LOADER", "WEIGHTS_STREAM", "PAGEDSERVE_WAIT_WEIGHTS_S"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("MODEL_REPO", "org/model")
+    monkeypatch.setenv("MODEL_DIR", str(tmp_path / "m"))
+    (tmp_path / "m").mkdir()
+    assert main.resolve_model_dir() == str(tmp_path / "m")
+    assert calls == ["org/model"] and main.snapshot_complete(tmp_path / "m")
+    import os
+
+    assert "PAGEDSERVE_WAIT_WEIGHTS_S" not in os.environ

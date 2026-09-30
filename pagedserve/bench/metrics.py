@@ -27,6 +27,9 @@ class RequestRecord:
     # chunk while the server keeps up, so their distribution is the server's step-time
     # distribution as a client sees it: the p90/p99 are the steps that carried prompts.
     chunk_gaps_ms: list[float] = field(default_factory=list)
+    # When a failed request gave up (perf_counter seconds): failures still take time, and
+    # the run's duration has to include it.
+    end_s: float | None = None
 
     @property
     def ttft_s(self) -> float | None:
@@ -98,13 +101,18 @@ class BenchSummary:
 
 def summarize(records: list[RequestRecord], slo_ttft_ms: float | None = None,
               slo_tpot_ms: float | None = None, wall_s: float | None = None) -> BenchSummary:
-    """Aggregate. `wall_s` defaults to (last finish - first arrival) over successful
-    records, which is what a load generator measures from first send to last byte."""
+    """Aggregate. `wall_s` defaults to (last end - first arrival): the last successful
+    finish or the last failure, whichever is later, which is what a load generator measures
+    from first send to last byte. (Failures used to be left out, so a run whose failed
+    requests kept timing out after the last success had a shorter duration and a higher
+    throughput than it delivered.) Only successful requests count as output."""
     ok = [r for r in records if r.success and r.finish_s is not None]
     if wall_s is None:
-        if ok:
+        ends = [r.finish_s for r in ok] + [r.end_s for r in records
+                                           if not r.success and r.end_s is not None]
+        if ends:
             t0 = min(r.arrival_s for r in records)
-            wall_s = max(r.finish_s for r in ok) - t0
+            wall_s = max(ends) - t0
         else:
             wall_s = 0.0
     wall = max(wall_s, 1e-9)
