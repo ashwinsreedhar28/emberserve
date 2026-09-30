@@ -18,6 +18,9 @@ Accepted job input shapes (all under job["input"]):
 
 With "stream": true the server's SSE bytes are yielded as they arrive (the platform
 relays them to the caller); otherwise the parsed JSON response is yielded once.
+
+`"timeline": true` in a non-streaming job wraps the response as
+`{"timeline": {...}, "output": <response>}`, the worker's cold-start marks (timeline.py).
 """
 
 from __future__ import annotations
@@ -27,6 +30,13 @@ import time
 from typing import Any, AsyncIterator
 
 import httpx
+
+import sys as _sys  # noqa: E402
+
+_here = os.path.dirname(os.path.abspath(__file__))
+if _here not in _sys.path:  # the tests load this file by path
+    _sys.path.insert(0, _here)
+import timeline  # noqa: E402
 
 DEFAULT_CHAT_ROUTE = "/v1/chat/completions"
 DEFAULT_COMPLETION_ROUTE = "/v1/completions"
@@ -92,8 +102,11 @@ def make_handler(client: httpx.AsyncClient, served_model: str | None = None,
     field; `alive()` reports whether the server process is still there."""
 
     async def handler(job: dict[str, Any]) -> AsyncIterator[Any]:
+        timeline.mark("first_job")
+        job_input = job.get("input") or {}
+        want_timeline = bool(job_input.get("timeline"))
         try:
-            route, method, body = normalize_job_input(job.get("input") or {})
+            route, method, body = normalize_job_input(job_input)
         except ValueError as exc:
             yield _error(str(exc))
             return
@@ -115,7 +128,8 @@ def make_handler(client: httpx.AsyncClient, served_model: str | None = None,
                         yield chunk
                 else:
                     raw = await resp.aread()
-                    yield httpx.Response(200, content=raw).json()
+                    parsed = httpx.Response(200, content=raw).json()
+                    yield {"timeline": timeline.snapshot(), "output": parsed} if want_timeline else parsed
         except httpx.HTTPError as exc:
             yield _error(f"request to pagedserve failed: {type(exc).__name__}: {exc}")
 

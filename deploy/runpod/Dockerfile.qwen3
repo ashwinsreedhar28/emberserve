@@ -1,4 +1,5 @@
-# pagedserve on Runpod Serverless.
+# pagedserve on Runpod Serverless, Qwen3-8B baked in (~27 GB image; Runpod's GitHub build
+# has no build-args field, hence a second Dockerfile). Everything else is identical to ./Dockerfile.
 #
 #   docker build --platform linux/amd64 -f deploy/runpod/Dockerfile -t <you>/pagedserve-worker:0.5b .
 #   docker push <you>/pagedserve-worker:0.5b
@@ -14,7 +15,7 @@
 # https://api.runpod.ai/v2/<endpoint>/openai/v1/... .
 FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
 
-ARG MODEL_REPO="Qwen/Qwen2.5-0.5B-Instruct"
+ARG MODEL_REPO="Qwen/Qwen3-8B"
 ENV MODEL_DIR=/models/model \
     PYTHONUNBUFFERED=1 \
     HF_HUB_ENABLE_HF_TRANSFER=1

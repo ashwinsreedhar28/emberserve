@@ -150,3 +150,51 @@ async def test_ping_and_lb_command(proxied, monkeypatch) -> None:
     monkeypatch.setenv("PORT", "9000")
     cmd = main.serve_command("/models/m", host="0.0.0.0", port=9000)
     assert cmd[cmd.index("--host") + 1] == "0.0.0.0" and cmd[cmd.index("--port") + 1] == "9000"
+
+
+async def test_timeline_job_returns_worker_marks(proxied) -> None:
+    client, _ = proxied
+    h = _load("handler")
+    tl = h.timeline
+    tl.reset()
+    tl.record_process_starts()
+    tl.mark("serve_healthy")
+    handler = h.make_handler(client, served_model=MODEL)
+    out = await _collect(handler, {"id": "t1", "input": {"prompt": "hi", "timeline": True,
+                                                         "sampling_params": {"max_tokens": 2, "ignore_eos": True}}})
+    assert len(out) == 1 and set(out[0]) == {"timeline", "output"}
+    marks = out[0]["timeline"]["marks"]
+    assert {"serve_healthy", "first_job"} <= set(marks)
+    assert out[0]["output"]["usage"]["completion_tokens"] == 2
+    plain = await _collect(handler, {"id": "t2", "input": {"prompt": "hi", "sampling_params": {"max_tokens": 2}}})
+    assert "timeline" not in plain[0]
+    tl.reset()
+
+
+def test_proc_start_wall_is_in_the_past() -> None:
+    import os
+    import time
+
+    tl = _load("timeline")
+    t = tl.proc_start_wall("self")
+    if not os.path.exists("/proc/self/stat"):
+        assert t is None
+        return
+    assert t is not None and time.time() - 3600 * 24 * 365 < t <= time.time() + 1
+    assert tl.proc_start_wall(1) is not None and tl.proc_start_wall(1) <= t + 1
+
+
+def test_coldstart_phases_from_marks() -> None:
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    import serverless_coldstart as sc
+
+    tl = {"marks": {"container_start": 100.0, "worker_start": 101.0, "worker_main": 102.5,
+                    "serve_spawned": 102.6, "engine_boot": 107.0, "serve_healthy": 107.8,
+                    "sdk_ready": 107.9, "first_job": 108.2}, "notes": {}}
+    ph = sc.phases(90.0, tl)
+    assert ph["schedule_pull_create"] == 10.0 and ph["engine_boot"] == 4.4
+    assert ph["submit_to_first_job"] == 18.2
+    assert sc._timeline_of([{"timeline": tl, "output": {}}]) == tl
+    assert sc.phases(90.0, None) is None

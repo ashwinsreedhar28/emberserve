@@ -77,6 +77,14 @@ python scripts/serverless_coldstart.py --mode queue --endpoint $E7 --api-key "$R
   --out results/serverless_coldstart_7b_4090_flashboot_on.json
 ```
 
+`deploy/runpod/Dockerfile.qwen3` is the same with Qwen3-8B (16.4 GB of weights, ~27 GB
+image). Add `--timeline` to the command and the cold job asks the worker for its own
+wall-clock marks (`deploy/runpod/timeline.py`: container start, Python start, server
+spawn, the engine's `[boot]` line, healthy, SDK ready, first job), so `delayTime` comes back
+split into phases: scheduling + image pull + container create, container to Python, the
+engine's boot, and the SDK hand-off. The split across the client/worker boundary carries
+the two clocks' skew (NTP, well under 100 ms).
+
 then toggle FlashBoot on the endpoint and run it again with the other label. Both worker
 modes log `[worker] pagedserve up in X s` (container start to healthy); read it off the
 worker log and pass it as `--note`. `--mode lb` does the same series against a

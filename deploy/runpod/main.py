@@ -17,12 +17,17 @@ import os
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
-import httpx
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import timeline  # noqa: E402
+
+timeline.record_process_starts()
+
+import httpx  # noqa: E402
+
 from handler import make_handler  # noqa: E402
 
 PORT = int(os.environ.get("PAGEDSERVE_PORT", "8000"))  # the proxy's local server (queue mode)
@@ -67,6 +72,30 @@ def serve_command(model_dir: str, host: str = "127.0.0.1", port: int = PORT) -> 
     return cmd
 
 
+def spawn_serve(cmd: list[str]) -> subprocess.Popen:
+    """Start the server with its output relayed line by line to ours (the worker log), noting
+    when the engine core prints its `[boot]` line."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    timeline.mark("serve_spawned")
+
+    def relay() -> None:
+        for line in proc.stdout:  # type: ignore[union-attr]
+            if "[boot]" in line:
+                timeline.mark("engine_boot")
+                timeline.note("engine_boot", line.strip())
+            sys.stdout.write(line)
+            sys.stdout.flush()
+
+    threading.Thread(target=relay, name="serve-log", daemon=True).start()
+    return proc
+
+
+def _import_sdk(box: dict) -> None:
+    import runpod
+
+    box["runpod"] = runpod
+
+
 def wait_for_server(proc: subprocess.Popen, timeout_s: float, base_url: str = BASE_URL) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -82,6 +111,7 @@ def wait_for_server(proc: subprocess.Popen, timeout_s: float, base_url: str = BA
 
 
 def main() -> None:
+    timeline.mark("worker_main")
     model_dir = resolve_model_dir()
     if env("RUNPOD_LB", "0") == "1":
         # Load-balancing endpoint: Runpod routes HTTP straight to this container's $PORT and
@@ -92,20 +122,29 @@ def main() -> None:
         cmd = serve_command(model_dir, host="0.0.0.0", port=port)
         print("[worker] load-balancing mode: " + " ".join(shlex.quote(c) for c in cmd), flush=True)
         t0 = time.monotonic()
-        proc = subprocess.Popen(cmd)
+        proc = spawn_serve(cmd)
         wait_for_server(proc, float(env("STARTUP_TIMEOUT", "600")), f"http://127.0.0.1:{port}")
+        timeline.mark("serve_healthy")
         print(f"[worker] pagedserve up in {time.monotonic() - t0:.1f} s (load-balancing mode)", flush=True)
         sys.exit(proc.wait())
-    import runpod
-
     cmd = serve_command(model_dir)
     print("[worker] starting: " + " ".join(shlex.quote(c) for c in cmd), flush=True)
     t0 = time.monotonic()
-    proc = subprocess.Popen(cmd)
+    proc = spawn_serve(cmd)
+    # the SDK import (~1 s) overlaps the engine's boot instead of following it
+    sdk: dict = {}
+    importer = threading.Thread(target=_import_sdk, args=(sdk,), name="sdk-import", daemon=True)
+    importer.start()
     wait_for_server(proc, float(env("STARTUP_TIMEOUT", "600")))
+    timeline.mark("serve_healthy")
     print(f"[worker] pagedserve up in {time.monotonic() - t0:.1f} s", flush=True)
+    importer.join()
+    runpod = sdk["runpod"]
     client = httpx.AsyncClient(base_url=BASE_URL)
     max_concurrency = int(env("MAX_CONCURRENCY", "64"))
+    timeline.mark("sdk_ready")
+    print("[worker] timeline " + " ".join(f"{k}={v:.3f}" for k, v in timeline.snapshot()["marks"].items()),
+          flush=True)
     runpod.serverless.start({
         "handler": make_handler(client, env("SERVED_MODEL_NAME", model_dir),
                                 alive=lambda: proc.poll() is None),
