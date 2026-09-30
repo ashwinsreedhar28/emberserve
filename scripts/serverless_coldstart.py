@@ -47,11 +47,50 @@ def lb_request(client: httpx.Client, model: str, max_tokens: int, timeout_s: flo
     return {"status": status, "ok": status == 200, "ttfb_s": (first or t1) - t0, "total_s": t1 - t0, "bytes": n}
 
 
-def queue_request(client: httpx.Client, max_tokens: int, timeout_s: float) -> dict:
+PHASES = [  # (name, from mark, to mark); "submit" is the client's clock
+    ("schedule_pull_create", "submit", "container_start"),
+    ("container_to_python", "container_start", "worker_start"),
+    ("python_imports", "worker_start", "worker_main"),
+    ("to_serve_spawn", "worker_main", "serve_spawned"),
+    ("engine_boot", "serve_spawned", "engine_boot"),
+    ("boot_to_healthy", "engine_boot", "serve_healthy"),
+    ("healthy_to_sdk", "serve_healthy", "sdk_ready"),
+    ("sdk_to_first_job", "sdk_ready", "first_job"),
+]
+
+
+def phases(submit_wall: float, tl: dict | None) -> dict | None:
+    """Seconds per cold-start phase from the worker's marks (deploy/runpod/timeline.py)."""
+    if not tl or not tl.get("marks"):
+        return None
+    marks = {"submit": submit_wall, **tl["marks"]}
+    out = {}
+    for name, a, b in PHASES:
+        if a in marks and b in marks:
+            out[name] = round(marks[b] - marks[a], 3)
+    if "first_job" in marks:
+        out["submit_to_first_job"] = round(marks["first_job"] - submit_wall, 3)
+    return out
+
+
+def _timeline_of(output) -> dict | None:
+    """The handler's `{"timeline": ..., "output": ...}` from a /runsync or /status output
+    (a list of yields when the handler streams its aggregate)."""
+    items = output if isinstance(output, list) else [output]
+    for item in items:
+        if isinstance(item, dict) and "timeline" in item:
+            return item["timeline"]
+    return None
+
+
+def queue_request(client: httpx.Client, max_tokens: int, timeout_s: float, want_timeline: bool = False) -> dict:
     """One job through /runsync; when Runpod's 90 s runsync cap returns IN_QUEUE /
     IN_PROGRESS (a long cold start), keep polling /status/<id> so the record carries the
     job's final delayTime and the true wall time."""
     body = {"input": {"prompt": PROMPT, "sampling_params": {"max_tokens": max_tokens, "ignore_eos": True}}}
+    if want_timeline:
+        body["input"]["timeline"] = True
+    submit_wall = time.time()
     t0 = time.perf_counter()
     r = client.post("/runsync", json=body, timeout=timeout_s)
     try:
@@ -75,6 +114,11 @@ def queue_request(client: httpx.Client, max_tokens: int, timeout_s: float) -> di
     out["delay_ms"] = j.get("delayTime")          # Runpod: queue wait incl. worker start
     out["execution_ms"] = j.get("executionTime")  # Runpod: handler time
     out["worker_id"] = j.get("workerId")
+    out["submit_wall"] = submit_wall
+    if want_timeline:
+        tl = _timeline_of(j.get("output"))
+        out["timeline"] = tl
+        out["phases_s"] = phases(submit_wall, tl)
     if not out["ok"]:
         out["error"] = (r.text or "")[:300]
     return out
@@ -115,6 +159,8 @@ def main() -> None:
     ap.add_argument("--label", default="")
     ap.add_argument("--image", default="", help="what the image carries, e.g. '0.5B, 9.8 GB, weights baked in'")
     ap.add_argument("--note", default="", help="e.g. worker-log start-to-healthy seconds")
+    ap.add_argument("--timeline", action="store_true",
+                    help="queue: ask the worker for its cold-start marks and split delayTime into phases")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
     if not args.api_key.strip():
@@ -133,11 +179,17 @@ def main() -> None:
                 health = wait_for_zero_workers(c, args.zero_wait_s)
                 print(f"[coldstart] /health before sample: {json.dumps((health or {}).get('workers'))}", file=sys.stderr)
             if args.mode == "queue":
-                cold = queue_request(c, args.max_tokens, args.timeout_s)
+                cold = queue_request(c, args.max_tokens, args.timeout_s, args.timeline)
                 warm = queue_request(c, args.max_tokens, args.timeout_s)
                 print(f"[coldstart] {i + 1}/{args.repeats}: cold total {cold['total_s']:.1f} s, delayTime "
                       f"{cold.get('delay_ms')} ms, executionTime {cold.get('execution_ms')} ms, {cold.get('job_status')}; "
                       f"warm total {warm['total_s'] * 1e3:.0f} ms, delayTime {warm.get('delay_ms')} ms", file=sys.stderr)
+                if cold.get("phases_s"):
+                    print("[coldstart]   phases: " + ", ".join(f"{k} {v:.1f} s" for k, v in cold["phases_s"].items()),
+                          file=sys.stderr)
+                    note = (cold.get("timeline") or {}).get("notes", {}).get("engine_boot")
+                    if note:
+                        print(f"[coldstart]   {note}", file=sys.stderr)
             else:
                 cold = lb_request(c, args.model, args.max_tokens, args.timeout_s)
                 warm = lb_request(c, args.model, args.max_tokens, args.timeout_s)
@@ -156,6 +208,10 @@ def main() -> None:
         "warm_total_s": {"median": st.median(warm_ok) if warm_ok else None},
         "failures": sum(1 for r in runs if not r["cold"]["ok"]),
     }
+    ph = [r["cold"]["phases_s"] for r in runs if r["cold"].get("phases_s")]
+    if ph:
+        summary["phases_median_s"] = {k: st.median(p[k] for p in ph if k in p)
+                                      for k in dict.fromkeys(k for p in ph for k in p)}
     out = {"kind": "serverless_coldstart", "mode": args.mode, "endpoint": args.endpoint, "label": args.label,
            "image": args.image, "note": args.note, "max_tokens": args.max_tokens, "idle_s": args.idle_s,
            "runs": runs, "summary": summary}
