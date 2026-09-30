@@ -350,7 +350,9 @@ def test_snapshot_complete_needs_every_indexed_shard(tmp_path) -> None:
 
 @pytest.mark.parametrize("env", [{"TENSOR_PARALLEL_SIZE": "2"}, {"PAGEDSERVE_LOADER": "safetensors"},
                                  {"EXTRA_SERVE_ARGS": "--no-chunked-prefill --tensor-parallel-size 2"},
-                                 {"EXTRA_SERVE_ARGS": "--tensor-parallel-size=2"}])
+                                 {"EXTRA_SERVE_ARGS": "--tensor-parallel-size=2"},
+                                 {"EXTRA_SERVE_ARGS": "--tensor-parallel 2"},
+                                 {"EXTRA_SERVE_ARGS": "--tensor-parallel=2"}])
 def test_weights_download_first_when_the_loader_cannot_wait(tmp_path, monkeypatch, env) -> None:
     """Only the streaming loader on one rank waits for shards still downloading; with tensor
     parallelism or the reference loader the engine read an empty directory and failed."""

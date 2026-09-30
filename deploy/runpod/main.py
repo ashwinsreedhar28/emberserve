@@ -57,19 +57,18 @@ def snapshot_complete(model_dir: str | os.PathLike) -> bool:
 
 
 def effective_tp_size() -> int:
-    """The tensor-parallel size `serve_command` will launch with: TENSOR_PARALLEL_SIZE, unless
-    EXTRA_SERVE_ARGS (appended last, so it wins) sets `--tensor-parallel-size`."""
-    size = env("TENSOR_PARALLEL_SIZE", "1")
-    args = shlex.split(env("EXTRA_SERVE_ARGS", ""))
-    for i, a in enumerate(args):
-        if a == "--tensor-parallel-size" and i + 1 < len(args):
-            size = args[i + 1]
-        elif a.startswith("--tensor-parallel-size="):
-            size = a.split("=", 1)[1]
+    """The tensor-parallel size the server will actually run with: the serve command this
+    worker launches (TENSOR_PARALLEL_SIZE, then EXTRA_SERVE_ARGS) parsed by pagedserve's own
+    CLI parser, so abbreviations (`--tensor-parallel 2`) and `=` forms count exactly as
+    `serve` counts them. The parser imports nothing heavy."""
+    from pagedserve.cli import build_parser
+
+    cmd = serve_command("/models/model")
     try:
-        return int(size)
-    except ValueError:
-        return 1
+        args, _ = build_parser().parse_known_args(cmd[cmd.index("pagedserve.cli") + 1:])
+        return int(args.tensor_parallel_size)
+    except (SystemExit, ValueError, AttributeError):  # malformed args: serve will fail too
+        return int(env("TENSOR_PARALLEL_SIZE", "1") or 1)
 
 
 def resolve_model_dir() -> str:
