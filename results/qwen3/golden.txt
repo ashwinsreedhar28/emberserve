@@ -1,0 +1,20 @@
+== float16
+[paged_flash] logits prompt0 max|diff| = 4.02e-02 (atol 1e+00, fp16/bf16 vs fp32 reference) ok
+[paged_flash] prompt 0: 64 tokens match
+[paged_flash] prompt 1: 64 tokens match
+[paged_flash] prompt 2: 64 tokens match
+[paged_flash] prompt 3: 64 tokens match
+[paged_flash] prompt 4: 64 tokens match
+[paged_flash] prompt 5: 64 tokens match
+[paged_flash] prompt 6: tie-break at token 28 (top-2 margin 0.031 < 2x logits error 0.080) - numerics, not a bug
+ALL OK
+== bfloat16
+[paged_flash] logits prompt0 max|diff| = 4.40e-01 (atol 1e+00, fp16/bf16 vs fp32 reference) ok
+[paged_flash] prompt 0: 64 tokens match
+[paged_flash] prompt 1: 64 tokens match
+[paged_flash] prompt 2: 64 tokens match
+[paged_flash] prompt 3: tie-break at token 55 (top-2 margin 0.000 < 2x logits error 0.880) - numerics, not a bug
+[paged_flash] prompt 4: 64 tokens match
+[paged_flash] prompt 5: 64 tokens match
+[paged_flash] prompt 6: tie-break at token 28 (top-2 margin 0.000 < 2x logits error 0.880) - numerics, not a bug
+ALL OK

@@ -1,0 +1,16 @@
+== results/qwen3/trace_q3_16.jsonl
+boot: load_weights 2.06 s · weights_read 1.11 s · kv_cache 0.04 s · capture_full_graphs 1.92 s
+1051 steps, 34366 decode tokens, 197 prompt chunks in 165 steps
+kind                      count  share   dec pre_tok  sched  build  launch resolve    gpu gpu_p90   gap gap_p90
+decode_graph                886    84%    30       0   0.06   0.31    0.37   10.91  13.33   17.88  0.04    0.03
+mixed                       165    16%    48     319   0.10   0.50   30.23   12.99  35.93   57.82  0.03    0.04
+engine TPOT 20.03 ms = decode floor 15.10 + prompt-step GPU excess 4.89 + prompt-step idle gaps 0.01 + decode-step idle gaps 0.03
+mixed step over a decode-only step of its batch: mean 21.17 ms, p50 17.27, p90 42.03; per prompt chunk 17.73 ms
+== results/qwen3/trace_7b_16.jsonl
+boot: load_weights 1.75 s · weights_read 1.07 s · kv_cache 0.09 s · capture_full_graphs 1.76 s
+1244 steps, 34367 decode tokens, 197 prompt chunks in 179 steps
+kind                      count  share   dec pre_tok  sched  build  launch resolve    gpu gpu_p90   gap gap_p90
+decode_graph               1065    86%    26       0   0.06   0.29    0.40    9.00  11.10   12.10  0.03    0.03
+mixed                       179    14%    39     294   0.11   0.48   19.33   15.03  28.15   45.95  0.04    0.03
+engine TPOT 15.19 ms = decode floor 11.70 + prompt-step GPU excess 3.46 + prompt-step idle gaps 0.01 + decode-step idle gaps 0.03
+mixed step over a decode-only step of its batch: mean 16.51 ms, p50 12.31, p90 34.43; per prompt chunk 15.01 ms

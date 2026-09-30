@@ -1,0 +1,6 @@
+pagedserve  run 1: healthy    6.1 s  first token    6.9 s  | pagedserve_boot load_weights 2.13 s · weights_read 1.09 s · kv_cache 0.04 s · capture_full_graphs 1.89 s (weights 15.23 GB in 1.09 s = 14.04 GB/s (8 readers, 64 MB buffers))
+pagedserve  run 2: healthy   10.1 s  first token   10.7 s  | pagedserve_boot load_weights 3.99 s · weights_read 2.80 s · kv_cache 0.80 s · capture_full_graphs 3.42 s (weights 15.23 GB in 2.80 s = 5.43 GB/s (8 readers, 64 MB buffers))
+pagedserve  run 3: healthy    5.5 s  first token    6.1 s  | pagedserve_boot load_weights 1.98 s · weights_read 1.12 s · kv_cache 0.09 s · capture_full_graphs 1.62 s (weights 15.23 GB in 1.12 s = 13.63 GB/s (8 readers, 64 MB buffers))
+
+first token, runs after the first (warm caches):
+  pagedserve  mean    8.4 s  (runs 10.7, 6.1; first run 6.9 s)

@@ -1,0 +1,4 @@
+ps_q3_16_r*      n=3  tok/s   1,931  TPOT p50  20.90 p99  26.04  TTFT p50   74.8 p99  232.2 ms  (TPOT p50 runs 20.81, 20.92, 20.97)
+vllm_q3_16_r*    n=3  tok/s   1,951  TPOT p50  20.98 p99  25.85  TTFT p50   73.5 p99  230.6 ms  (TPOT p50 runs 21.00, 20.96, 20.98)
+ps_7b_16         n=1  tok/s   2,036  TPOT p50  15.98 p99  20.42  TTFT p50   53.0 p99  186.9 ms  (TPOT p50 runs 15.98)
+vllm_7b_16       n=1  tok/s   2,042  TPOT p50  16.21 p99  20.36  TTFT p50   57.9 p99  194.8 ms  (TPOT p50 runs 16.21)
