@@ -1,0 +1,18 @@
+# The small image (see Dockerfile.slim) on the devel base: larger (~10 GB), but the same base
+# every other pagedserve image has been built and run on. Use it if Dockerfile.slim fails.
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
+
+ENV MODEL_DIR=/models/model \
+    MODEL_REPO=Qwen/Qwen3-8B \
+    PYTHONUNBUFFERED=1 \
+    HF_XET_HIGH_PERFORMANCE=1 \
+    HF_XET_CHUNK_CACHE_SIZE_BYTES=0
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY pagedserve ./pagedserve
+COPY deploy/runpod/handler.py deploy/runpod/main.py deploy/runpod/timeline.py deploy/runpod/fetch.py ./deploy/runpod/
+RUN pip install --no-cache-dir -e '.[hf,server]' runpod httpx \
+ && pip install --no-cache-dir flash-attn --no-build-isolation
+
+CMD ["python", "-u", "deploy/runpod/main.py"]

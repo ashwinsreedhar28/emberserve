@@ -173,17 +173,22 @@ def load_hf_weights(model: nn.Module, model_dir: str | os.PathLike,
     `lm_head.weight` may be absent. Under tensor parallelism (`dist.get_tp()`), each
     checkpoint tensor is cut to this rank's slice first (`dist.shard_tensor`).
     """
-    files = sorted(Path(model_dir).glob("*.safetensors"))
-    if not files:
-        raise FileNotFoundError(f"no *.safetensors files in {model_dir}")
     from pagedserve import dist as tpdist
 
-    if tpdist.get_tp().size == 1 and os.environ.get("PAGEDSERVE_LOADER", "stream") != "safetensors":
+    streaming = tpdist.get_tp().size == 1 and os.environ.get("PAGEDSERVE_LOADER", "stream") != "safetensors"
+    # PAGEDSERVE_WAIT_WEIGHTS_S: the checkpoint may still be downloading (a Serverless worker
+    # with a small image); the streaming loader waits up to this long for each file to appear.
+    wait = os.environ.get("PAGEDSERVE_WAIT_WEIGHTS_S")
+    if streaming:
         from pagedserve.model.fastload import stream_weights
 
         dev = device if device is not None else next(model.parameters()).device
-        model.load_stats = stream_weights(model, model_dir, dev)  # read by the boot phases
+        model.load_stats = stream_weights(model, model_dir, dev,  # read by the boot phases
+                                          wait_s=float(wait) if wait else None)
         return
+    files = sorted(Path(model_dir).glob("*.safetensors"))
+    if not files:
+        raise FileNotFoundError(f"no *.safetensors files in {model_dir}")
 
     def tensors():
         for path in files:

@@ -198,3 +198,79 @@ def test_coldstart_phases_from_marks() -> None:
     assert ph["submit_to_first_job"] == 18.2
     assert sc._timeline_of([{"timeline": tl, "output": {}}]) == tl
     assert sc.phases(90.0, None) is None
+
+
+def test_fetcher_streams_a_checkpoint_into_the_loader(tmp_path, monkeypatch) -> None:
+    """Small files first, shards in the background with a delay each, and the engine's
+    loader (waiting via PAGEDSERVE_WAIT_WEIGHTS_S) ends up with the same weights."""
+    import shutil
+    import sys
+    import time
+
+    import torch
+
+    from pagedserve.model.weights import load_model
+    from tests.test_model import tiny_model
+    from tests.test_weights import _dump_snapshot
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy" / "runpod"))
+    fetch = _load("fetch")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _dump_snapshot(tiny_model(seed=8), repo, split=True)
+    import json
+
+    from safetensors import safe_open
+
+    wm = {}
+    for sh in sorted(repo.glob("*.safetensors")):
+        with safe_open(str(sh), framework="pt") as f:
+            wm.update({k: sh.name for k in f.keys()})
+    (repo / "model.safetensors.index.json").write_text(json.dumps({"weight_map": wm}))
+    monkeypatch.setenv("PAGEDSERVE_LOADER", "safetensors")
+    ref = load_model(repo, dtype=torch.float32)
+    monkeypatch.delenv("PAGEDSERVE_LOADER")
+
+    def download(r, name, local_dir, revision):
+        if name.endswith(".safetensors"):
+            time.sleep(0.2)
+        out = Path(local_dir) / name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(Path(r) / name, out)
+        return str(out)
+
+    dst = tmp_path / "model"
+    f = fetch.Fetcher(str(repo), dst, workers=2, download=download,
+                      list_files=lambda r, rev: sorted(p.name for p in Path(r).iterdir()))
+    shards = f.fetch_small()
+    assert (dst / "config.json").exists() and not list(dst.glob("*.safetensors"))
+    assert shards == sorted(p.name for p in repo.glob("*.safetensors"))
+    f.start_shards(shards)
+    monkeypatch.setenv("PAGEDSERVE_WAIT_WEIGHTS_S", "10")
+    m = load_model(dst, dtype=torch.float32)
+    assert f.done.wait(10) and f.error is None
+    assert m.load_stats.wait_seconds > 0.1
+    for k, v in ref.state_dict().items():
+        assert torch.equal(v, m.state_dict()[k]), k
+    assert not (dst / ".incoming").exists()
+    assert "weights_downloaded" in fetch.timeline.snapshot()["marks"]
+
+
+def test_fetcher_reports_a_failed_download(tmp_path) -> None:
+    import sys
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "deploy" / "runpod"))
+    fetch = _load("fetch")
+
+    def download(r, name, local_dir, revision):
+        if name.endswith(".safetensors"):
+            raise OSError("HTTP 503")
+        out = Path(local_dir) / name
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("{}")
+        return str(out)
+
+    f = fetch.Fetcher("r", tmp_path / "m", download=download,
+                      list_files=lambda r, rev: ["config.json", "model-1.safetensors"])
+    f.start_shards(f.fetch_small())
+    assert f.done.wait(5) and isinstance(f.error, OSError)

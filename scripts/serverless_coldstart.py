@@ -56,6 +56,10 @@ PHASES = [  # (name, from mark, to mark); "submit" is the client's clock
     ("boot_to_healthy", "engine_boot", "serve_healthy"),
     ("healthy_to_sdk", "serve_healthy", "sdk_ready"),
     ("sdk_to_first_job", "sdk_ready", "first_job"),
+    # small image, weights fetched at start (deploy/runpod/fetch.py); these overlap the above
+    ("fetch_small_files", "worker_main", "weights_small_done"),
+    ("download_after_spawn", "serve_spawned", "weights_downloaded"),
+    ("boot_after_download", "weights_downloaded", "engine_boot"),
 ]
 
 
@@ -195,9 +199,10 @@ def main() -> None:
                 if cold.get("phases_s"):
                     print("[coldstart]   phases: " + ", ".join(f"{k} {v:.1f} s" for k, v in cold["phases_s"].items()),
                           file=sys.stderr)
-                    note = (cold.get("timeline") or {}).get("notes", {}).get("engine_boot")
-                    if note:
-                        print(f"[coldstart]   {note}", file=sys.stderr)
+                    notes = (cold.get("timeline") or {}).get("notes", {})
+                    for key in ("engine_boot", "weights_downloaded"):
+                        if notes.get(key):
+                            print(f"[coldstart]   {key}: {notes[key]}", file=sys.stderr)
             else:
                 cold = lb_request(c, args.model, args.max_tokens, args.timeout_s)
                 warm = lb_request(c, args.model, args.max_tokens, args.timeout_s)

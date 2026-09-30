@@ -22,7 +22,16 @@ This loader reads the files itself:
     staging tensor that is cast into the parameter on the GPU when its last piece arrives.
 
 The result is bounded by the slower of the disk (or page cache) and PCIe instead of by one
-Python thread. `load_hf_weights` uses it whenever it can (one rank, safetensors files);
+Python thread.
+
+Files are streamed one after another, each planned when it is opened, so the loader can
+also run *while the checkpoint is still downloading* (`wait_s`, or
+`PAGEDSERVE_WAIT_WEIGHTS_S` through `load_hf_weights`): the expected file list comes from
+`model.safetensors.index.json`, and each file is loaded as soon as it appears at its final
+path (downloaders write to a temporary name and rename, so a file that exists is
+complete). A Serverless worker with a small image starts the engine while the weights are
+still arriving; the engine's own startup and the loading of shard i overlap the download
+of the shards after it. `load_hf_weights` uses it whenever it can (one rank, safetensors files);
 `PAGEDSERVE_LOADER=safetensors` forces the reference path. On CPU the same plan runs with
 plain buffers and synchronous copies (the tests compare both loaders there).
 """
@@ -82,14 +91,17 @@ class LoadStats:
     threads: int = 0
     buffer_mb: float = 0
     direct_bytes: int = 0
+    wait_seconds: float = 0.0  # time spent waiting for files still downloading
     files: list[str] = field(default_factory=list)
 
     @property
     def gb_per_s(self) -> float:
-        return self.bytes / max(self.seconds, 1e-9) / 1e9
+        """Read rate, excluding time spent waiting for files to arrive."""
+        return self.bytes / max(self.seconds - self.wait_seconds, 1e-9) / 1e9
 
 
-def plan_tensors(model: nn.Module, files: list[Path], fds: list[int]) -> list[_Tensor]:
+def plan_tensors(model: nn.Module, files: list[Path], fds: list[int],
+                 seen: set[tuple] | None = None) -> list[_Tensor]:
     """Every checkpoint tensor that maps into `model`, in file order, validated the way
     `weights._load_tensors` validates: unknown keys, duplicates and shape mismatches raise
     here, before anything is read; parameters nothing loads raise after (`missing`)."""
@@ -98,7 +110,7 @@ def plan_tensors(model: nn.Module, files: list[Path], fds: list[int]) -> list[_T
     config = model.config
     state = model.state_dict()
     out: list[_Tensor] = []
-    seen: set[tuple] = set()
+    seen = set() if seen is None else seen
     for path, fd in zip(files, fds):
         header, data_start = read_header(path)
         for name, info in sorted(header.items(), key=lambda kv: kv[1]["data_offsets"][0]):
@@ -153,84 +165,77 @@ def _batches(tensors: list[_Tensor], cap: int) -> list[list[tuple[_Tensor, int, 
     return batches
 
 
+def expected_files(model_dir: str | os.PathLike) -> list[Path]:
+    """The checkpoint's safetensors files, in load order: the index's `weight_map` values
+    when there is an index (they need not exist yet), else the files present."""
+    d = Path(model_dir)
+    index = d / "model.safetensors.index.json"
+    if index.exists():
+        names = sorted(set(json.loads(index.read_text())["weight_map"].values()))
+        return [d / n for n in names]
+    if (d / "model.safetensors").exists() or not any(d.glob("*.safetensors")):
+        return [d / "model.safetensors"]
+    return sorted(d.glob("*.safetensors"))
+
+
+def wait_for_file(path: Path, deadline: float, poll_s: float = 0.02) -> float:
+    """Block until `path` exists; seconds waited. TimeoutError at `deadline` (monotonic)."""
+    t0 = time.monotonic()
+    while not path.exists():
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"{path} did not appear (weights still downloading?)")
+        time.sleep(poll_s)
+    return time.monotonic() - t0
+
+
 def stream_weights(model: nn.Module, model_dir: str | os.PathLike, device: torch.device | str,
-                   threads: int | None = None, buffer_mb: float = 64) -> LoadStats:
-    """Load `model_dir/*.safetensors` into `model` (single rank). See the module docstring."""
+                   threads: int | None = None, buffer_mb: float = 64,
+                   wait_s: float | None = None) -> LoadStats:
+    """Load `model_dir/*.safetensors` into `model` (single rank). See the module docstring.
+    `wait_s`: wait up to this long in total for files that are still downloading."""
     from pagedserve.model.weights import _expected_shards, _hf_name
 
     t0 = time.perf_counter()
     device = torch.device(device)
     cuda = device.type == "cuda"
-    files = sorted(Path(model_dir).glob("*.safetensors"))
-    if not files:
-        raise FileNotFoundError(f"no *.safetensors files in {model_dir}")
+    if wait_s is not None:
+        files = expected_files(model_dir)
+        deadline = time.monotonic() + wait_s
+    else:
+        files = sorted(Path(model_dir).glob("*.safetensors"))
+        deadline = None
+        if not files:
+            raise FileNotFoundError(f"no *.safetensors files in {model_dir}")
     threads = threads or max(2, min(8, os.cpu_count() or 2))
-    fds = [os.open(str(p), os.O_RDONLY) for p in files]
     stats = LoadStats(threads=threads, buffer_mb=buffer_mb, files=[p.name for p in files])
+    cap = max(1, int(buffer_mb * (1 << 20)))
+    bufs: list[torch.Tensor] = []
+    views: list = []
+    stream = torch.cuda.Stream(device) if cuda else None
+    seen: set[tuple] = set()
+    loaded: set[tuple] = set()
+    pool = ThreadPoolExecutor(max_workers=threads, thread_name_prefix="pagedserve-load")
     try:
         with torch.no_grad():
-            tensors = plan_tensors(model, files, fds)
-            cap = max(1, int(buffer_mb * (1 << 20)))
-            batches = _batches(tensors, cap)
-            nbuf = min(len(batches), 2 * threads) or 1
-            bufs = [torch.empty(cap, dtype=torch.uint8, pin_memory=cuda) for _ in range(nbuf)]
-            views = [b.numpy() for b in bufs]
-            stream = torch.cuda.Stream(device) if cuda else None
-
-            def read(i: int, wait: "torch.cuda.Event | None") -> None:
-                if wait is not None:
-                    wait.synchronize()  # the batch that used this buffer has been copied out
-                view = views[i % nbuf]
-                for t, _toff, n, boff in batches[i]:
-                    got = 0
-                    while got < n:  # preadv may return short on some filesystems
-                        k = os.preadv(t.fd, [memoryview(view[boff + got:boff + n])],
-                                      t.offset + _toff + got)
-                        if k <= 0:
-                            raise OSError(f"short read in {t.name}")
-                        got += k
-
-            pool = ThreadPoolExecutor(max_workers=threads, thread_name_prefix="pagedserve-load")
-            futures: dict[int, Future] = {}
-            for i in range(min(nbuf, len(batches))):
-                futures[i] = pool.submit(read, i, None)
-            try:
-                ctx = torch.cuda.stream(stream) if cuda else _Null()
-                with ctx:
-                    for i, batch in enumerate(batches):
-                        futures.pop(i).result()
-                        buf = bufs[i % nbuf]
-                        for t, toff, n, boff in batch:
-                            src = buf[boff:boff + n]
-                            if t.direct:
-                                dst = t.target.view(-1).view(torch.uint8)[toff:toff + n]
-                                dst.copy_(src, non_blocking=cuda)
-                                stats.direct_bytes += n
-                            else:
-                                if t.staging is None:
-                                    t.staging = torch.empty(t.nbytes, dtype=torch.uint8, device=device)
-                                t.staging[toff:toff + n].copy_(src, non_blocking=cuda)
-                            t.filled += n
-                            if t.filled == t.nbytes and not t.direct:
-                                t.target.copy_(t.staging.view(t.dtype).view(t.shape))
-                                t.staging = None
-                        ev = None
-                        if cuda:
-                            ev = torch.cuda.Event()
-                            ev.record(stream)
-                        nxt = i + nbuf
-                        if nxt < len(batches):
-                            futures[nxt] = pool.submit(read, nxt, ev)
-                if cuda:
-                    stream.synchronize()
-            finally:
-                pool.shutdown(wait=True, cancel_futures=True)
-            stats.bytes = sum(t.nbytes for t in tensors)
-            stats.tensors = len(tensors)
-            loaded = {t.key for t in tensors}
+            for path in files:
+                if deadline is not None:
+                    stats.wait_seconds += wait_for_file(path, deadline)
+                fd = os.open(str(path), os.O_RDONLY)
+                try:
+                    tensors = plan_tensors(model, [path], [fd], seen)
+                    batches = _batches(tensors, cap)
+                    nbuf = min(len(batches), 2 * threads) or 1
+                    while len(bufs) < nbuf:  # the ring grows to the largest file's need
+                        bufs.append(torch.empty(cap, dtype=torch.uint8, pin_memory=cuda))
+                        views.append(bufs[-1].numpy())
+                    _stream_file(batches, bufs[:nbuf], views[:nbuf], pool, stream, device, cuda, stats)
+                    stats.bytes += sum(t.nbytes for t in tensors)
+                    stats.tensors += len(tensors)
+                    loaded.update(t.key for t in tensors)
+                finally:
+                    os.close(fd)
     finally:
-        for fd in fds:
-            os.close(fd)
+        pool.shutdown(wait=True, cancel_futures=True)
 
     config = model.config
     tied = getattr(config, "tie_word_embeddings", False)
@@ -241,6 +246,64 @@ def stream_weights(model: nn.Module, model_dir: str | os.PathLike, device: torch
         raise KeyError(f"parameters never loaded from {model_dir}: {missing}")
     stats.seconds = time.perf_counter() - t0
     return stats
+
+
+def _stream_file(batches, bufs, views, pool, stream, device, cuda, stats) -> None:
+    """Read one file's batches into the pinned ring and copy them out (the pipeline in the
+    module docstring). Returns once every copy of this file has completed."""
+    nbuf = len(bufs)
+
+    def read(i: int, wait: "torch.cuda.Event | None") -> None:
+        if wait is not None:
+            wait.synchronize()  # the batch that used this buffer has been copied out
+        view = views[i % nbuf]
+        for t, toff, n, boff in batches[i]:
+            got = 0
+            while got < n:  # preadv may return short on some filesystems
+                k = os.preadv(t.fd, [memoryview(view[boff + got:boff + n])], t.offset + toff + got)
+                if k <= 0:
+                    raise OSError(f"short read in {t.name}")
+                got += k
+
+    futures: dict[int, Future] = {}
+    for i in range(min(nbuf, len(batches))):
+        futures[i] = pool.submit(read, i, None)
+    try:
+        ctx = torch.cuda.stream(stream) if cuda else _Null()
+        with ctx:
+            for i, batch in enumerate(batches):
+                futures.pop(i).result()
+                buf = bufs[i % nbuf]
+                for t, toff, n, boff in batch:
+                    src = buf[boff:boff + n]
+                    if t.direct:
+                        dst = t.target.view(-1).view(torch.uint8)[toff:toff + n]
+                        dst.copy_(src, non_blocking=cuda)
+                        stats.direct_bytes += n
+                    else:
+                        if t.staging is None:
+                            t.staging = torch.empty(t.nbytes, dtype=torch.uint8, device=device)
+                        t.staging[toff:toff + n].copy_(src, non_blocking=cuda)
+                    t.filled += n
+                    if t.filled == t.nbytes and not t.direct:
+                        t.target.copy_(t.staging.view(t.dtype).view(t.shape))
+                        t.staging = None
+                ev = None
+                if cuda:
+                    ev = torch.cuda.Event()
+                    ev.record(stream)
+                nxt = i + nbuf
+                if nxt < len(batches):
+                    futures[nxt] = pool.submit(read, nxt, ev)
+        if cuda:
+            stream.synchronize()
+    finally:  # on an exception mid-file: drop queued reads, let running ones finish
+        pending = [f for f in futures.values() if not f.cancel()]
+        for f in pending:
+            try:
+                f.result()
+            except Exception:  # noqa: BLE001 - the original exception is the one raised
+                pass
 
 
 class _Null:

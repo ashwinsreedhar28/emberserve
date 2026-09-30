@@ -878,8 +878,16 @@ the weights from Hugging Face at start (model cache off, bf16):
 | **pagedserve** (3 samples) | **16.2, 17.2, 17.7 s** — median 17.2 s | 1.8–2.1 s |
 | worker-vllm (2 samples) | 154.3, 140.7 s — median 147.5 s | 0.5–0.6 s |
 | worker-vllm on a fresh host (image pull) | 210.4 s | 0.5 s |
+| pagedserve on a fresh host (first job to a new endpoint) | **328.4 s** — 317.5 s of it scheduling + pulling the 27 GB image, 7.1 s engine boot | 1.3 s |
 
-**8.6× sooner to a working worker.** The pagedserve worker returns its own wall-clock
+**8.6× sooner to a working worker on a host that has the image — and 1.56× slower on
+one that doesn't.** The fresh-host sample (`..._fresh_host.json`, one job sent the moment
+a new endpoint began rolling out its image) spent 317.5 s before our container's first
+process started: Runpod pulled the 27 GB image at ~85 MB/s, while worker-vllm fetched the
+same 16 GB of weights from Hugging Face at ~760 MB/s. The engine booted in 7.1 s either
+way. Baking the weights in wins on warm hosts and loses on fresh ones, which is where a
+scale-out lands; the fix is a small image that fetches the weights at start (next section). One
+sample, taken right after the image upload, when the registry may also have been cold. The pagedserve worker returns its own wall-clock
 marks with the job (`deploy/runpod/timeline.py`, `serverless_coldstart.py --timeline`), so
 its `delayTime` splits into phases (medians of three):
 
@@ -902,14 +910,36 @@ capture and profiling, and ~9 s of API server start, fitness checks and hand-off
 the download it would still be ~125 s. The gap is what vLLM does at startup, not where
 the weights come from.
 
+**The small image** (`deploy/runpod/Dockerfile.slim`: CUDA runtime base, no weights) fetches
+the checkpoint at start the way worker-vllm does, but without waiting for it: config,
+tokenizer and the shard index come first (2.2 s), the five shards download in the
+background, and `pagedserve serve` starts at once with `PAGEDSERVE_WAIT_WEIGHTS_S`, its
+streaming loader loading each shard the moment it is renamed into place
+(`results/serverless_coldstart_pagedserve_slim_qwen3_8b_4090_off_v2.json`, same endpoint
+settings, 40 GB container disk):
+
+| Qwen3-8B, warm host, both fetching 16 GB from Hugging Face at start | `delayTime` | median |
+|---|---|---:|
+| **pagedserve, small image** | **47.4, 37.9, 32.9 s** | **37.9 s** |
+| worker-vllm | 154.3, 140.7 s | 147.5 s |
+
+3.9× sooner with the same starting point. The download ran at 0.56, 0.75 and 1.02 GB/s
+(29.2, 21.9 and 16.1 s; unauthenticated — an `HF_TOKEN` may steady it) and the engine's
+whole startup overlapped it: after the last shard landed, 5.6–7.0 s remained (loading that
+shard, then graph capture, 4.1 s). The first attempt ran out of container disk (the
+default is too small for 16 GB), and the first successful one captured piecewise graphs
+for 15.5 s because the engine sized the checkpoint by the files present — none yet — and
+took it for a small model; it now reads the index's `total_size`. Not yet measured: the
+small image on a fresh host, the number that matters against worker-vllm's 210 s.
+
 What is left in pagedserve's 17 s, cheapest first: the first request's executionTime is
 1.8–2.1 s against vLLM's 0.5 s (most likely Triton kernels compiling on first use into an
 empty cache; warm them into the image), graph capture could run in the background while
 the first requests run eagerly, and 3 s is the Runpod SDK's fitness checks. FlashBoot was
 accidentally on for a first worker-vllm series (`..._flashboot_on.json`): it resumed once
 in three tries (0.5 s), and its misses were the full boots above — so FlashBoot's value
-depends on how cheap a miss is. Not measured: pagedserve on a fresh host (both endpoints
-pre-pulled their images after the release), and more than three samples per engine.
+depends on how cheap a miss is. Not measured: more than three warm samples per engine,
+more than one fresh-host sample.
 
 ### What the numbers taught us
 
@@ -1263,7 +1293,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 
 ## Roadmap
 
-* Cold start: Qwen3-8B first token in 6.7 s against vLLM's 69.1 s on the same pod (7B: 5.6 s); on Runpod Serverless `delayTime` 17.2 s against worker-vllm's 147.5 s. Next: warm the Triton cache into the image (first request 1.8–2.1 s), graph capture in the background while the first requests run eagerly, a fresh-host sample, then CUDA checkpoint/restore inside a Serverless container.
+* Cold start: Qwen3-8B first token in 6.7 s against vLLM's 69.1 s on the same pod (7B: 5.6 s); on Runpod Serverless `delayTime` 17.2 s against worker-vllm's 147.5 s. On a fresh host the baked 27 GB image lost (328 s vs worker-vllm's 210 s, 317 s of it the pull), so the small image fetches the weights at start and streams them into the engine as they arrive (`deploy/runpod/Dockerfile.slim`, `fetch.py`): 37.9 s median on a warm host against worker-vllm's 147.5 s. Next: its fresh-host number, graph capture during the download (~4 s), `HF_TOKEN` for steadier downloads. Later: the Triton cache in the image (first request 1.3–2.1 s), background graph capture, CUDA checkpoint/restore inside a Serverless container.
 * Re-measure the vLLM rows still marked as from a replayed-trace sweep (R1-8B, Moonlight, TP2, the ShareGPT text sweeps) with a trace per rate.
 * 0.5B saturation: `--api-workers 2` lifted it past vLLM on real text (28.0k vs 25.1k tok/s, 112%) and back to parity on the synthetic trace ([Two API processes](#two-api-processes---api-workers)). Four workers add nothing over two, so the next limit is the engine core's per-step pickling and sending; shared memory for the step's rows, or fewer bytes per row, is the next experiment.
 * 7B mixed steps (the tail at 16 req/s, now at parity with vLLM 0.30.0): the per-kernel profile says a mixed step's GEMMs run at 196 TFLOP/s with a 256-row tile a third full at 339 rows, attention takes two flash calls where one paged varlen call would do, and the elementwise ops run unfused. Each is shared with vLLM, so each is a chance to be ahead rather than to catch up. Piecewise graphs at 7B stay off above 4 GB (`--piecewise-bucket-step 256` recovered the 1% saturation loss but not the tail; `results/pagedserve_7b_flash_v8b.json`).

@@ -24,7 +24,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY pagedserve ./pagedserve
 COPY scripts/download_model.py ./scripts/download_model.py
-COPY deploy/runpod/handler.py deploy/runpod/main.py deploy/runpod/timeline.py ./deploy/runpod/
+COPY deploy/runpod/handler.py deploy/runpod/main.py deploy/runpod/timeline.py deploy/runpod/fetch.py ./deploy/runpod/
 
 # flash-attn fetches the prebuilt wheel matching this torch; runpod is the serverless SDK;
 # httpx is the proxy's client. Triton ships with torch.

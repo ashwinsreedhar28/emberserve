@@ -1,7 +1,9 @@
 """Runpod Serverless worker entry point: start `pagedserve serve`, wait for it, then serve jobs.
 
 Environment (all optional): MODEL_DIR (a snapshot baked into the image; default /models/model),
-MODEL_REPO (download at cold start instead), DTYPE (float16), ATTN_BACKEND (paged_flash),
+MODEL_REPO (fetch at cold start instead, streamed into the engine as it arrives: fetch.py;
+MODEL_REVISION, DOWNLOAD_WORKERS (8), WEIGHTS_TIMEOUT (900 s), WEIGHTS_STREAM=0 to download
+everything before starting), DTYPE (float16), ATTN_BACKEND (paged_flash),
 BLOCK_SIZE (256), MAX_MODEL_LEN (4096), MAX_NUM_SEQS (256), CUDA_GRAPHS (1), PREFIX_CACHING (0),
 QUANTIZATION (unset | int8), TENSOR_PARALLEL_SIZE (1), SERVED_MODEL_NAME (the model dir),
 EXTRA_SERVE_ARGS (appended verbatim), PAGEDSERVE_PORT (8000), MAX_CONCURRENCY (jobs per
@@ -39,15 +41,35 @@ def env(name: str, default: str) -> str:
 
 
 def resolve_model_dir() -> str:
-    """The snapshot to serve: baked into the image, or fetched at cold start."""
+    """The snapshot to serve: baked into the image, or fetched at cold start.
+
+    Fetched (MODEL_REPO set and nothing baked in): the small files are downloaded now and
+    the shards in the background (fetch.py), and the server is told to wait for them
+    (PAGEDSERVE_WAIT_WEIGHTS_S), so the engine starts while the weights are still arriving.
+    WEIGHTS_STREAM=0 downloads everything first instead."""
     model_dir = env("MODEL_DIR", "/models/model")
     repo = os.environ.get("MODEL_REPO")
-    if repo and not (Path(model_dir) / "config.json").exists():
+    if not repo or (Path(model_dir) / "config.json").exists():
+        return model_dir
+    revision = os.environ.get("MODEL_REVISION") or None
+    if env("WEIGHTS_STREAM", "1") != "1":
         from huggingface_hub import snapshot_download
 
-        snapshot_download(repo, local_dir=model_dir,
+        snapshot_download(repo, local_dir=model_dir, revision=revision,
                           allow_patterns=["*.safetensors", "*.json", "merges.txt", "vocab.json",
                                           "*.txt", "*.py", "*.model", "*.tiktoken"])
+        timeline.mark("weights_downloaded")
+        return model_dir
+    from fetch import Fetcher
+
+    fetcher = Fetcher(repo, model_dir, revision=revision, workers=int(env("DOWNLOAD_WORKERS", "8")))
+    shards = fetcher.fetch_small()
+    fetcher.start_shards(shards)
+    global FETCHER
+    FETCHER = fetcher
+    os.environ.setdefault("PAGEDSERVE_WAIT_WEIGHTS_S", env("WEIGHTS_TIMEOUT", "900"))
+    print(f"[worker] fetching {len(shards)} shards of {repo} in the background; the engine starts now",
+          flush=True)
     return model_dir
 
 
@@ -96,11 +118,17 @@ def _import_sdk(box: dict) -> None:
     box["runpod"] = runpod
 
 
+FETCHER = None  # the background weight download, when MODEL_REPO is fetched at start
+
+
 def wait_for_server(proc: subprocess.Popen, timeout_s: float, base_url: str = BASE_URL) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             raise SystemExit(f"pagedserve serve exited with code {proc.returncode} during startup")
+        if FETCHER is not None and FETCHER.error is not None:
+            proc.kill()  # the engine would wait for shards that will never arrive
+            raise SystemExit(f"weight download failed: {FETCHER.error}")
         try:
             if httpx.get(f"{base_url}/health", timeout=2.0).status_code == 200:
                 return

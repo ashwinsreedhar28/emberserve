@@ -96,3 +96,87 @@ def test_load_model_uses_stream_and_records_stats(tmp_path: Path) -> None:
     _dump_snapshot(tiny_model(seed=6), tmp_path)
     m = load_model(tmp_path)
     assert m.load_stats.bytes > 0 and m.load_stats.seconds > 0
+
+
+def _hold_back_shards(src: Path, dst: Path) -> list[Path]:
+    """Copy a split snapshot's small files to `dst` plus an index; return the shard paths
+    still to "download"."""
+    import json
+    import shutil
+
+    from safetensors import safe_open
+
+    dst.mkdir()
+    shards = sorted(src.glob("*.safetensors"))
+    weight_map = {}
+    for sh in shards:
+        with safe_open(str(sh), framework="pt") as f:
+            weight_map.update({k: sh.name for k in f.keys()})
+    (dst / "model.safetensors.index.json").write_text(json.dumps({"weight_map": weight_map}))
+    for p in src.iterdir():
+        if p.suffix != ".safetensors":
+            shutil.copy(p, dst / p.name)
+    return shards
+
+
+def test_stream_waits_for_shards_still_downloading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+    import threading
+    import time
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _dump_snapshot(tiny_model(seed=5), src, split=True)
+    ref = _reference(src, monkeypatch)
+    dst = tmp_path / "dst"
+    shards = _hold_back_shards(src, dst)
+
+    def download() -> None:  # like hf_hub_download: temp name, then rename into place
+        for sh in shards:
+            time.sleep(0.15)
+            tmp = dst / (sh.name + ".incomplete")
+            shutil.copy(sh, tmp)
+            tmp.rename(dst / sh.name)
+
+    t = threading.Thread(target=download)
+    t.start()
+    m = _fresh(dst)
+    st = stream_weights(m, dst, "cpu", threads=2, buffer_mb=0.001, wait_s=10)
+    t.join()
+    _same(m, ref)
+    assert st.wait_seconds > 0.1 and st.files == [p.name for p in shards]
+
+
+def test_stream_wait_times_out(tmp_path: Path) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    _dump_snapshot(tiny_model(seed=6), src, split=True)
+    dst = tmp_path / "dst"
+    _hold_back_shards(src, dst)
+    with pytest.raises(TimeoutError):
+        stream_weights(_fresh(dst), dst, "cpu", wait_s=0.2)
+
+
+def test_load_model_waits_via_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import shutil
+    import threading
+    import time
+
+    src = tmp_path / "src"
+    src.mkdir()
+    _dump_snapshot(tiny_model(seed=7), src, split=True)
+    ref = _reference(src, monkeypatch)
+    dst = tmp_path / "dst"
+    shards = _hold_back_shards(src, dst)
+
+    def download() -> None:
+        time.sleep(0.2)
+        for sh in shards:
+            shutil.copy(sh, dst / (sh.name + ".part"))
+            (dst / (sh.name + ".part")).rename(dst / sh.name)
+
+    threading.Thread(target=download).start()
+    monkeypatch.setenv("PAGEDSERVE_WAIT_WEIGHTS_S", "10")
+    m = load_model(dst, dtype=torch.float32)
+    _same(m, ref)
+    assert m.load_stats.wait_seconds > 0.1

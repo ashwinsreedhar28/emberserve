@@ -62,6 +62,28 @@ TTFT 8–11 ms, TPOT 1.7–2.0 ms. For a load-balancer endpoint set the endpoint
 **request count** to the concurrency the server should hold (200 here): at the default
 the balancer admits about four requests per worker and queues the rest.
 
+## Small image: weights fetched at start (`Dockerfile.slim`)
+
+Baking the weights in makes a warm host fast and a fresh host slow: with Qwen3-8B inside
+(`Dockerfile.qwen3`, ~27 GB) a host that has the image starts a worker in ~17 s, but a
+fresh host spent 317 s pulling it (~85 MB/s), while Hugging Face served the same 16 GB to
+worker-vllm at ~760 MB/s. `Dockerfile.slim` carries no weights (CUDA runtime base, ~5–6 GB
+expected) and the worker fetches `MODEL_REPO` at start (`fetch.py`): config and tokenizer
+first, then the shards in the background, 8 at a time, each renamed into place when
+complete, while `pagedserve serve` is already starting with `PAGEDSERVE_WAIT_WEIGHTS_S` set,
+so the streaming loader loads each shard the moment it lands. `--timeline` then also
+reports `fetch_small_files`, `download_after_spawn` and `boot_after_download`, and the
+download rate.
+
+Endpoint: GitHub repo, Dockerfile path `deploy/runpod/Dockerfile.slim` (or
+`Dockerfile.slim-devel`, the same on the devel base, if the runtime base fails to build or
+Triton cannot compile its launcher), env `MODEL_REPO=Qwen/Qwen3-8B` (the default), an
+optional `HF_TOKEN` for Hugging Face's rate limits, and **container disk 40 GB** (the
+default is too small for 16.4 GB of weights: the first try failed with "No space left on
+device"). A failed download now stops the worker at once instead of leaving the engine
+waiting. Measured on a warm host: delayTime 47.4 / 37.9 / 32.9 s (worker-vllm 154.3 /
+140.7 s); fresh host not yet measured.
+
 ## 7B image and the cold-start series
 
 `deploy/runpod/Dockerfile.7b` bakes Qwen2.5-7B-Instruct instead (~25 GB image); point a

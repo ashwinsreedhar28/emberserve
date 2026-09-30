@@ -72,3 +72,19 @@ def test_serve_with_early_core_and_clean_shutdown(tmp_path: Path) -> None:
             return
         time.sleep(0.2)
     raise AssertionError("engine core outlived the server")
+
+
+def test_checkpoint_bytes_uses_the_index_while_shards_download(tmp_path) -> None:
+    """A Serverless worker fetching weights at start: the shards are not there yet, but the
+    index says 16 GB, so the size-based defaults (piecewise graphs only below 4 GB) must not
+    treat the checkpoint as small."""
+    import json
+
+    from pagedserve.cli import SMALL_CHECKPOINT_BYTES, checkpoint_bytes
+
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {"total_size": 16_381_470_720}, "weight_map": {"a": "model-1.safetensors"}}))
+    assert checkpoint_bytes(str(tmp_path)) == 16_381_470_720 > SMALL_CHECKPOINT_BYTES
+    (tmp_path / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {}}))
+    (tmp_path / "model.safetensors").write_bytes(b"x" * 10)
+    assert checkpoint_bytes(str(tmp_path)) == 10
