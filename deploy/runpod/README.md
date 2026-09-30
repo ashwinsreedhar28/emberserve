@@ -82,7 +82,7 @@ optional `HF_TOKEN` for Hugging Face's rate limits, and **container disk 40 GB**
 default is too small for 16.4 GB of weights: the first try failed with "No space left on
 device"). A failed download now stops the worker at once instead of leaving the engine
 waiting. Measured on a warm host: delayTime 47.4 / 37.9 / 32.9 s (worker-vllm 154.3 /
-140.7 s); fresh host not yet measured.
+140.7 s); fresh host 91.7 s (worker-vllm 210.4 s), 68.7 s of it the image pull.
 
 ## 7B image and the cold-start series
 

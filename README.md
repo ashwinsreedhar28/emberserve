@@ -58,8 +58,9 @@ And it starts fast: Qwen3-8B goes from process start to first token in **6.7 s a
 vLLM's 69.1 s** (55.2 s with `--enforce-eager`) on the same A100, the 7B in 5.6 s
 ([Cold start](#cold-start-process-start-to-first-token-resultscoldstart)); on Runpod
 Serverless a cold Qwen3-8B job is picked up in **17.2 s against worker-vllm's 147.5 s**
-(`delayTime`, RTX 4090, same night), with the 17 s split into Runpod's and the engine's
-phases ([On Runpod Serverless](#on-runpod-serverless-pagedserve-vs-worker-vllm-resultsserverless_coldstart_qwen3)).
+with the weights baked in, and with a small image that streams them from Hugging Face into
+the engine as they download, **91.7 s against 210.4 s on a fresh host** (`delayTime`,
+RTX 4090), every second split into Runpod's and the engine's phases ([On Runpod Serverless](#on-runpod-serverless-pagedserve-vs-worker-vllm-resultsserverless_coldstart_qwen3)).
 
 **A correction (Sep 29).** The sweep harness replayed the identical trace at every rate on
 one server, and vLLM runs with prefix caching on by default (pagedserve's is off), so vLLM
@@ -922,15 +923,22 @@ settings, 40 GB container disk):
 |---|---|---:|
 | **pagedserve, small image** | **47.4, 37.9, 32.9 s** | **37.9 s** |
 | worker-vllm | 154.3, 140.7 s | 147.5 s |
+| **pagedserve, small image, fresh host** (first job to a new endpoint) | **91.7 s** | — |
+| worker-vllm, fresh host | 210.4 s | — |
 
-3.9× sooner with the same starting point. The download ran at 0.56, 0.75 and 1.02 GB/s
+3.9× sooner with the same starting point on a warm host, 2.3× on a fresh one. The fresh
+host's 91.7 s is 68.7 s of scheduling and image pull (against 317.5 s for the 27 GB baked
+image), 1.7 s for config and tokenizer, 13.9 s of download at 1.18 GB/s with the engine
+starting inside it, 4.9 s after the last shard and 2 s of SDK hand-off: what is left is
+almost all Runpod's. So the choice is by traffic: weights baked in when the same hosts are
+reused (17 s warm, 328 s fresh), the small image when workers scale out onto new hosts
+(38 s warm, 92 s fresh), and either beats worker-vllm (148 s warm, 210 s fresh). The download ran at 0.56, 0.75 and 1.02 GB/s
 (29.2, 21.9 and 16.1 s; unauthenticated — an `HF_TOKEN` may steady it) and the engine's
 whole startup overlapped it: after the last shard landed, 5.6–7.0 s remained (loading that
 shard, then graph capture, 4.1 s). The first attempt ran out of container disk (the
 default is too small for 16 GB), and the first successful one captured piecewise graphs
 for 15.5 s because the engine sized the checkpoint by the files present — none yet — and
-took it for a small model; it now reads the index's `total_size`. Not yet measured: the
-small image on a fresh host, the number that matters against worker-vllm's 210 s.
+took it for a small model; it now reads the index's `total_size`. One fresh-host sample per image so far.
 
 What is left in pagedserve's 17 s, cheapest first: the first request's executionTime is
 1.8–2.1 s against vLLM's 0.5 s (most likely Triton kernels compiling on first use into an
@@ -1293,7 +1301,7 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 
 ## Roadmap
 
-* Cold start: Qwen3-8B first token in 6.7 s against vLLM's 69.1 s on the same pod (7B: 5.6 s); on Runpod Serverless `delayTime` 17.2 s against worker-vllm's 147.5 s. On a fresh host the baked 27 GB image lost (328 s vs worker-vllm's 210 s, 317 s of it the pull), so the small image fetches the weights at start and streams them into the engine as they arrive (`deploy/runpod/Dockerfile.slim`, `fetch.py`): 37.9 s median on a warm host against worker-vllm's 147.5 s. Next: its fresh-host number, graph capture during the download (~4 s), `HF_TOKEN` for steadier downloads. Later: the Triton cache in the image (first request 1.3–2.1 s), background graph capture, CUDA checkpoint/restore inside a Serverless container.
+* Cold start: Qwen3-8B first token in 6.7 s against vLLM's 69.1 s on the same pod (7B: 5.6 s); on Runpod Serverless `delayTime` 17.2 s against worker-vllm's 147.5 s. On a fresh host the baked 27 GB image lost (328 s vs worker-vllm's 210 s, 317 s of it the pull), so the small image fetches the weights at start and streams them into the engine as they arrive (`deploy/runpod/Dockerfile.slim`, `fetch.py`): 37.9 s median on a warm host against worker-vllm's 147.5 s, 91.7 s on a fresh host against 210.4 s. Next: graph capture during the download (~4 s), `HF_TOKEN` for steadier downloads, more fresh-host samples. Later: the Triton cache in the image (first request 1.3–2.1 s), background graph capture, CUDA checkpoint/restore inside a Serverless container.
 * Re-measure the vLLM rows still marked as from a replayed-trace sweep (R1-8B, Moonlight, TP2, the ShareGPT text sweeps) with a trace per rate.
 * 0.5B saturation: `--api-workers 2` lifted it past vLLM on real text (28.0k vs 25.1k tok/s, 112%) and back to parity on the synthetic trace ([Two API processes](#two-api-processes---api-workers)). Four workers add nothing over two, so the next limit is the engine core's per-step pickling and sending; shared memory for the step's rows, or fewer bytes per row, is the next experiment.
 * 7B mixed steps (the tail at 16 req/s, now at parity with vLLM 0.30.0): the per-kernel profile says a mixed step's GEMMs run at 196 TFLOP/s with a 256-row tile a third full at 339 rows, attention takes two flash calls where one paged varlen call would do, and the elementwise ops run unfused. Each is shared with vLLM, so each is a chance to be ahead rather than to catch up. Piecewise graphs at 7B stay off above 4 GB (`--piecewise-bucket-step 256` recovered the 1% saturation loss but not the tail; `results/pagedserve_7b_flash_v8b.json`).
