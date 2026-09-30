@@ -329,7 +329,9 @@ paging and prefix sharing are all under test at once). Half-precision runs are c
 the same fp32 reference, so the gate is self-calibrated: the logits bar is 1.0 and a token
 flip counts as a numeric tie-break, not a failure, only when the top-2 logit gap at that
 position is below 2x the logits error measured on prompt 0, i.e. the two candidates were
-closer than the run's own precision noise. Two gotchas this gate caught: Qwen2.5's
+closer than the run's own precision noise. (Precisely: the weaker of the two disputed
+tokens, the engine's and the reference's, must sit within 2x that error of the top logit;
+checking only the top-2 gap would also excuse an unrelated wrong token.) Two gotchas this gate caught: Qwen2.5's
 `generation_config.json` sets `repetition_penalty=1.05`, so `model.generate()` is not greedy
 unless every knob is overridden; and `apply_chat_template` in transformers 5 returns an
 encoding, not a string.

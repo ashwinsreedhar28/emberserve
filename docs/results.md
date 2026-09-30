@@ -32,6 +32,11 @@ time to first token, TPOT is time per output token after the first, both per req
 | paged_flash | 1,329 | 27.8 s | 8.7 / 10.0 | 9.1 / 9.9 | 1.21 s |
 | paged_flash + CUDA graphs | **1,441** | 25.6 s | 8.7 / 10.6 | **3.8 / 4.8** | 0.52 s |
 
+These TTFT and e2e figures count from when the offline driver admitted a request, not from
+when it arrived (fixed Sep 30, not re-measured): one that arrived mid-step waited up to one
+step before its clock started, about half a TPOT on average (~4 ms for paged_flash, ~40 ms
+for paged_torch). Throughput and run time are unaffected.
+
 **Saturation, all 200 at t=0:** paged_torch 738 -> paged_flash 3,043 -> +graphs **5,459 tok/s**
 (TTFT p50 279 ms, TPOT p50 12.4 ms).
 

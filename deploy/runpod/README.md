@@ -196,12 +196,15 @@ card; `/metrics` reported 379 after the graph scratch block) —
 |---|---:|---:|---:|---:|
 | 1 req/s | 172 | 474 ms / 5.56 s | 15.7 / 17.2 ms | 200/200 |
 | 2 | 317 | 1.26 / 5.73 s | 16.4 / 18.6 ms | 200/200 |
-| 4 | 547 | 2.41 / 5.98 s | 18.1 / 21.5 ms | 198/200 |
-| 8 (5.7 served) | 947 | 3.38 / 6.42 s | 20.3 / 32.7 ms | 190/200 |
+| 4 | 546 | 2.41 / 5.98 s | 18.1 / 21.5 ms | 198/200 |
+| 8 (5.7 served) | 941 | 3.38 / 6.42 s | 20.3 / 32.7 ms | 190/200 |
 | 16 (10.8–11.2 served) | 1,179 · 1,599 (rerun) | 4.27 / 7.79 s | 26.0 / 47.9 ms | 200/200 |
 | inf, 64 in flight | 1,088 | 3.83 / 6.52 s | 21.1 / 44.0 ms | 200/200 |
-| inf, 128 in flight | 791 | 3.14 / 6.66 s | 28.5 / 56.2 ms | 173/200 |
+| inf, 128 in flight | 787 | 3.14 / 6.66 s | 28.5 / 56.2 ms | 173/200 |
 | inf, unbounded (200) | **2,176** | 3.10 / 9.86 s | 33.2 / 51.1 ms | 200/200 |
+
+Rows with failed requests are over the run's whole duration, failures included (547, 947
+and 791 tok/s before the harness counted a failure's time; the saved runs' `wall_s`).
 
 2,176 tok/s is 1.95× the bugged run and 69% of the A100's 3,166 on a card with half the
 memory bandwidth. The rest of the table is the queue endpoint's delivery path, and three

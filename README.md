@@ -24,7 +24,8 @@ serving while vLLM is still compiling.
 ### Cold start on Runpod Serverless
 
 Qwen3-8B, one RTX 4090 worker, Runpod's own `delayTime` for a job sent to an endpoint at
-zero workers (FlashBoot off), against Runpod's official vLLM worker on the same GPU tier:
+zero workers, every sample a full cold boot (FlashBoot off, or on and missed), against
+Runpod's official vLLM worker on the same GPU tier:
 
 | cold start, `delayTime` | host already has the image | fresh host |
 |---|---:|---:|
@@ -33,8 +34,9 @@ zero workers (FlashBoot off), against Runpod's official vLLM worker on the same 
 | worker-vllm v2.28.0 (vLLM 0.30.0) | 147.5 s | 210.4 s |
 
 The worker reports a wall-clock timeline of its own startup, so every second is attributed.
-In its log, worker-vllm spends 52 s importing Python across three processes and 33 s in
-torch.compile from an empty cache. Baking the weights in made pagedserve fast on a warm host, but a fresh
+In its log, worker-vllm spends 52 s between launch and loading its first weight (three
+Python processes starting and importing one after another, plus ~10 s of config
+resolution) and 33 s in torch.compile from an empty cache. Baking the weights in made pagedserve fast on a warm host, but a fresh
 host spent 317 s pulling the 27 GB image. So the small image downloads the weights from
 Hugging Face and loads each shard into the GPU the moment it lands, while the engine is
 already starting. Warm hosts: median of three runs for pagedserve, two for worker-vllm;
@@ -84,7 +86,8 @@ From 23% of vLLM's saturation throughput to parity at 0.5B in nine profile-drive
   ~42 kernels per layer, a shared GIL, a GPU idling while Python built the next step, and
   finally the API process's SSE writes: each found by timing the step, each fixed, each
   re-measured over HTTP.
-* **Repeats, not lucky runs.** Eight repeats of a "92%" saturation run said 81 ± 6%. Every
+* **Repeats, not lucky runs.** A single synthetic saturation run said 92% of vLLM; eight
+  repeats on real text said 81 ± 6%, and the spread itself led to the next fix. Every
   number here is a mean or a median, with the individual runs in `results/`.
 * **Catching my own benchmark.** The sweep harness replayed one trace at every rate, and
   vLLM's prefix cache served the later rates from memory (hit rate up to 64%). Fixed and
@@ -92,8 +95,9 @@ From 23% of vLLM's saturation throughput to parity at 0.5B in nine profile-drive
 * **Measuring the whole path.** On Serverless the engine was never the only cost; a
   per-phase timeline showed the image pull dominating a fresh host, and that picked the
   design.
-* **Correct before fast.** Greedy output matches Hugging Face token for token on every
-  backend and model.
+* **Correct before fast.** Greedy output matches Hugging Face token for token in fp32 on
+  every backend; in fp16/bf16 a divergence passes only as a measured near-tie between the
+  two tokens.
 
 ## What's inside
 
@@ -119,9 +123,10 @@ From 23% of vLLM's saturation throughput to parity at 0.5B in nine profile-drive
   runner, per-step GPU tracing, cold-start timelines), so every claim here is one command
   to re-run.
 
-Correctness gate: greedy output is token-for-token identical to Hugging Face on 7 prompts ×
-64 tokens and prompt logits match, on every backend (fp32 exact; fp16/bf16 held to a
-self-calibrated tie-break rule). 370+ CPU tests on a tiny random-weight model (no download,
+Correctness gate: in fp32, greedy output is token-for-token identical to Hugging Face on 7
+prompts × 64 tokens and prompt logits match, on every backend; fp16/bf16 runs are held to a
+self-calibrated rule (a token may differ only where the engine's own logits put both tokens
+within the run's measured noise of the top). 410+ CPU tests on a tiny random-weight model (no download,
 no GPU), plus the GPU suite on the pod.
 
 ```mermaid
