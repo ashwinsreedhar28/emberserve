@@ -81,7 +81,8 @@ Triton cannot compile its launcher), env `MODEL_REPO=Qwen/Qwen3-8B` (the default
 optional `HF_TOKEN` for Hugging Face's rate limits, and **container disk 40 GB** (the
 default is too small for 16.4 GB of weights: the first try failed with "No space left on
 device"). A failed download now stops the worker at once instead of leaving the engine
-waiting. Not yet measured.
+waiting. Measured on a warm host: delayTime 47.4 / 37.9 / 32.9 s (worker-vllm 154.3 /
+140.7 s); fresh host not yet measured.
 
 ## 7B image and the cold-start series
 

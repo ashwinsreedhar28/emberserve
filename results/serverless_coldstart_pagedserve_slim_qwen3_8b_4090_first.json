@@ -4,7 +4,7 @@
  "endpoint": "ri6eo614hmu510",
  "label": "pagedserve_slim_qwen3_8b_4090_first_after_rollout",
  "image": "pagedserve slim-image 15831d4, no weights in image, Qwen3-8B fetched at start, 40 GB disk",
- "note": "",
+ "note": "Build 15831d4, before fix fa672f0: with the shards still downloading, the checkpoint looked small and piecewise graphs were captured (15.5 s). The worker slot's host already had most image layers from a failed earlier attempt (container disk too small), so this is not a fresh-host sample. Superseded by ..._off_v2.json.",
  "max_tokens": 16,
  "idle_s": 0.0,
  "runs": [
