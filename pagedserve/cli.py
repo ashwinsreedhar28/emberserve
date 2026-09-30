@@ -67,12 +67,22 @@ def _add_engine_args(p: argparse.ArgumentParser) -> None:
 
 
 def checkpoint_bytes(model_dir: str | None) -> int:
-    """Total size of the snapshot's *.safetensors files (0 if unknown)."""
+    """Total size of the snapshot's weights (0 if unknown): the index's `total_size` when
+    there is one — the shards may still be downloading (a Serverless worker fetching them
+    at start), and sizing by the files present would call a 16 GB checkpoint small — else
+    the *.safetensors files present."""
     if not model_dir:
         return 0
     try:
+        index = Path(model_dir) / "model.safetensors.index.json"
+        if index.exists():
+            import json
+
+            total = json.loads(index.read_text()).get("metadata", {}).get("total_size")
+            if total:
+                return int(total)
         return sum(f.stat().st_size for f in Path(model_dir).glob("*.safetensors"))
-    except OSError:
+    except (OSError, ValueError):
         return 0
 
 
