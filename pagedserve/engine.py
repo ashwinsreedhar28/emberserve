@@ -124,9 +124,16 @@ def activation_reserve_bytes(model_config: ModelConfig, engine_config: EngineCon
     configuration — the MLP's gate/up activations for one prefill chunk
     (`max_num_batched_tokens x intermediate x 2` in the model dtype) and the logits for the
     largest decode batch (`max_num_seqs x vocab`, fp16 plus the fp32 copy the sampler
-    takes). About 1.4 GB for the 7B at the CLI defaults, 1.3 GB for the 0.5B."""
+    takes). About 1.4 GB for the 7B at the CLI defaults, 1.3 GB for the 0.5B.
+
+    Without chunked prefill the largest prefill is not bounded by the budget: a preempted
+    request re-prefills its whole history alone in one step (up to `max_model_len` tokens;
+    see `Scheduler._schedule_prefill`), so that is what the MLP term is sized for."""
     esize = torch.tensor([], dtype=engine_config.dtype).element_size()
-    mlp = engine_config.max_num_batched_tokens * model_config.intermediate_size * 2 * esize
+    chunk = engine_config.max_num_batched_tokens
+    if not engine_config.enable_chunked_prefill:
+        chunk = max(chunk, engine_config.max_model_len)
+    mlp = chunk * model_config.intermediate_size * 2 * esize
     logits = engine_config.max_num_seqs * model_config.vocab_size * (esize + 4)
     return KV_WORKSPACE_BYTES + mlp + logits
 
@@ -779,9 +786,14 @@ class LLMEngine:
             # token the pending step sampled is not in it yet: launching now would let that
             # token escape the penalty. Resolve first (these steps run synchronously).
             pending, self._pending = self._pending, None
+            t_res = time.perf_counter()
             outputs = self._resolve(pending, set())
-            if pending.trace is not None and tr is not None:
-                tr.finish(pending.trace)
+            if tr is not None:
+                if pending.trace is not None:
+                    pending.trace.host_resolve_ms = (time.perf_counter() - t_res) * 1e3
+                    tr.finish(pending.trace)
+                if not self.has_unfinished_requests():
+                    tr.idle()  # drained: the gap before the next request's step is not host lag
             self.last_step_scheduled = True  # progress was made; not a stuck queue
             return outputs
         t_sched = time.perf_counter()

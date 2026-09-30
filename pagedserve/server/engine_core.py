@@ -370,24 +370,30 @@ class EngineCoreProcess:
     def start(self, ready_timeout_s: float = 900.0) -> dict[str, Any]:
         self._proc, [(cmd_send, out_recv)] = spawn_core(self.spec, 1)
         self._cmd_send, self._out_recv = cmd_send, out_recv
-        self._writer = _CommandWriter(cmd_send)
         deadline = time.monotonic() + ready_timeout_s
-        while True:
-            if out_recv.poll(1.0):
-                msg = out_recv.recv()
-                if msg[0] == "ready":
-                    self.info = msg[1]
-                    return self.info
-                if msg[0] == "fatal":
-                    raise RuntimeError(f"engine core failed to start:\n{msg[1]}")
-            if not self._proc.is_alive():
-                raise RuntimeError("engine core process exited during startup")
-            if time.monotonic() > deadline:
-                self.stop()
-                raise TimeoutError("engine core did not become ready")
+        try:
+            while True:
+                if out_recv.poll(1.0):
+                    msg = out_recv.recv()
+                    if msg[0] == "ready":
+                        self.info = msg[1]
+                        # Nothing is sent before the core is ready; starting the writer only
+                        # now means a failed start leaves no thread behind.
+                        self._writer = _CommandWriter(cmd_send)
+                        return self.info
+                    if msg[0] == "fatal":
+                        raise RuntimeError(f"engine core failed to start:\n{msg[1]}")
+                if not self._proc.is_alive():
+                    raise RuntimeError("engine core process exited during startup")
+                if time.monotonic() > deadline:
+                    raise TimeoutError("engine core did not become ready")
+        except BaseException:
+            self.stop(timeout_s=5.0)  # the process, its pipes
+            raise
 
     def send(self, msg: tuple) -> None:
-        assert self._writer is not None
+        if self._writer is None:
+            raise RuntimeError("engine core is not running")
         self._writer.put(msg)
 
     def recv(self, timeout: float | None = None) -> tuple | None:
@@ -431,7 +437,7 @@ class AttachedCore:
         self.core_pid = core_pid
         self.info: dict[str, Any] = {}
         self._dead = False
-        self._writer: _CommandWriter | None = _CommandWriter(cmd_send)
+        self._writer: _CommandWriter | None = None  # started once the core is ready
 
     @property
     def alive(self) -> bool:
@@ -445,23 +451,30 @@ class AttachedCore:
 
     def start(self, ready_timeout_s: float = 900.0) -> dict[str, Any]:
         deadline = time.monotonic() + ready_timeout_s
-        while True:
-            msg = self.recv(timeout=1.0)
-            if msg is not None:
-                if msg[0] == "ready":
-                    self.info = msg[1]
-                    return self.info
-                if msg[0] == "fatal":
-                    raise RuntimeError(f"engine core failed to start:\n{msg[1]}")
-            elif not self.alive:
-                raise RuntimeError("engine core process exited during startup")
-            if time.monotonic() > deadline:
-                raise TimeoutError("engine core did not become ready")
+        try:
+            while True:
+                msg = self.recv(timeout=1.0)
+                if msg is not None:
+                    if msg[0] == "ready":
+                        self.info = msg[1]
+                        assert self._cmd_send is not None
+                        self._writer = _CommandWriter(self._cmd_send)
+                        return self.info
+                    if msg[0] == "fatal":
+                        raise RuntimeError(f"engine core failed to start:\n{msg[1]}")
+                elif not self.alive:
+                    raise RuntimeError("engine core process exited during startup")
+                if time.monotonic() > deadline:
+                    raise TimeoutError("engine core did not become ready")
+        except BaseException:
+            self.stop()
+            raise
 
     def send(self, msg: tuple) -> None:
         if msg[0] == "stop":
             return  # a worker does not stop the shared core
-        assert self._writer is not None
+        if self._writer is None:
+            raise RuntimeError("engine core is not running")
         self._writer.put(msg)
 
     def recv(self, timeout: float | None = None) -> tuple | None:

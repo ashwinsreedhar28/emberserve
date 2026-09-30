@@ -56,6 +56,22 @@ def snapshot_complete(model_dir: str | os.PathLike) -> bool:
     return (d / "model.safetensors").exists()
 
 
+def effective_tp_size() -> int:
+    """The tensor-parallel size `serve_command` will launch with: TENSOR_PARALLEL_SIZE, unless
+    EXTRA_SERVE_ARGS (appended last, so it wins) sets `--tensor-parallel-size`."""
+    size = env("TENSOR_PARALLEL_SIZE", "1")
+    args = shlex.split(env("EXTRA_SERVE_ARGS", ""))
+    for i, a in enumerate(args):
+        if a == "--tensor-parallel-size" and i + 1 < len(args):
+            size = args[i + 1]
+        elif a.startswith("--tensor-parallel-size="):
+            size = a.split("=", 1)[1]
+    try:
+        return int(size)
+    except ValueError:
+        return 1
+
+
 def resolve_model_dir() -> str:
     """The snapshot to serve: baked into the image, or fetched at cold start.
 
@@ -70,7 +86,7 @@ def resolve_model_dir() -> str:
     revision = os.environ.get("MODEL_REVISION") or None
     # Only the streaming loader on one rank can wait for shards still downloading; tensor
     # parallelism and the reference loader read the files present, so they download first.
-    streaming = (env("WEIGHTS_STREAM", "1") == "1" and env("TENSOR_PARALLEL_SIZE", "1") == "1"
+    streaming = (env("WEIGHTS_STREAM", "1") == "1" and effective_tp_size() == 1
                  and os.environ.get("PAGEDSERVE_LOADER", "stream") != "safetensors")
     if not streaming:
         from huggingface_hub import snapshot_download

@@ -218,3 +218,19 @@ def test_command_writer_reports_a_closed_pipe() -> None:
         time.sleep(0.01)
     with pytest.raises(BrokenPipeError):
         writer.put(("abort", "y"))
+
+
+def test_failed_start_leaves_no_writer_thread_or_process(tmp_path) -> None:
+    """The command writer used to start before the core was ready, so a core that failed
+    to start (here: no model at that path) left the writer thread and the pipes behind."""
+    import threading
+
+    from pagedserve.server.engine_core import EngineCoreProcess
+
+    core = EngineCoreProcess(EngineSpec(EngineConfig(device="cpu"), model_dir=str(tmp_path / "none")))
+    with pytest.raises(RuntimeError, match="failed to start|exited during startup"):
+        core.start(ready_timeout_s=120)
+    assert not core.alive and core._writer is None and core._cmd_send is None
+    assert not [t for t in threading.enumerate() if t.name == "pagedserve-core-writer"]
+    with pytest.raises(RuntimeError, match="not running"):
+        core.send(("abort", "x"))

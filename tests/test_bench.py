@@ -546,3 +546,23 @@ def test_failures_count_in_the_run_duration() -> None:
                           end_s=20.0)]
     s = summarize(recs)
     assert s.duration_s == 20.0 and s.throughput_tok_s == 5.0 and s.completed == 1
+
+
+def test_usage_trailer_does_not_move_the_last_token() -> None:
+    """vLLM's completions stream ends with a separate usage-only chunk; pagedserve puts usage
+    on its last token. The trailer must not become the "last token" (a reviewer's repro:
+    two tokens 11 ms apart and a trailer 150 ms later read as 162 ms TPOT)."""
+    tok = '{"choices":[{"text":"%s","finish_reason":%s}]}'
+    usage = '{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}'
+    r = _one([(0.0, tok % ("a", "null")), (0.011, tok % ("b", '"length"')), (0.15, usage),
+              (0.0, "[DONE]")], path="/v1/completions")
+    assert r.success and r.output_tokens == 2
+    assert r.tpot_s is not None and r.tpot_s < 0.05
+
+
+def test_final_token_with_empty_text_is_a_token() -> None:
+    """pagedserve sends its last token with the finish reason, and its text can be empty
+    (suppressed by the detokenizer): a one-token completion is not an empty stream."""
+    fin = '{"choices":[{"text":"","finish_reason":"length"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}'
+    r = _one([(0.02, fin), (0.0, "[DONE]")], path="/v1/completions")
+    assert r.success and r.output_tokens == 1 and r.ttft_s is not None and r.ttft_s >= 0.015

@@ -39,24 +39,23 @@ def _parse_sse_line(line: str) -> dict | None:
 
 
 def _chunk_text(obj: dict) -> str | None:
-    """Text delta from a completions or chat-completions stream chunk; None if the chunk
-    carries no token: a usage-only trailer, a chat chunk that only announces the role, or a
-    closing chunk with an empty delta and a finish reason. (Counting those made the role
-    chunk the "first token" and the closing chunk an extra one.) A token whose text is
-    empty (a partial UTF-8 sequence held back) still counts, as ""."""
+    """Text delta of a completions or chat-completions stream chunk that carries a token;
+    None for a chunk that carries none: a usage-only trailer (no choices), a chat chunk that
+    only announces the role, or a chat closing chunk whose delta has no content. (The role
+    chunk used to count as the first token.) A completions choice is always a token, and
+    its text may be empty (a partial UTF-8 sequence held back, or a final token the
+    detokenizer suppressed, which pagedserve sends together with the finish reason)."""
     choices = obj.get("choices") or []
     if not choices:
         return None
     c = choices[0]
-    finishing = c.get("finish_reason") is not None
     if "text" in c:
-        text = c["text"] or ""
-        return None if (finishing and not text) else text
+        return c["text"] or ""
     delta = c.get("delta") or {}
     content = delta.get("content")
-    if not content and (finishing or "role" in delta or content is None):
+    if content is None or (content == "" and "role" in delta):
         return None
-    return content or ""
+    return content
 
 
 def _chunk_finished(obj: dict) -> bool:
@@ -113,9 +112,7 @@ async def _one_request(client: httpx.AsyncClient, model: str, req: TraceRequest,
                     if _chunk_finished(obj):
                         completed = True
                     if _chunk_text(obj) is None:
-                        if completed and first is not None:
-                            last = now  # the closing chunk ends the request
-                        continue
+                        continue  # `last` stays the last token's time (TPOT), not a trailer's
                     n_chunks += 1
                     if first is None:
                         first = now

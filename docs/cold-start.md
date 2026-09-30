@@ -107,7 +107,8 @@ its `delayTime` splits into phases (medians of three):
 
 worker-vllm's side comes from one worker's log (`results/serverless_coldstart_vllm_qwen3_8b_worker_log.txt`,
 the 154.3 s sample): 148 s inside the container, so ~6 s of scheduling and container
-create. Of the 148 s, **52 s is startup before the first weight load**: worker pre-flight, then
+create. Of the 148 s, **52 s is startup before the model-loading phase begins** (launch 02:56:18,
+"Loading model" 02:57:10; the download and the load come after): worker pre-flight, then
 `vllm serve`, the engine-core process and the GPU worker process each starting and
 importing vLLM's dependency tree, one after another, plus ~10 s of config resolution (the
 stages come from log timestamps; attributing each to imports is inferred from what it logs), 21.6 s the weight download, 8.4 s loading them, **32.6 s torch.compile

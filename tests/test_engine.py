@@ -268,7 +268,7 @@ def test_kv_budget_does_not_subtract_resident_weights() -> None:
     qwen7b = ModelConfig(vocab_size=152064, hidden_size=3584, intermediate_size=18944,
                          num_hidden_layers=28, num_attention_heads=28, num_key_value_heads=4)
     cfg = EngineConfig(device="cuda", dtype=torch.float16, block_size=256, max_num_seqs=256,
-                       max_num_batched_tokens=2048)
+                       max_num_batched_tokens=2048, enable_chunked_prefill=True)  # the CLI's 7B setup
     bytes_per_block = qwen7b.kv_bytes_per_token(torch.float16) * 256
     assert bytes_per_block == 28 * 2 * 4 * 128 * 2 * 256  # 14.0 MiB per 256-token block
     reserve = activation_reserve_bytes(qwen7b, cfg)
@@ -285,6 +285,12 @@ def test_kv_budget_does_not_subtract_resident_weights() -> None:
     assert kv_blocks_for(0, 0.90, bytes_per_block, reserve) == MIN_GPU_BLOCKS
     # 80 GB A100 after the same weights: most of the card, as before.
     assert kv_blocks_for(int(64 * (1 << 30)), 0.90, bytes_per_block, reserve) > 3900
+    # Without chunking a preempted request re-prefills its whole history (up to
+    # max_model_len) in one step, over the budget: the reserve covers that prefill.
+    unchunked = EngineConfig(device="cuda", dtype=torch.float16, block_size=256, max_num_seqs=256,
+                             max_num_batched_tokens=512, max_model_len=32768)
+    assert activation_reserve_bytes(qwen7b, unchunked) == \
+        KV_WORKSPACE_BYTES + 32768 * 18944 * 2 * 2 + 256 * 152064 * 6
 
 
 def test_finished_text_retention_is_bounded_and_reset(monkeypatch) -> None:

@@ -207,3 +207,37 @@ def test_repetition_penalty_sees_the_pending_token() -> None:
             outs[o.request_id] = o.output_token_ids
     assert outs["p"] == want
     assert outs["q"] == gen(_untied_engine(False), [prompts(1)[0]], plain)[0].output_token_ids
+
+
+def test_penalty_resolve_path_keeps_the_step_trace(monkeypatch, tmp_path) -> None:
+    """The early resolve for penalized requests finished the step's trace record without its
+    host resolve time and never reset the tracer's idle baseline when it drained the engine."""
+    import json
+    import time as _time
+
+    from pagedserve import steptrace
+
+    eng = _untied_engine(True)
+    path = tmp_path / "trace.jsonl"
+    eng._tracer = tr = steptrace.StepTracer(str(path), cuda=False)
+    idles = []
+    real_idle = tr.idle
+    monkeypatch.setattr(tr, "idle", lambda: (idles.append(1), real_idle())[1])
+    real = LLMEngine._resolve
+
+    def slow_resolve(self, pending, keep):
+        _time.sleep(0.02)
+        return real(self, pending, keep)
+
+    monkeypatch.setattr(LLMEngine, "_resolve", slow_resolve)
+    pen = SamplingParams.greedy(4, ignore_eos=True)
+    pen.repetition_penalty = 1.2
+    eng.add_request("p", [23, 88, 230, 29, 77], pen)
+    while eng.has_unfinished_requests():
+        eng.step()
+    tr.close()
+    steps = [json.loads(line) for line in path.read_text().splitlines()]
+    steps = [r for r in steps if "host_resolve_ms" in r]
+    assert len(steps) == 4
+    assert all(r["host_resolve_ms"] >= 15 for r in steps), [r["host_resolve_ms"] for r in steps]
+    assert idles  # the last resolve drained the engine

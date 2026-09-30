@@ -34,13 +34,14 @@ Runpod's official vLLM worker on the same GPU tier:
 | worker-vllm v2.28.0 (vLLM 0.30.0) | 147.5 s | 210.4 s |
 
 The worker reports a wall-clock timeline of its own startup, so every second is attributed.
-In its log, worker-vllm spends 52 s between launch and loading its first weight (three
+In its log, worker-vllm spends 52 s between launch and the start of model loading (three
 Python processes starting and importing one after another, plus ~10 s of config
-resolution) and 33 s in torch.compile from an empty cache. Baking the weights in made pagedserve fast on a warm host, but a fresh
-host spent 317 s pulling the 27 GB image. So the small image downloads the weights from
-Hugging Face and loads each shard into the GPU the moment it lands, while the engine is
-already starting. Warm hosts: median of three runs for pagedserve, two for worker-vllm;
-fresh hosts: one sample each.
+resolution), before its 22 s download, and 33 s in torch.compile from an empty cache.
+Baking the weights in made pagedserve fast on a warm host, but a fresh host spent 317 s
+pulling the 27 GB image. So the small image downloads the weights from Hugging Face and
+loads each shard into the GPU the moment it lands, while the engine is already starting.
+Warm hosts: median of three runs for pagedserve, two for worker-vllm; fresh hosts: one
+sample each.
 [Details](docs/cold-start.md#on-runpod-serverless-pagedserve-vs-worker-vllm-resultsserverless_coldstart_qwen3)
 
 ### Cold start on an A100 (process start → first token)
@@ -95,9 +96,9 @@ From 23% of vLLM's saturation throughput to parity at 0.5B in nine profile-drive
 * **Measuring the whole path.** On Serverless the engine was never the only cost; a
   per-phase timeline showed the image pull dominating a fresh host, and that picked the
   design.
-* **Correct before fast.** Greedy output matches Hugging Face token for token in fp32 on
-  every backend; in fp16/bf16 a divergence passes only as a measured near-tie between the
-  two tokens.
+* **Correct before fast.** Greedy output matches Hugging Face token for token in fp32 (the
+  naive and paged_torch backends); in fp16/bf16, on every backend, a divergence passes only
+  as a measured near-tie between the two tokens.
 
 ## What's inside
 
@@ -124,10 +125,11 @@ From 23% of vLLM's saturation throughput to parity at 0.5B in nine profile-drive
   to re-run.
 
 Correctness gate: in fp32, greedy output is token-for-token identical to Hugging Face on 7
-prompts × 64 tokens and prompt logits match, on every backend; fp16/bf16 runs are held to a
+prompts × 64 tokens and prompt logits match, on the fp32 backends (naive, paged_torch);
+fp16/bf16 runs (paged_flash, paged_triton, the MLA backends) are held to a
 self-calibrated rule (a token may differ only where the engine's own logits put both tokens
-within the run's measured noise of the top). 410+ CPU tests on a tiny random-weight model (no download,
-no GPU), plus the GPU suite on the pod.
+within the run's measured noise of the top). 410+ CPU tests on a tiny random-weight model
+(no download, no GPU), plus the GPU suite on the pod.
 
 ```mermaid
 flowchart LR
