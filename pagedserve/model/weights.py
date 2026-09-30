@@ -176,6 +176,14 @@ def load_hf_weights(model: nn.Module, model_dir: str | os.PathLike,
     files = sorted(Path(model_dir).glob("*.safetensors"))
     if not files:
         raise FileNotFoundError(f"no *.safetensors files in {model_dir}")
+    from pagedserve import dist as tpdist
+
+    if tpdist.get_tp().size == 1 and os.environ.get("PAGEDSERVE_LOADER", "stream") != "safetensors":
+        from pagedserve.model.fastload import stream_weights
+
+        dev = device if device is not None else next(model.parameters()).device
+        model.load_stats = stream_weights(model, model_dir, dev)  # read by the boot phases
+        return
 
     def tensors():
         for path in files:

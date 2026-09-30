@@ -7,7 +7,6 @@ import sys
 import time
 from pathlib import Path
 
-from pagedserve.config import EngineConfig
 
 
 def _add_engine_args(p: argparse.ArgumentParser) -> None:
@@ -80,7 +79,9 @@ def checkpoint_bytes(model_dir: str | None) -> int:
 SMALL_CHECKPOINT_BYTES = 4 * 1024 ** 3  # below: a step is launches; above: it is math
 
 
-def engine_config_from_args(args: argparse.Namespace) -> EngineConfig:
+def engine_config_from_args(args: argparse.Namespace) -> "EngineConfig":  # noqa: F821
+    from pagedserve.config import EngineConfig
+
     cuda = args.device.startswith("cuda")
     small = checkpoint_bytes(args.model) < SMALL_CHECKPOINT_BYTES
     piecewise = args.piecewise_cuda_graphs
@@ -149,14 +150,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def cmd_serve(args: argparse.Namespace) -> int:
+def cmd_serve(args: argparse.Namespace, argv: list[str] | None = None) -> int:
+    engine_process = args.engine_process
+    if engine_process is None:
+        engine_process = args.device.startswith("cuda")
+    early = None
+    if engine_process and args.api_workers <= 1 and argv is not None:
+        # Before any heavy import: the core boots while this process imports torch and the
+        # server and loads the tokenizer (server/early.py).
+        from pagedserve.server.early import spawn_core_from_argv
+
+        early = spawn_core_from_argv(argv)
     import uvicorn
 
     from pagedserve.server.app import build_app_from_args
 
-    engine_process = args.engine_process
-    if engine_process is None:
-        engine_process = args.device.startswith("cuda")
     if args.api_workers > 1:
         if args.engine_process is False:
             raise SystemExit("--api-workers > 1 needs the engine in its own process")
@@ -166,9 +174,22 @@ def cmd_serve(args: argparse.Namespace) -> int:
         spec = EngineSpec(engine_config_from_args(args), model_dir=args.model)
         return MultiServer(spec, args.model, args.served_model_name or args.model, args.host,
                            args.port, args.api_workers).run()
+    core = None
+    if early is not None:
+        from pagedserve.server.engine_core import AttachedCore
+
+        proc, [(cmd_send, out_recv)] = early
+        core = AttachedCore(cmd_send, out_recv, proc.pid)
     app = build_app_from_args(args.model, engine_config_from_args(args), args.served_model_name,
-                              engine_process=engine_process)
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+                              engine_process=engine_process, core=core)
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    finally:
+        if early is not None:
+            proc = early[0]
+            proc.join(10)  # it exits once our pipe is closed
+            if proc.is_alive():
+                proc.terminate()
     return 0
 
 
@@ -194,7 +215,9 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return cmd_serve(args) if args.command == "serve" else cmd_generate(args)
+    if argv is None:
+        argv = sys.argv[1:]
+    return cmd_serve(args, argv) if args.command == "serve" else cmd_generate(args)
 
 
 if __name__ == "__main__":

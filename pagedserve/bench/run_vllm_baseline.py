@@ -1,7 +1,7 @@
 """Rate sweep against an OpenAI-compatible server: vLLM, pagedserve, or any live endpoint.
 
 Launches the server as a subprocess (never imports vllm), waits for `/health`, replays
-the same seeded trace at each request rate through `run_http_benchmark`, writes
+a seeded trace (a different seed per rate, see --same-trace-every-rate) at each request rate through `run_http_benchmark`, writes
 `results/<name>.json`, and kills the server.
 
     # vLLM baseline on the pod
@@ -144,6 +144,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rates", default="1,2,4,8,16,inf")
     p.add_argument("--trace-n", type=int, default=200)
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--same-trace-every-rate", action="store_true",
+                   help="replay the identical trace at every rate (the behavior before v0.9.7). "
+                        "Default: a different seed per rate, because a server with prefix caching "
+                        "on (vLLM's default) otherwise serves every rate after the first from "
+                        "cached prompts")
     p.add_argument("--shared-prefix-len", type=int, default=0)
     p.add_argument("--max-prompt-len", type=int, default=1024)
     p.add_argument("--max-output-len", type=int, default=512)
@@ -207,15 +212,16 @@ def main(argv: list[str] | None = None) -> int:
             asyncio.run(run_http_benchmark(base_url, model_name, warm, tokenizer=tokenizer,
                                            api_key=args.api_key, progress=False, path=path,
                                            ignore_eos=ignore_eos))
-        for rate in parse_rates(args.rates):
+        for i, rate in enumerate(parse_rates(args.rates)):
+            seed = args.seed if args.same_trace_every_rate else args.seed + 1000 * i
             if args.sharegpt:
                 if tokenizer is None:
                     raise SystemExit("--sharegpt needs --tokenizer (to count prompt/output tokens)")
-                trace = sharegpt_trace(args.sharegpt, args.trace_n, tokenizer, seed=args.seed,
+                trace = sharegpt_trace(args.sharegpt, args.trace_n, tokenizer, seed=seed,
                                        request_rate=rate, max_prompt_len=args.max_prompt_len,
                                        max_output_len=args.max_output_len)
             else:
-                trace = generate_trace(args.trace_n, seed=args.seed, request_rate=rate,
+                trace = generate_trace(args.trace_n, seed=seed, request_rate=rate,
                                        shared_prefix_len=args.shared_prefix_len,
                                        max_prompt_len=args.max_prompt_len,
                                        max_output_len=args.max_output_len, vocab_size=vocab_size)
@@ -237,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
             summary = summarize(records, slo_ttft_ms=args.slo_ttft_ms,
                                 slo_tpot_ms=args.slo_tpot_ms)
             print(summary.one_line(f"{name}@{label}"), file=sys.stderr)
-            run = {"request_rate": rate, "wall_s": wall, "summary": summary.to_dict(),
+            run = {"request_rate": rate, "trace_seed": seed, "wall_s": wall, "summary": summary.to_dict(),
                    "trace": {**trace_summary(trace),
                              "source": "sharegpt" if args.sharegpt else "synthetic"}}
             after = asyncio.run(fetch_metrics(base_url, api_key=args.api_key)) if before is not None else None

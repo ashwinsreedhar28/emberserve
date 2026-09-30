@@ -148,8 +148,9 @@ def _run_engine_core(spec: EngineSpec, cmd_conns: "Connection | list[Connection]
         step_log = diag.step_log_path() is not None
         boot = getattr(engine, "boot_phases", {}) or {}
         if boot:  # where startup went (the cold-start budget), one line in the server log
-            print("[boot] " + " · ".join(f"{k.removesuffix('_s')} {v:.2f} s" for k, v in boot.items()),
-                  file=sys.stderr, flush=True)
+            notes = getattr(engine, "boot_notes", "")
+            print("[boot] " + " · ".join(f"{k.removesuffix('_s')} {v:.2f} s" for k, v in boot.items())
+                  + (f" ({notes})" if notes else ""), file=sys.stderr, flush=True)
         info = {"eos_token_ids": sorted(engine.eos_token_ids), "boot_phases": boot,
                 "max_model_len": engine.config.max_model_len,
                 "vocab_size": engine.model_config.vocab_size, "pid": os.getpid(),

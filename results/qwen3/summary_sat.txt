@@ -1,0 +1,4 @@
+ps_q3_sat    rate  4.0 n=3  tok/s     645  TPOT p50  12.71  TTFT p50    47.7 ms  (tok/s runs 645, 645, 645)
+ps_q3_sat    rate None n=3  tok/s   2,839  TPOT p50  36.41  TTFT p50  2314.6 ms  (tok/s runs 2909, 2709, 2899)
+vllm_q3_sat  rate  4.0 n=3  tok/s     648  TPOT p50  11.98  TTFT p50    44.0 ms  (tok/s runs 648, 648, 648)
+vllm_q3_sat  rate None n=3  tok/s   2,972  TPOT p50  33.20  TTFT p50  2206.2 ms  (tok/s runs 2972, 2958, 2985)

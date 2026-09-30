@@ -1,0 +1,8 @@
+pagedserve_qwen3_8b    rate  1.0       174 tok/s  TPOT p50  11.42 ms  TTFT p50    44.3 ms  ok 200/200
+pagedserve_qwen3_8b    rate  4.0       646 tok/s  TPOT p50  12.71 ms  TTFT p50    47.7 ms  ok 200/200
+pagedserve_qwen3_8b    rate 16.0     1,931 tok/s  TPOT p50  20.98 ms  TTFT p50    72.7 ms  ok 200/200
+pagedserve_qwen3_8b    rate None     2,739 tok/s  TPOT p50  33.01 ms  TTFT p50  2275.2 ms  ok 200/200
+vllm_qwen3_8b          rate  1.0       174 tok/s  TPOT p50  10.95 ms  TTFT p50    40.5 ms  ok 200/200
+vllm_qwen3_8b          rate  4.0       648 tok/s  TPOT p50  11.24 ms  TTFT p50    33.6 ms  ok 200/200
+vllm_qwen3_8b          rate 16.0     1,991 tok/s  TPOT p50  13.77 ms  TTFT p50    41.2 ms  ok 200/200
+vllm_qwen3_8b          rate None     2,810 tok/s  TPOT p50  32.93 ms  TTFT p50  2371.0 ms  ok 200/200

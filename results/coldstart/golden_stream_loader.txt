@@ -1,0 +1,10 @@
+[paged_flash] prompt 3: 64 tokens match
+[paged_flash] prompt 4: 64 tokens match
+[paged_flash] prompt 5: 64 tokens match
+[paged_flash] prompt 6: 64 tokens match
+ALL OK
+[paged_flash] prompt 3: 64 tokens match
+[paged_flash] prompt 4: 64 tokens match
+[paged_flash] prompt 5: 64 tokens match
+[paged_flash] prompt 6: 34 tokens match
+ALL OK

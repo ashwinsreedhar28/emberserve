@@ -1,0 +1,55 @@
+{
+ "boot": {
+  "load_weights_s": 2.057,
+  "weights_read_s": 1.11,
+  "kv_cache_s": 0.045,
+  "capture_full_graphs_s": 1.924
+ },
+ "steps": 1051,
+ "kinds": {
+  "decode_graph": {
+   "count": 886,
+   "share": 0.8430066603235015,
+   "n_decode": 29.86004514672686,
+   "n_prefill_tokens": 0,
+   "host_sched_ms": 0.06394774266365688,
+   "host_build_ms": 0.3076568848758465,
+   "host_launch_ms": 0.37363453724604967,
+   "host_resolve_ms": 10.913228216704288,
+   "gpu_ms": 13.329961399548532,
+   "gpu_ms_p90": 17.8787,
+   "gpu_gap_ms": 0.03553431151241535,
+   "gpu_gap_ms_p90": 0.0346
+  },
+  "mixed": {
+   "count": 165,
+   "share": 0.15699333967649856,
+   "n_decode": 47.93939393939394,
+   "n_prefill_tokens": 319.2060606060606,
+   "host_sched_ms": 0.10167575757575757,
+   "host_build_ms": 0.5020606060606061,
+   "host_launch_ms": 30.230366060606062,
+   "host_resolve_ms": 12.987044242424242,
+   "gpu_ms": 35.92632424242424,
+   "gpu_ms_p90": 57.816,
+   "gpu_gap_ms": 0.031636363636363636,
+   "gpu_gap_ms_p90": 0.0377
+  }
+ },
+ "decode_tokens": 34366,
+ "engine_tpot_ms": 20.030201943781645,
+ "decomposition_ms_per_token": {
+  "decode_floor": 15.097470801082412,
+  "prompt_steps_gpu_excess": 4.8908970304952595,
+  "prompt_steps_gpu_gap": 0.007270272944189026,
+  "decode_steps_gpu_gap": 0.025079025781295464
+ },
+ "mixed_step_excess_ms": {
+  "mean": 21.169680757575758,
+  "p50": 17.271900000000002,
+  "p90": 42.025099999999995
+ },
+ "excess_per_prompt_chunk_ms": 17.730950888324873,
+ "prompt_steps": 165,
+ "prompt_chunks": 197
+}

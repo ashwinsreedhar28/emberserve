@@ -1,0 +1,30 @@
+Transcribed from the pod A console (A100 SXM 80 GB, driver 570.172.08 / CUDA 12.8), Sep 29 2026,
+`bash scripts/coldstart_c.sh` at 68c6b82. The pod was terminated before its JSON was committed
+(vLLM 0.30.0's cu130 torch could not run on this driver, so the script was stopped and rerun on
+pod B); these lines are the console output as printed.
+
+== Qwen3-8B golden gate
+== float16
+[paged_flash] logits prompt0 max|diff| = 4.02e-02 (atol 1e+00, fp16/bf16 vs fp32 reference) ok
+[paged_flash] prompt 0-5: 64 tokens match
+[paged_flash] prompt 6: tie-break at token 28 (top-2 margin 0.031 < 2x logits error 0.080) - numerics, not a bug
+ALL OK
+== bfloat16
+[paged_flash] logits prompt0 max|diff| = 4.40e-01 (atol 1e+00, fp16/bf16 vs fp32 reference) ok
+[paged_flash] prompt 3: tie-break at token 55 (top-2 margin 0.000 < 2x logits error 0.880) - numerics, not a bug
+[paged_flash] prompt 6: tie-break at token 28 (top-2 margin 0.000 < 2x logits error 0.880) - numerics, not a bug
+[paged_flash] prompts 0, 1, 2, 4, 5: 64 tokens match
+ALL OK
+
+== Qwen2.5-7B-Instruct, pagedserve, core spawned first
+pagedserve  run 1: healthy    5.0 s  first token    5.7 s  | load_weights 1.61 s · weights_read 1.08 s · kv_cache 0.06 s · capture_full_graphs 1.56 s (15.23 GB in 1.08 s = 14.11 GB/s)
+pagedserve  run 2: healthy    5.1 s  first token    5.7 s  | load_weights 1.74 s · weights_read 1.08 s · kv_cache 0.09 s · capture_full_graphs 1.47 s (14.09 GB/s)
+pagedserve  run 3: healthy    4.9 s  first token    5.5 s  | load_weights 1.75 s · weights_read 1.08 s · kv_cache 0.15 s · capture_full_graphs 1.42 s (14.05 GB/s)
+  runs after the first: mean 5.6 s
+
+== Qwen3-8B, pagedserve
+pagedserve  run 1: healthy    5.2 s  first token    5.8 s  | load_weights 1.85 s · weights_read 1.14 s · kv_cache 0.07 s · capture_full_graphs 1.58 s (16.38 GB in 1.14 s = 14.33 GB/s)
+pagedserve  run 2: healthy    5.0 s  first token    5.5 s  | load_weights 1.81 s · weights_read 1.13 s · kv_cache 0.04 s · capture_full_graphs 1.44 s (14.44 GB/s)
+pagedserve  run 3: healthy    4.9 s  first token    5.5 s  | load_weights 1.82 s · weights_read 1.15 s · kv_cache 0.04 s · capture_full_graphs 1.45 s (14.22 GB/s)
+
+== Qwen3-8B, vLLM 0.30.0: every run failed (RuntimeError: The NVIDIA driver on your system is too old (found version 12080))

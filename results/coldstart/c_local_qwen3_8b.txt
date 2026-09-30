@@ -1,0 +1,14 @@
+pagedserve  run 1: healthy    6.1 s  first token    6.7 s  | pagedserve_boot load_weights 2.02 s · weights_read 1.17 s · kv_cache 0.05 s · capture_full_graphs 2.09 s (weights 16.38 GB in 1.17 s = 14.03 GB/s (8 readers, 64 MB buffers))
+pagedserve  run 2: healthy    6.2 s  first token    6.9 s  | pagedserve_boot load_weights 2.01 s · weights_read 1.11 s · kv_cache 0.06 s · capture_full_graphs 2.33 s (weights 16.38 GB in 1.11 s = 14.78 GB/s (8 readers, 64 MB buffers))
+pagedserve  run 3: healthy    5.9 s  first token    6.6 s  | pagedserve_boot load_weights 1.94 s · weights_read 1.11 s · kv_cache 0.05 s · capture_full_graphs 1.91 s (weights 16.38 GB in 1.11 s = 14.72 GB/s (8 readers, 64 MB buffers))
+vllm        run 1: healthy  202.3 s  first token  202.3 s  | vllm_init_s 139.76, vllm_compile_s 36.15, vllm_torch_compile_s 36.15, vllm_weights_s 25.15, vllm_graph_capture_s 6.0
+vllm        run 2: healthy   69.2 s  first token   69.2 s  | vllm_init_s 17.7, vllm_compile_s 0.76, vllm_torch_compile_s 0.76, vllm_weights_s 25.56, vllm_graph_capture_s 6.0
+vllm        run 3: healthy   69.0 s  first token   69.0 s  | vllm_init_s 17.06, vllm_compile_s 0.23, vllm_torch_compile_s 0.23, vllm_weights_s 24.9, vllm_graph_capture_s 6.0
+vllm_eager  run 1: healthy   57.0 s  first token   57.0 s  | vllm_init_s 5.78, vllm_weights_s 24.59
+vllm_eager  run 2: healthy   54.7 s  first token   54.8 s  | vllm_init_s 3.22, vllm_weights_s 24.28
+vllm_eager  run 3: healthy   55.6 s  first token   55.6 s  | vllm_init_s 3.45, vllm_weights_s 25.55
+
+first token, runs after the first (warm caches):
+  pagedserve  mean    6.7 s  (runs 6.9, 6.6; first run 6.7 s)
+  vllm        mean   69.1 s  (runs 69.2, 69.0; first run 202.3 s)
+  vllm_eager  mean   55.2 s  (runs 54.8, 55.6; first run 57.0 s)

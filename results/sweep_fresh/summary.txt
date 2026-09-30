@@ -1,0 +1,8 @@
+ps_7b    rate  2.0 n=2  tok/s     341  TPOT p50  10.41  TTFT p50    39.0 ms  (TPOT p50 runs 10.41, 10.42)
+ps_7b    rate  4.0 n=2  tok/s     728  TPOT p50  11.15  TTFT p50    40.7 ms  (TPOT p50 runs 11.15, 11.14)
+ps_7b    rate  8.0 n=2  tok/s   1,274  TPOT p50  12.35  TTFT p50    43.7 ms  (TPOT p50 runs 12.36, 12.35)
+ps_7b    rate None n=2  tok/s   3,412  TPOT p50  27.07  TTFT p50  1881.9 ms  (TPOT p50 runs 27.10, 27.03)
+vllm_7b  rate  2.0 n=2  tok/s     341  TPOT p50  10.32  TTFT p50    38.2 ms  (TPOT p50 runs 10.32, 10.31)
+vllm_7b  rate  4.0 n=2  tok/s     728  TPOT p50  10.86  TTFT p50    40.5 ms  (TPOT p50 runs 10.86, 10.86)
+vllm_7b  rate  8.0 n=2  tok/s   1,276  TPOT p50  11.98  TTFT p50    45.0 ms  (TPOT p50 runs 12.00, 11.96)
+vllm_7b  rate None n=2  tok/s   3,415  TPOT p50  29.20  TTFT p50  1867.9 ms  (TPOT p50 runs 29.16, 29.23)

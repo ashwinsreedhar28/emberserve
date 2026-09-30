@@ -1,0 +1,18 @@
+pagedserve  run 1: healthy   10.3 s  first token   10.9 s  | pagedserve_boot load_weights 2.11 s · weights_read 1.31 s · kv_cache 0.04 s · capture_full_graphs 1.75 s (weights 15.23 GB in 1.31 s = 11.59 GB/s (8 readers, 64 MB buffers))
+pagedserve  run 2: healthy    9.3 s  first token   10.0 s  | pagedserve_boot load_weights 1.80 s · weights_read 1.05 s · kv_cache 0.05 s · capture_full_graphs 1.68 s (weights 15.23 GB in 1.05 s = 14.55 GB/s (8 readers, 64 MB buffers))
+pagedserve  run 3: healthy    9.9 s  first token   10.6 s  | pagedserve_boot load_weights 1.89 s · weights_read 1.07 s · kv_cache 0.04 s · capture_full_graphs 1.87 s (weights 15.23 GB in 1.07 s = 14.21 GB/s (8 readers, 64 MB buffers))
+vllm        run 1: healthy  187.6 s  first token  188.0 s  | vllm_init_s 126.43, vllm_compile_s 17.55, vllm_torch_compile_s 17.55, vllm_weights_s 24.11, vllm_graph_capture_s 5.0
+vllm        run 2: healthy   71.3 s  first token   71.7 s  | vllm_init_s 21.59, vllm_compile_s 0.2, vllm_torch_compile_s 0.2, vllm_weights_s 24.34, vllm_graph_capture_s 9.0
+vllm        run 3: healthy   62.4 s  first token   62.4 s  | vllm_init_s 13.71, vllm_compile_s 0.18, vllm_torch_compile_s 0.18, vllm_weights_s 23.66, vllm_graph_capture_s 4.0
+vllm_tuned  run 1: healthy  100.9 s  first token  101.3 s  | vllm_init_s 23.73, vllm_compile_s 14.89, vllm_torch_compile_s 14.89, vllm_graph_capture_s 1.0
+vllm_tuned  run 2: healthy   81.9 s  first token   81.9 s  | vllm_init_s 6.05, vllm_compile_s 0.19, vllm_torch_compile_s 0.19, vllm_graph_capture_s 1.0
+vllm_tuned  run 3: healthy   84.1 s  first token   84.1 s  | vllm_init_s 6.03, vllm_compile_s 0.2, vllm_torch_compile_s 0.2, vllm_graph_capture_s 1.0
+vllm_eager  run 1: healthy   49.0 s  first token   49.1 s  | vllm_init_s 3.15, vllm_weights_s 21.77
+vllm_eager  run 2: healthy   49.7 s  first token   49.8 s  | vllm_init_s 3.24, vllm_weights_s 22.29
+vllm_eager  run 3: healthy   49.8 s  first token   49.9 s  | vllm_init_s 3.26, vllm_weights_s 22.28
+
+first token, runs after the first (warm caches):
+  pagedserve  mean   10.3 s  (runs 10.0, 10.6; first run 10.9 s)
+  vllm        mean   67.0 s  (runs 71.7, 62.4; first run 188.0 s)
+  vllm_tuned  mean   83.0 s  (runs 81.9, 84.1; first run 101.3 s)
+  vllm_eager  mean   49.8 s  (runs 49.8, 49.9; first run 49.1 s)

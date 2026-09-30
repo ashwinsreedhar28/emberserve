@@ -1,7 +1,8 @@
-"""Qwen2 / Llama / Mistral decoder written from scratch against the `AttentionBackend` interface.
+"""Qwen2 / Qwen3 / Llama / Mistral decoder written from scratch against the `AttentionBackend` interface.
 
-The three families share this block exactly (pre-norm RMSNorm, rotate-half RoPE, GQA,
-SwiGLU); `ModelConfig` carries the differences (attention bias, RoPE scaling, eos ids).
+The families share this block exactly (pre-norm RMSNorm, rotate-half RoPE, GQA,
+SwiGLU); `ModelConfig` carries the differences (attention bias, RoPE scaling, eos ids,
+Qwen3's per-head q/k RMSNorm and explicit head_dim).
 
 Tensor parallelism (`dist.py`): the module is built from `ModelConfig.shard(tp)` (this
 rank's heads and MLP width) and the two row-parallel projections (`o_proj`, `down_proj`)
@@ -76,6 +77,11 @@ class Qwen2Attention(nn.Module):
         self.qkv_proj = nn.Linear(hidden, self.q_size + 2 * self.kv_size,
                                   bias=config.attention_bias)
         self.o_proj = nn.Linear(self.q_size, hidden, bias=False)
+        # Qwen3: per-head RMSNorm of q and k (one [head_dim] weight each, shared across heads).
+        self.qk_norm = config.qk_norm
+        if self.qk_norm:
+            self.q_norm = RMSNorm(self.head_dim, config.rms_norm_eps)
+            self.k_norm = RMSNorm(self.head_dim, config.rms_norm_eps)
         # Shared with every other layer; it holds no parameters, only cached cos/sin tables.
         self.rotary_emb = rotary_emb
 
@@ -86,6 +92,9 @@ class Qwen2Attention(nn.Module):
         n = hidden.shape[0]
         qkv = self.qkv_proj(hidden)
         q, k, v = qkv.split([self.q_size, self.kv_size, self.kv_size], dim=-1)
+        if self.qk_norm:  # rows of [n * heads, head_dim]; the split views need a copy first
+            q = self.q_norm(q.reshape(n * self.num_heads, self.head_dim))
+            k = self.k_norm(k.reshape(n * self.num_kv_heads, self.head_dim))
         q = q.view(n, self.num_heads, self.head_dim)
         k = k.view(n, self.num_kv_heads, self.head_dim)
         v = v.view(n, self.num_kv_heads, self.head_dim)
