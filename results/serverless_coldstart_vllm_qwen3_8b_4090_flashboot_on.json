@@ -2,9 +2,9 @@
  "kind": "serverless_coldstart",
  "mode": "queue",
  "endpoint": "rvy2p7bfia91fm",
- "label": "vllm_qwen3_8b_4090_flashboot_off",
+ "label": "vllm_qwen3_8b_4090_flashboot_on",
  "image": "worker-vllm v2.28.0, Qwen3-8B downloaded from HF at start, model cache off",
- "note": "",
+ "note": "FlashBoot turned out to be ON for this series (the label at run time said off). Samples 1-2 are full cold boots (FlashBoot misses; sample 2's worker log is serverless_coldstart_vllm_qwen3_8b_worker_log.txt, a fresh container from its first line); sample 3 (532 ms) is a FlashBoot resume. The FlashBoot-off sample is serverless_coldstart_vllm_qwen3_8b_4090_off_b.json.",
  "max_tokens": 16,
  "idle_s": 60.0,
  "runs": [
@@ -107,7 +107,9 @@
     "job_status": "COMPLETED",
     "delay_ms": 532,
     "execution_ms": 529,
-    "worker_id": "jodgmz6md7oivx"
+    "worker_id": "jodgmz6md7oivx",
+    "cold": false,
+    "flashboot_resume": true
    },
    "warm": {
     "status": 200,
@@ -138,6 +140,11 @@
   "warm_total_s": {
    "median": 0.5454342500306666
   },
-  "failures": 0
+  "failures": 0,
+  "full_boot_delay_ms": [
+   210437,
+   154294
+  ],
+  "flashboot_resumes": "1 of 3"
  }
 }
