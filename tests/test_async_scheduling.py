@@ -174,3 +174,36 @@ def test_reset_drops_pending() -> None:
     assert eng._pending is None and not eng.has_unfinished_requests()
     same(gen(eng, prompts(2), SamplingParams.greedy(5, ignore_eos=True)),
          gen(make_engine(False), prompts(2), SamplingParams.greedy(5, ignore_eos=True)))
+
+
+def _untied_engine(async_scheduling: bool) -> LLMEngine:
+    cfg = ModelConfig.tiny(tie_word_embeddings=False)
+    model = Qwen2ForCausalLM(cfg)
+    reset_parameters_deterministic(model, 3)
+    ecfg = EngineConfig(device="cpu", dtype=torch.float32, block_size=4, num_gpu_blocks=256,
+                        max_num_seqs=64, max_num_batched_tokens=512, max_model_len=256,
+                        attn_backend="paged_torch", async_scheduling=async_scheduling)
+    return LLMEngine(model, cfg, ecfg, tokenizer=None)
+
+
+def test_repetition_penalty_sees_the_pending_token() -> None:
+    """The penalty reads `all_token_ids` on the host; under async scheduling the token the
+    previous step sampled was not in it yet, so it escaped the penalty (this model and
+    prompt: sync 51, 202, 176, 247, 137, 0, 214 vs async ..., 0, 0). Penalized requests
+    now resolve before the next launch; an unpenalized one in the same batch is unchanged."""
+    p = [23, 88, 230, 29, 77]
+    pen = SamplingParams.greedy(16, ignore_eos=True)
+    pen.repetition_penalty = 1.2
+    plain = SamplingParams.greedy(16, ignore_eos=True)
+    want = gen(_untied_engine(False), [p], pen)[0].output_token_ids
+    assert want[:7] == [51, 202, 176, 247, 137, 0, 214]
+    assert gen(_untied_engine(True), [p], pen)[0].output_token_ids == want
+    eng = _untied_engine(True)
+    eng.add_request("p", p, pen)
+    eng.add_request("q", prompts(1)[0], plain)
+    outs: dict[str, list[int]] = {}
+    while eng.has_unfinished_requests():
+        for o in eng.step():
+            outs[o.request_id] = o.output_token_ids
+    assert outs["p"] == want
+    assert outs["q"] == gen(_untied_engine(False), [prompts(1)[0]], plain)[0].output_token_ids

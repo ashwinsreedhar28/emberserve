@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import gc
 import os
+import threading
 import time
 import warnings
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -144,6 +146,8 @@ def kv_blocks_for(free_bytes: int, utilization: float, bytes_per_block: int,
     return max(budget // bytes_per_block, MIN_GPU_BLOCKS)
 
 
+FINAL_TEXT_KEEP = 1024  # finished requests whose text `output_text` can still return
+
 GRAPHS_BEFORE_WEIGHTS_ENV = "PAGEDSERVE_GRAPHS_BEFORE_WEIGHTS"
 
 
@@ -255,7 +259,9 @@ class LLMEngine:
             warnings.warn("piecewise_cuda_graphs ignored: needs enable_cuda_graphs on CUDA",
                           stacklevel=2)
         self._next_seq_id = 0
-        self._final_text: dict[str, str] = {}
+        # Full text of recently finished requests for `output_text` (bounded: nothing in the
+        # server or `LLM.generate` reads it, and it used to keep every request forever).
+        self._final_text: OrderedDict[str, str] = OrderedDict()
         self._step_count = 0
         self.stats: list[StepStats] = []
         self.keep_stats = True
@@ -527,8 +533,22 @@ class LLMEngine:
             # NCCL will neither destroy nor abort a communicator while a CUDA graph that
             # captured its collectives exists: drop the graphs first, on every rank, then
             # leave the group *before* the driver waits for the worker processes.
-            self.release_graphs()
-            tpdist.destroy_tp(timeout_s=15.0 if failed else 60.0)
+            def teardown() -> None:
+                self.release_graphs()
+                tpdist.destroy_tp(timeout_s=15.0 if failed else 60.0)
+
+            if not failed:
+                teardown()
+            else:
+                # Both steps start with a device sync, and a collective whose peer was just
+                # killed may never finish, so the sync may never return: bound the whole
+                # teardown (the process is on its way out with the step's exception).
+                t = threading.Thread(target=teardown, name="pagedserve-tp-teardown", daemon=True)
+                t.start()
+                t.join(30.0)
+                if t.is_alive():
+                    warnings.warn("tensor-parallel teardown did not finish in 30 s after a "
+                                  "failed step; abandoning it", stacklevel=2)
         if driver:
             tpdist.stop_workers(self._tp_workers)
             self._tp_workers = []
@@ -753,6 +773,17 @@ class LLMEngine:
         the previous step's token) are skipped when this step resolves.
         """
         tr = self._tracer
+        if self._pending is not None and any(
+                r.sampling_params.repetition_penalty != 1.0 for r in self._pending.sampled_reqs):
+            # The repetition penalty reads the request's token history on the host, and the
+            # token the pending step sampled is not in it yet: launching now would let that
+            # token escape the penalty. Resolve first (these steps run synchronously).
+            pending, self._pending = self._pending, None
+            outputs = self._resolve(pending, set())
+            if pending.trace is not None and tr is not None:
+                tr.finish(pending.trace)
+            self.last_step_scheduled = True  # progress was made; not a stuck queue
+            return outputs
         t_sched = time.perf_counter()
         sched_out = self.scheduler.schedule()
         for req in sched_out.preempted:
@@ -1015,6 +1046,8 @@ class LLMEngine:
                 self.scheduler.finish_request(req, reason)
                 self.backend.free_sequence(req.seq_id)
                 self._final_text[req.request_id] = self.detok.text(req.request_id)
+                while len(self._final_text) > FINAL_TEXT_KEEP:
+                    self._final_text.popitem(last=False)
                 self.detok.reset(req.request_id)
             outputs.append(RequestOutput(
                 request_id=req.request_id, new_token_ids=toks,
@@ -1055,7 +1088,8 @@ class LLMEngine:
 
     # ---- convenience -------------------------------------------------------------------
     def output_text(self, request_id: str) -> str:
-        """Text so far for a live request, or the full text of a finished one (popped)."""
+        """Text so far for a live request, or the full text of a finished one (popped; the
+        last `FINAL_TEXT_KEEP` finished requests are kept)."""
         if request_id in self._final_text:
             return self._final_text.pop(request_id)
         return self.detok.text(request_id)
@@ -1063,6 +1097,7 @@ class LLMEngine:
     def reset(self) -> None:
         """Drop all requests and cache state (used between benchmark runs)."""
         self._pending = None
+        self._final_text.clear()
         if self.tp.size > 1 and self.tp.is_driver:
             tpdist.broadcast_object(("reset",))
         for rid in [r.request_id for r in list(self.scheduler.running) + list(self.scheduler.waiting)]:

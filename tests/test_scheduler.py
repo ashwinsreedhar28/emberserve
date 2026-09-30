@@ -384,3 +384,18 @@ def test_chunked_add_request_accepts_prompt_over_budget():
     assert loop.scheduler.get_request(rid).state == RequestState.WAITING
     with pytest.raises(ValueError):
         loop.add(prompt(64), 1)  # max_model_len still applies
+
+
+def test_preempted_request_that_outgrew_the_budget_is_readmitted():
+    """Without chunked prefill a preempted request re-prefills prompt + output in one step.
+    Admitted with 4 tokens under a budget of 8, it can grow past 8 before it is preempted;
+    it used to wait forever (a reviewer's repro: 13 tokens waiting with every block free).
+    Alone in a step it is now admitted over the budget."""
+    loop = FakeEngineLoop(num_blocks=6, block_size=BLOCK, max_num_batched_tokens=8,
+                          max_model_len=64)
+    a = loop.add(prompt(4), 16)
+    b = loop.add(prompt(4, 50), 12)
+    loop.run_until_done(max_steps=500)
+    assert any(rec.preempted for rec in loop.log), "the scenario needs a preemption"
+    assert len(loop.outputs[a]) == 16 and len(loop.outputs[b]) == 12
+    assert loop.block_manager.num_free_blocks == 6

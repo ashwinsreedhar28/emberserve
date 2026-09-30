@@ -169,7 +169,12 @@ class Scheduler:
             # Admitted requests are already in `running`, so it alone counts the seqs.
             if len(self.running) >= cfg.max_num_seqs:
                 break
-            if budget + query_len > cfg.max_num_batched_tokens:
+            if budget + query_len > cfg.max_num_batched_tokens and batch:
+                # Over budget: wait for the next step. Alone in the step it is admitted
+                # anyway: new prompts over the budget are refused in add_request, so this is
+                # a preempted request re-prefilling prompt + output, which can outgrow a
+                # budget below max_model_len and would otherwise wait forever, blocking the
+                # queue behind it.
                 break
             if match is None:
                 if not bm.can_allocate(req.num_tokens):

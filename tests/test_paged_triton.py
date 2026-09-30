@@ -411,3 +411,24 @@ def test_backend_dot_variant_matches_paged_torch():
     h.step([0, 1], [40, 9], is_prefill=True)
     for _ in range(3):
         h.step([0, 1], [1, 1], is_prefill=False)
+
+
+@pytest.mark.parametrize("block_size", [48, 96])
+@pytest.mark.parametrize("variant", ["sum", "dot"])
+def test_kernel_block_sizes_that_are_not_powers_of_two(block_size: int, variant: str):
+    """Any multiple of 16 is accepted, so the tile must divide the page. Block 96 used to
+    get a 64-position tile (position 64 then read the next physical block) and block 48 a
+    48-position tile (not a power of two). Contexts here cross the 64 mark and pages."""
+    torch.manual_seed(block_size)
+    kc, vc = torch.randn(6, block_size, HKV, D), torch.randn(6, block_size, HKV, D)
+    tables = [[4, 1], [0, 5, 2]]
+    lens = [block_size + 20, 2 * block_size + 5]
+    bt = torch.tensor([t + [0] * (3 - len(t)) for t in tables], dtype=torch.int32)
+    ctx = torch.tensor(lens, dtype=torch.int32)
+    q = torch.randn(2, H, D)
+    out = paged_attention_decode(q, kc, vc, bt, ctx, D ** -0.5, num_splits=1, variant=variant)
+    for i, (t, n) in enumerate(zip(tables, lens)):
+        k = kc[t].reshape(-1, HKV, D)[:n]
+        v = vc[t].reshape(-1, HKV, D)[:n]
+        torch.testing.assert_close(out[i:i + 1], causal_softmax_attention(q[i:i + 1], k, v, 1),
+                                   atol=ATOL, rtol=0)

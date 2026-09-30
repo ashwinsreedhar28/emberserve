@@ -227,7 +227,9 @@ def _load_tensors(model: nn.Module, tensors, dtype, device, source: str, tp=None
             if (local, shard) in loaded:
                 raise KeyError(f"duplicate checkpoint key {hf_name!r} in {where}")
             target = _shard_view(config, state[local], shard)
-            src = tpdist.shard_tensor(hf_name, src, tp.rank, tp.size)
+            if not (local == "lm_head.weight" and not getattr(model, "lm_head_sharded", True)):
+                # (a vocabulary the ranks cannot split evenly keeps the whole head on each)
+                src = tpdist.shard_tensor(hf_name, src, tp.rank, tp.size)
             if src.shape != target.shape:
                 raise ValueError(
                     f"shape mismatch for {hf_name!r}: checkpoint {tuple(src.shape)} "

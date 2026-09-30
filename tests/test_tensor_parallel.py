@@ -213,3 +213,18 @@ def test_tp2_through_the_engine_core_process():
 
 async def _collect(c, rid, prompt, sp):
     return [out async for out in c.generate(rid, prompt, sp)]
+
+
+def test_replicated_lm_head_loads_whole():
+    """A vocabulary the ranks cannot split (257 over 2) keeps the whole lm_head on each
+    rank; an untied checkpoint's head used to be sharded anyway on load and fail the
+    shape check ((129, 64) vs (257, 64))."""
+    cfg = ModelConfig.tiny(vocab_size=257, tie_word_embeddings=False)
+    full = Qwen2ForCausalLM(cfg, tp_size=1)
+    reset_parameters_deterministic(full, 1)
+    sd = hf_state_dict(full)
+    for rank in (0, 1):
+        shard = Qwen2ForCausalLM(cfg.shard(2), tp_size=2)
+        assert not shard.lm_head_sharded
+        load_hf_state_dict(shard, sd, tp=TPState(rank, 2))
+        assert torch.equal(shard.lm_head.weight, full.lm_head.weight)

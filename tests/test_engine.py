@@ -285,3 +285,20 @@ def test_kv_budget_does_not_subtract_resident_weights() -> None:
     assert kv_blocks_for(0, 0.90, bytes_per_block, reserve) == MIN_GPU_BLOCKS
     # 80 GB A100 after the same weights: most of the card, as before.
     assert kv_blocks_for(int(64 * (1 << 30)), 0.90, bytes_per_block, reserve) > 3900
+
+
+def test_finished_text_retention_is_bounded_and_reset(monkeypatch) -> None:
+    """Every finished request's text used to stay in `_final_text` forever (nothing in the
+    server or LLM.generate pops it) and survived `reset()`."""
+    from pagedserve import engine as engine_mod
+    from pagedserve.sched.request import SamplingParams
+
+    monkeypatch.setattr(engine_mod, "FINAL_TEXT_KEEP", 5)
+    eng = make_engine()
+    for i, p in enumerate(prompts(12)):
+        eng.add_request(f"r{i}", p, SamplingParams.greedy(2, ignore_eos=True))
+    while eng.has_unfinished_requests():
+        eng.step()
+    assert list(eng._final_text) == [f"r{i}" for i in range(7, 12)]
+    eng.reset()
+    assert not eng._final_text

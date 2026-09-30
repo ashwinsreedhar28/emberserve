@@ -230,8 +230,18 @@ def _tile_for(block_size: int, head_dim: int, groups_pad: int) -> int:
     16 that divides `block_size` (a tile never straddles two physical blocks).
     """
     tile = max(16, min(32, TILE_BUDGET // (groups_pad * head_dim)))
-    tile = 1 << (tile.bit_length() - 1)  # round down to a power of two
-    return min(block_size, tile)
+    return _pow2_divisor(block_size, tile)
+
+
+def _pow2_divisor(block_size: int, cap: int) -> int:
+    """The largest power of two <= `cap` that divides `block_size` (16 always does). A tile
+    must divide the page: with block 96 and `min(block_size, 64)` the tile was 64, so
+    `TILES_PER_BLOCK` was 1 and position 64 read the next physical block; with block 48 the
+    tile was 48, not a power of two, which `tl.arange` rejects."""
+    t = 1 << (max(cap, 1).bit_length() - 1)
+    while t > 1 and block_size % t:
+        t //= 2
+    return t
 
 
 _SM_COUNT: dict[int, int] = {}
@@ -341,7 +351,7 @@ def paged_attention_decode(q: Tensor, k_cache: Tensor, v_cache: Tensor, block_ta
     if use_dot:
         assert q.dtype == k_cache.dtype, f"dot variant needs q dtype == cache dtype ({q.dtype} vs {k_cache.dtype})"
         groups_pad = max(16, _next_pow2(groups))
-        tile = min(block_size, 64)
+        tile = _pow2_divisor(block_size, 64)
     else:
         groups_pad = _next_pow2(groups)
         tile = _tile_for(block_size, D, groups_pad)

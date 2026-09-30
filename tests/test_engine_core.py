@@ -177,3 +177,44 @@ async def test_speculative_decoding_through_the_core_process() -> None:
         multi += sum(len(ch.new_token_ids) > 1 for ch in chunks)
     assert multi > 0, "no step delivered more than one token"
     assert c.metrics()["generated_tokens_total"] == 16 * len(ps)
+
+
+def test_command_writer_never_blocks_on_a_full_pipe() -> None:
+    """`send` used to write into the pipe on the caller's thread: with the core blocked on
+    a full output pipe, the output reader (sending a stop-string abort) and the event loop
+    (sending a large add) blocked with it, and nothing drained the outputs. The writer
+    thread takes the blocking write; order is kept."""
+    import time
+    from multiprocessing import Pipe
+
+    from pagedserve.server.engine_core import _CommandWriter
+
+    r, w = Pipe(duplex=False)
+    writer = _CommandWriter(w)
+    big = ("add", b"x" * (4 << 20))  # far more than a pipe buffer holds
+    t0 = time.monotonic()
+    writer.put(big)
+    writer.put(("abort", "a"))
+    writer.put(("abort", "b"))
+    assert time.monotonic() - t0 < 0.5  # returned with nobody reading
+    assert r.recv() == big and r.recv() == ("abort", "a") and r.recv() == ("abort", "b")
+    writer.close()
+
+
+def test_command_writer_reports_a_closed_pipe() -> None:
+    import time
+    from multiprocessing import Pipe
+
+    import pytest
+
+    from pagedserve.server.engine_core import _CommandWriter
+
+    r, w = Pipe(duplex=False)
+    writer = _CommandWriter(w)
+    r.close()
+    writer.put(("abort", "x"))
+    deadline = time.monotonic() + 5
+    while writer.error is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    with pytest.raises(BrokenPipeError):
+        writer.put(("abort", "y"))

@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import os
+import queue
 import sys
+import threading
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -305,8 +307,52 @@ def spawn_core(spec: EngineSpec, n_workers: int = 1) -> tuple[Any, list[tuple[Co
     return proc, chans
 
 
+_CLOSE = object()
+
+
+class _CommandWriter:
+    """Writes commands into the core's pipe on a thread of its own, so `send` never blocks.
+
+    With a blocking `send`, the API side could deadlock against the core: the core blocks
+    writing a step's outputs into a full output pipe (its loop reads commands only between
+    steps), the output reader thread, which is the only thing draining that pipe, blocks
+    sending a stop-string abort, and the event loop holds the send lock mid-way through a
+    large `add` that the core will never read. Queuing the writes keeps the reader draining
+    and the event loop running whatever the pipes' state; one thread keeps the order."""
+
+    def __init__(self, conn: Connection) -> None:
+        self._conn = conn
+        self._q: queue.SimpleQueue = queue.SimpleQueue()
+        self.error: BaseException | None = None
+        self._thread = threading.Thread(target=self._run, name="pagedserve-core-writer",
+                                        daemon=True)
+        self._thread.start()
+
+    def put(self, msg: tuple) -> None:
+        if self.error is not None:
+            raise BrokenPipeError(f"engine core pipe closed: {self.error!r}")
+        self._q.put(msg)
+
+    def _run(self) -> None:
+        while True:
+            msg = self._q.get()
+            if msg is _CLOSE:
+                return
+            try:
+                self._conn.send(msg)
+            except (OSError, EOFError, ValueError) as exc:  # the core is gone
+                self.error = exc
+                return
+
+    def close(self, timeout_s: float = 5.0) -> None:
+        """Let the queued commands go out (up to `timeout_s`), then stop the thread."""
+        self._q.put(_CLOSE)
+        self._thread.join(timeout_s)
+
+
 class EngineCoreProcess:
-    """Owns the subprocess and its pipes. Thread-safe `send`; `recv` from one reader."""
+    """Owns the subprocess and its pipes. Non-blocking, thread-safe `send` (a writer
+    thread, `_CommandWriter`); `recv` from one reader."""
 
     def __init__(self, spec: EngineSpec) -> None:
         self.spec = spec
@@ -315,9 +361,7 @@ class EngineCoreProcess:
         self._cmd_send: Connection | None = None
         self._out_recv: Connection | None = None
         self.info: dict[str, Any] = {}
-        import threading
-
-        self._send_lock = threading.Lock()
+        self._writer: _CommandWriter | None = None
 
     @property
     def alive(self) -> bool:
@@ -326,6 +370,7 @@ class EngineCoreProcess:
     def start(self, ready_timeout_s: float = 900.0) -> dict[str, Any]:
         self._proc, [(cmd_send, out_recv)] = spawn_core(self.spec, 1)
         self._cmd_send, self._out_recv = cmd_send, out_recv
+        self._writer = _CommandWriter(cmd_send)
         deadline = time.monotonic() + ready_timeout_s
         while True:
             if out_recv.poll(1.0):
@@ -342,9 +387,8 @@ class EngineCoreProcess:
                 raise TimeoutError("engine core did not become ready")
 
     def send(self, msg: tuple) -> None:
-        assert self._cmd_send is not None
-        with self._send_lock:
-            self._cmd_send.send(msg)
+        assert self._writer is not None
+        self._writer.put(msg)
 
     def recv(self, timeout: float | None = None) -> tuple | None:
         """Next message from the core, or None on timeout."""
@@ -365,6 +409,9 @@ class EngineCoreProcess:
         if self._proc.is_alive():
             self._proc.kill()
             self._proc.join(5.0)
+        if self._writer is not None:  # a write into a dead core's pipe fails and ends it
+            self._writer.close(1.0)
+            self._writer = None
         for c in (self._cmd_send, self._out_recv):
             if c is not None:
                 c.close()
@@ -379,14 +426,12 @@ class AttachedCore:
     aborts whatever this worker still had in flight when its pipe closes."""
 
     def __init__(self, cmd_send: Connection, out_recv: Connection, core_pid: int) -> None:
-        import threading
-
         self._cmd_send: Connection | None = cmd_send
         self._out_recv: Connection | None = out_recv
         self.core_pid = core_pid
         self.info: dict[str, Any] = {}
         self._dead = False
-        self._send_lock = threading.Lock()
+        self._writer: _CommandWriter | None = _CommandWriter(cmd_send)
 
     @property
     def alive(self) -> bool:
@@ -416,9 +461,8 @@ class AttachedCore:
     def send(self, msg: tuple) -> None:
         if msg[0] == "stop":
             return  # a worker does not stop the shared core
-        assert self._cmd_send is not None
-        with self._send_lock:
-            self._cmd_send.send(msg)
+        assert self._writer is not None
+        self._writer.put(msg)
 
     def recv(self, timeout: float | None = None) -> tuple | None:
         if self._out_recv is None:
@@ -432,6 +476,9 @@ class AttachedCore:
             return None
 
     def stop(self, timeout_s: float = 10.0) -> None:  # noqa: ARG002 - same signature
+        if self._writer is not None:
+            self._writer.close(1.0)
+            self._writer = None
         for c in (self._cmd_send, self._out_recv):
             if c is not None:
                 try:
