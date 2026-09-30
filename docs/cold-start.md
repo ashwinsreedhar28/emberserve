@@ -71,7 +71,10 @@ first request.
 The same comparison where it matters to a user: a queue endpoint at zero workers, one
 16-token job, Runpod's own `delayTime` (job submitted → a worker picks it up). Both
 endpoints on the RTX 4090 tier ("24 GB PRO"), Qwen3-8B, max model length 4096, idle
-timeout 5 s, FlashBoot off, the same night (Sep 29), from a laptop over the internet.
+timeout 5 s, the same night (Sep 29), from a laptop over the internet. Every sample is a
+full cold boot: FlashBoot was off for pagedserve and for worker-vllm's 140.7 s sample; it
+was on by mistake for worker-vllm's first series, whose 154.3 s and 210.4 s samples were
+FlashBoot misses (full boots; the one resume, 0.5 s, is excluded).
 pagedserve v0.9.8 with the weights baked into a ~27 GB image (`deploy/runpod/Dockerfile.qwen3`);
 worker-vllm v2.28.0 (vLLM 0.30.0) as Runpod's vLLM quick-deploy creates it, which downloads
 the weights from Hugging Face at start (model cache off, bf16):
@@ -104,9 +107,12 @@ its `delayTime` splits into phases (medians of three):
 
 worker-vllm's side comes from one worker's log (`results/serverless_coldstart_vllm_qwen3_8b_worker_log.txt`,
 the 154.3 s sample): 148 s inside the container, so ~6 s of scheduling and container
-create. Of the 148 s, **52 s is Python startup** (worker pre-flight, then `vllm serve`,
-the engine-core process and the GPU worker process each importing vLLM's dependency tree,
-one after another), 21.6 s the weight download, 8.4 s loading them, **32.6 s torch.compile
+create. Of the 148 s, **52 s is startup before the model-loading phase begins** (launch
+02:56:18, "Loading model" 02:57:10; the download and the load come after): worker
+pre-flight, then `vllm serve`, the engine-core process and the GPU worker process each
+starting and importing vLLM's dependency tree, one after another, plus ~10 s of config
+resolution (the stages come from log timestamps; attributing each to imports is inferred
+from what it logs), 21.6 s the weight download, 8.4 s loading them, **32.6 s torch.compile
 from an empty cache** (the cache directory is inside the container, so every cold start
 compiles from scratch; Runpod's own guide persists it to a network volume), ~20 s of graph
 capture and profiling, and ~9 s of API server start, fitness checks and hand-off. Without
