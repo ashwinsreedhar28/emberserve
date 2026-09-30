@@ -2,7 +2,7 @@
 
 Part of [pagedserve](../README.md). Numbers come from the files in `results/` named in each section.
 
-### Cold start: process start to first token (`results/coldstart/`)
+## Cold start: process start to first token (`results/coldstart/`)
 
 A server that scales to zero pays its startup on every cold request, so the number that
 matters is the time from starting the process to the first streamed token. Measured on one
@@ -66,7 +66,7 @@ What remains of pagedserve's ~6 s: the core's `import torch` and CUDA context (~
 boot (~3.5–4 s: weights 1.1 s plus the fp16 cast and setup, graphs 1.4–2.3 s), then the
 first request.
 
-#### On Runpod Serverless: pagedserve vs worker-vllm (`results/serverless_coldstart_*qwen3*`)
+## On Runpod Serverless: pagedserve vs worker-vllm (`results/serverless_coldstart_*qwen3*`)
 
 The same comparison where it matters to a user: a queue endpoint at zero workers, one
 16-token job, Runpod's own `delayTime` (job submitted → a worker picks it up). Both

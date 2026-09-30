@@ -1,10 +1,8 @@
-# Running pagedserve
+# Running it
 
-Part of [pagedserve](../README.md). Numbers come from the files in `results/` named in each section.
+Part of [pagedserve](../README.md). Locally, on a GPU, on Runpod Serverless, and the benchmark commands behind the numbers.
 
-## Run it
-
-### Locally (Mac / CPU, fp32)
+## Locally (Mac / CPU, fp32)
 
 ```bash
 pip install -e '.[hf,server,dev]'
@@ -25,9 +23,9 @@ for chunk in client.chat.completions.create(model="models/Qwen2.5-0.5B-Instruct"
     print(chunk.choices[0].delta.content or "", end="", flush=True)
 ```
 
-### On a GPU
+## On a GPU
 
-`README_GPU.md` covers the pod setup (`scripts/pod_setup.sh` does it in one shot), the
+[GPU notes](gpu.md) cover the pod setup (`scripts/pod_setup.sh` does it in one shot), the
 flash-attn block-256 constraint, the vLLM venv, the Triton kernel knobs, CUDA-graph debugging,
 and the pitfalls we hit. The serving config used for the numbers above:
 
@@ -39,7 +37,7 @@ python -m pagedserve.cli serve --model models/Qwen2.5-0.5B-Instruct --device cud
 Add `--api-workers 2` for high-concurrency serving of a small model: two API processes in
 front of the one engine core ([Two API processes](results.md#two-api-processes---api-workers)).
 
-### On Runpod Serverless
+## On Runpod Serverless
 
 `deploy/runpod/` has a worker and a Dockerfile that bakes a model into the image. The
 worker is a proxy in front of `pagedserve serve` (the layout Runpod's own `worker-vllm`
@@ -124,7 +122,7 @@ not others — while the refused jobs still ran to completion on the worker, sin
 cancellation does not travel through the queue path. `deploy/runpod/README.md` has both
 tables.
 
-### Benchmarks
+## Benchmarks
 
 ```bash
 # in-process ablation: one command, every backend at its own minimum block size

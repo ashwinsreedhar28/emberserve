@@ -1,8 +1,6 @@
-# How pagedserve works
+# How it works
 
-Part of [pagedserve](../README.md). Numbers come from the files in `results/` named in each section.
-
-## How it works
+Part of [pagedserve](../README.md). The engine's design, component by component, and how its correctness is checked.
 
 ```mermaid
 flowchart LR
@@ -18,14 +16,14 @@ flowchart LR
   E --> SMP["Sampler + incremental detokenizer"]
 ```
 
-### The step loop
+## The step loop
 
 `LLMEngine.step()` is `schedule -> build inputs -> forward -> sample -> postprocess`. Each
 step is either a **prefill batch** (new or re-admitted requests, packed with no padding,
 bounded by `max_num_batched_tokens`) or a **decode batch** (one token for every running
 request). Tokens are packed `[num_tokens, heads, head_dim]` with `cu_seqlens`, never padded.
 
-### Scheduler
+## Scheduler
 
 Prefill has priority: whenever the waiting queue is non-empty and the request's blocks can be
 allocated, the step is a prefill; otherwise it is a decode over everything running. Admission
@@ -55,7 +53,7 @@ anticipated (`Scheduler._finishes_on_resolve`) so they waste nothing. Outputs of
 returned by the next `step()` call; tokens are identical to the synchronous engine's,
 including under preemption, chunked prefill, prefix caching, seeded sampling and aborts.
 
-### Speculative decoding
+## Speculative decoding
 
 `--speculative-ngram 3 --num-speculative-tokens 5` turns on prompt-lookup speculation
 (`spec.py`): for every greedy request the engine looks up the last three tokens earlier in
@@ -78,7 +76,7 @@ the mixed-step path (eager at 7B) and async is off, and those cost more than 0.1
 tokens per step return. The exact verification is the reusable part; what it needs is a
 fixed-`k` draft step captured as a graph bucket, async kept on, and a better proposer.
 
-### Paged KV cache
+## Paged KV cache
 
 Each layer's cache is one tensor `[num_blocks, block_size, Hkv, D]` for K and one for V.
 A sequence owns a **block table** (list of physical block ids); token position `p` lives at
@@ -90,7 +88,7 @@ one partial block per sequence, which is why block size is an ablation knob and 
 For Qwen2.5-0.5B in fp16 one token of K+V across 24 layers is `2 * 24 * 2 * 64 * 2 B = 12 KB`;
 20 GB of cache holds ~1.6 M tokens.
 
-### Prefix caching
+## Prefix caching
 
 Every full block is hashed by the chain `(parent_hash, token_ids_in_block)`. A new request
 looks up its prompt's leading full blocks, skips those tokens in prefill (attention still sees
@@ -99,7 +97,7 @@ context), and shares the physical blocks by refcount. Unreferenced cached blocks
 LRU and are evicted when the free list runs dry. A fully cached prompt still computes at least
 its last token so there is a logit to sample from.
 
-### Attention backends
+## Attention backends
 
 All four implement one contract (`attn/base.py`): given packed Q/K/V for this step, write K/V
 into the cache at the step's slots, then attend causally where `context_lens[i]` is the KV
@@ -117,7 +115,7 @@ length *after* the write.
 64-token shared prefix never fills a block and gets zero cache hits, and KV utilization drops
 to 76%. The Triton kernel makes block 16 usable on the GPU.
 
-### Latent attention and MoE
+## Latent attention and MoE
 
 DeepSeek-V2/V3 (and Moonshot's Moonlight, which uses that architecture) replace per-head K/V
 with **multi-head latent attention**: each token is projected to a 512-dim compressed latent
@@ -154,7 +152,7 @@ The routing is tested against a line-by-line transcription of HF's `modeling_dee
 the kernels against the loop, the attention against a non-absorbed HF-style reference, and
 the real model matches HF greedy on Moonlight through both the torch and the Triton paths.
 
-### CUDA graphs
+## CUDA graphs
 
 `--enable-cuda-graphs` captures the decode forward once per batch bucket (1, 2, 4, ..., 256)
 into static input buffers; a step replays the bucket at or above its batch size with padded
@@ -176,7 +174,7 @@ real compute there. So it is the default for checkpoints under 4 GB, and chunked
 the default on CUDA wherever the mixed step is not eager (everywhere but a small model
 served without graphs).
 
-### Weight-only int8
+## Weight-only int8
 
 `--quantization int8` (`model/quant.py`) halves the bytes of every projection after the
 checkpoint is loaded: each 2-D `nn.Linear` of the decoder and the `lm_head` is replaced,
@@ -234,7 +232,7 @@ routes through the torch reference, `PAGEDSERVE_INT8_AUTOTUNE=0` and
 
 ![7B int8 vs fp16 vs vLLM: TPOT vs offered load](../results/plots/7b_int8/tpot_vs_rate.png)
 
-### Tensor parallelism
+## Tensor parallelism
 
 `--tensor-parallel-size 2` (`dist.py`) splits the dense model across two GPUs the Megatron
 way: each decoder layer is cut along the dimension that needs no communication inside the

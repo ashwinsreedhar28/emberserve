@@ -2,8 +2,6 @@
 
 Part of [pagedserve](../README.md). Numbers come from the files in `results/` named in each section.
 
-## Models
-
 Four dense families run through the same decoder block (`model/qwen2.py`), with
 `ModelConfig` carrying the differences: `qwen2` (attention bias, rope_theta 1e6), `qwen3`
 (no bias, per-head RMSNorm on q and k before RoPE, an explicit `head_dim`), `llama`
@@ -30,7 +28,7 @@ prompt ids drawn from each model's own vocabulary.
 ⁵ vLLM's number comes from a sweep that replayed one trace into its prefix cache; not yet re-measured, so the gap is overstated by an unknown amount.
 ⁶ mean of three fresh servers each, same pod, vLLM 0.30.0 (`results/qwen3/`). pagedserve's saturation repeats spread more (2,709–2,909 vs 2,958–2,985).
 
-### Hosted APIs, for scale (a footnote)
+## Hosted APIs, for scale (a footnote)
 
 The same load generator, the same ShareGPT prompts and the same client, pointed at
 OpenAI-compatible endpoints instead of a local server (`--hosted --base-url ...`;

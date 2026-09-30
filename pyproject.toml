@@ -23,7 +23,7 @@ hf = ["transformers>=4.44", "huggingface_hub>=0.24", "accelerate>=0.33"]
 server = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "sse-starlette>=2.0", "openai>=1.30", "orjson>=3.9"]
 # GPU path: flash-attn paged decode + varlen prefill (triton ships with torch). Install on the GPU pod only.
 gpu = ["flash-attn>=2.6"]
-# Benchmark tooling. vllm is the baseline, never a dependency of the engine; install it in its own venv (README_GPU.md).
+# Benchmark tooling. vllm is the baseline, never a dependency of the engine; install it in its own venv (docs/gpu.md).
 bench = ["matplotlib>=3.8", "vllm>=0.6"]
 dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff>=0.5", "matplotlib>=3.8", "httpx>=0.27"]
 

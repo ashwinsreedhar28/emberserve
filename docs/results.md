@@ -2,58 +2,25 @@
 
 Part of [pagedserve](../README.md). Numbers come from the files in `results/` named in each section.
 
-## The 0.5B headline table and summary (earlier README front page)
+## Contents
 
-Qwen2.5-0.5B-Instruct fp16, 200-request ShareGPT-like trace (prompt median 208 tokens,
-output median 131), seed 0, same trace for every row. Raw files in `results/`.
+* [RTX 4090 ablation](#rtx-4090-ablation-resultsablationjson-block-size-256-torch-280cu128)
+* [A100 SXM 80 GB, decode-attention kernel](#a100-sxm-80-gb-decode-attention-kernel-resultskernels_a100_json)
+* [A100 ablation](#a100-ablation-resultsablation_a100json-8-reqs-64-token-shared-prefix-before-the-five-fixes)
+* [A correction: the sweeps replayed one trace, and vLLM cached it](#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it)
+* [A100, pagedserve over HTTP vs vLLM](#a100-pagedserve-over-http-vs-vllm-resultsvllmjson-resultspagedserve_json)
+* [The gap against vLLM](#the-gap-against-vllm)
+* [Moonlight: MLA + MoE on the A100](#moonlight-mla--moe-on-the-a100)
+* [Real text: ShareGPT conversations](#real-text-sharegpt-conversations-results_textjson)
+  * [Two API processes](#two-api-processes---api-workers)
+* [The 7B tail, re-measured](#the-7b-tail-re-measured)
+* [What the numbers taught us](#what-the-numbers-taught-us)
+* [Appendix: the earlier front page](#appendix-the-earlier-front-page)
 
-| | RTX 4090 | A100 SXM 80 GB |
-|---|---:|---:|
-| naive per-sequence cache, 8 req/s | 343 tok/s | |
-| paged_flash + CUDA graphs, 8 req/s | 1,441 tok/s, TPOT p50 3.8 ms | 1,381 tok/s, TPOT p50 2.0 ms (HTTP) |
-| paged_flash + CUDA graphs, all 200 at t=0 | 5,459 tok/s (in-process) | **16,635 tok/s** (HTTP, mean of 3; engine process, async scheduling, chunked prefill on piecewise graphs, batched SSE writes) |
-| vLLM, same trace, same GPU, 8 req/s | | 1,377 tok/s, TPOT p50 2.1 ms |
-| vLLM, all 200 at t=0 | | 16,269 tok/s (one run, after five rates of the same trace; see the correction below) |
-| Triton decode kernel vs flash-attn, B=128 / ctx 2048 | 4.2x slower (first version) | **1.16x** slower (835 vs 972 GB/s) |
-| KV-cache slot utilization, block 16 vs 256 | | **98% vs 76%** |
-
-Against vLLM on the A100 with Qwen2.5-0.5B: throughput parity to 16 req/s (100%), lower
-latency than vLLM at every offered rate (TPOT 1.8 vs 2.0 ms and TTFT 9.4 vs 12.9 ms at
-1 req/s; TPOT 5.7 vs 8.1 ms at saturation), and parity at saturation too: 16,635 vs
-16,269 tok/s on the synthetic trace (mean of three) and 22,964 vs 23,111 on real text
-(mean of six, see [Real text](#real-text-sharegpt-conversations-results_textjson)), up
-from 23% at the first measurement. Nine profile-driven fixes; the last one was not in the
-engine at all but in the API process that streams the tokens. At 7B (Qwen2.5-7B-Instruct) both engines sit on the
-weight-read floor and pagedserve reaches 99% of vLLM at saturation with chunked prefill and
-async scheduling; DeepSeek-R1-Distill-Llama-8B (llama path) is also at 99%, and Moonlight-16B-A3B (DeepSeek-V3's
-latent attention + MoE) reaches 84% on the synthetic trace and 89% on real text with a
-batch-1 step of 6.2 ms against vLLM's 7.1 ms TPOT. The [gap analysis](#the-gap-against-vllm) has the per-phase profile and the nine
-fixes it drove, in order; [Models](models.md#models) has the per-model table. With two API
-processes (`serve --api-workers 2`) the 0.5B reaches 28.0k tok/s on real text against
-vLLM 0.30.0's 25.1k on the same pod, 112% ([Two API processes](#two-api-processes---api-workers)).
-And it starts fast: Qwen3-8B goes from process start to first token in **6.7 s against
-vLLM's 69.1 s** (55.2 s with `--enforce-eager`) on the same A100, the 7B in 5.6 s
-([Cold start](cold-start.md#cold-start-process-start-to-first-token-resultscoldstart)); on Runpod
-Serverless a cold Qwen3-8B job is picked up in **17.2 s against worker-vllm's 147.5 s**
-with the weights baked in, and with a small image that streams them from Hugging Face into
-the engine as they download, **91.7 s against 210.4 s on a fresh host** (`delayTime`,
-RTX 4090), every second split into Runpod's and the engine's phases ([On Runpod Serverless](cold-start.md#on-runpod-serverless-pagedserve-vs-worker-vllm-resultsserverless_coldstart_qwen3)).
-
-**A correction (Sep 29).** The sweep harness replayed the identical trace at every rate on
-one server, and vLLM runs with prefix caching on by default (pagedserve's is off), so vLLM
-served every rate after the first partly from cache — its log shows a 48–64% prefix-cache
-hit rate on such a sweep. Re-measured with a trace per rate and fresh servers, the 7B is at
-parity from 2 to 16 req/s and at saturation (3,412 vs 3,415 tok/s), and Qwen3-8B is at
-parity at 16 req/s and 96% at saturation. The rows that are not yet re-measured are
-marked; see [the correction](#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it).
-
-
-## Results
-
-All runs: Qwen2.5-0.5B-Instruct fp16, 200 requests, seed 0, `max_model_len 4096`. TTFT is
+All 0.5B runs: Qwen2.5-0.5B-Instruct fp16, 200 requests, seed 0, `max_model_len 4096`. TTFT is
 time to first token, TPOT is time per output token after the first, both per request.
 
-### RTX 4090 ablation (`results/ablation*.json`, block size 256, torch 2.8.0+cu128)
+## RTX 4090 ablation (`results/ablation*.json`, block size 256, torch 2.8.0+cu128)
 
 **Open-loop, 8 req/s** (arrivals span 24.3 s; a config that keeps up finishes in ~25 s):
 
@@ -72,7 +39,7 @@ time to first token, TPOT is time per output token after the first, both per req
 is ever shared). A 512-token prefix moved TTFT p99 from 10.3 to 9.5 ms and nothing else,
 because prefill on a 0.5B model is ~8 ms to begin with.
 
-### A100 SXM 80 GB, decode-attention kernel (`results/kernels_a100_*.json`)
+## A100 SXM 80 GB, decode-attention kernel (`results/kernels_a100_*.json`)
 
 Decode attention only, H=14, Hkv=2, D=64, fp16, median of 20 calls. Ratio = Triton kernel
 time / flash-attn time (1.0 = parity); the `tl.dot` tensor-core variant is the default.
@@ -90,7 +57,7 @@ heads padded 7 -> 16) closed the gap at large batch; what remains is a flat ~0.0
 that does not scale with work, so short contexts and small batches stay ~2x behind.
 `paged_torch` on the same shape: 7.41 ms, 18 GB/s.
 
-### A100 ablation (`results/ablation_a100.json`, 8 req/s, 64-token shared prefix, before the five fixes)
+## A100 ablation (`results/ablation_a100.json`, 8 req/s, 64-token shared prefix, before the five fixes)
 
 Every backend at its own minimum block size (`paged_flash` 256, the rest 16):
 
@@ -110,7 +77,7 @@ The Triton path at block 16 keeps up with flash at block 256 (1,394 vs 1,407 tok
 22 points more slot utilization; its +8 ms TTFT is the gather-path prefill fallback, not
 the kernel. Chunked prefill changes nothing at 0.5B, where a prefill is ~8 ms; at 7B it is the difference between 24.8 and 17.5 ms TPOT (see [Models](models.md#models)).
 
-### A correction: the sweeps replayed one trace, and vLLM cached it
+## A correction: the sweeps replayed one trace, and vLLM cached it
 
 Until Sep 29, `run_vllm_baseline` generated the trace from the same seed at every rate and
 ran all the rates against one server. vLLM enables automatic prefix caching by default;
@@ -154,7 +121,7 @@ repeats show no such step (24.8k, 25.4k, 24.8k), and the 112% stands. The tables
 this caveat on vLLM's columns; the Moonlight and R1-8B gaps are not yet re-measured and
 overstate vLLM's lead by an unknown amount.
 
-### A100, pagedserve over HTTP vs vLLM (`results/vllm.json`, `results/pagedserve_*.json`)
+## A100, pagedserve over HTTP vs vLLM (`results/vllm.json`, `results/pagedserve_*.json`)
 
 Same load generator, same trace, same GPU, both servers fp16 with `max_model_len 4096`.
 vLLM's rows after 1 req/s were partly served from its prefix cache
@@ -199,7 +166,7 @@ saturation row compare capacity. The `paged_triton` server at block 16 matched t
 (`results/pagedserve_triton.json`) because its fresh-prompt prefill went through the
 gather path at the time; prefill now runs flash varlen at any block size.
 
-### The gap against vLLM
+## The gap against vLLM
 
 `scripts/profile_step.py` times one decode step per phase at fixed batch sizes, with a
 device sync inside `forward` so GPU time lands there (A100, `paged_flash` + graphs, ms per
@@ -237,7 +204,7 @@ pagedserve is ahead on every metric. The batch-1 forward at 1.9 ms sits within ~
 weight-read floor (~1 GB of fp16 weights plus the 272 MB `lm_head` per step on a 1.5 TB/s
 part); at 7B the forward *is* the floor.
 
-### Moonlight: MLA + MoE on the A100
+## Moonlight: MLA + MoE on the A100
 
 Moonlight is the DeepSeek-V3 architecture (Kimi's lab's 16B / 3B-active model) and runs
 through the from-scratch latent-attention + MoE path; it matches HF's greedy tokens through
@@ -281,7 +248,7 @@ with concurrency (18.8 vs 13.4 ms at 8 req/s) and is the per-sequence slope of t
 
 ![Moonlight TPOT vs offered load](../results/plots/moonlight/tpot_vs_rate.png)
 
-### Real text: ShareGPT conversations (`results/*_text.json`)
+## Real text: ShareGPT conversations (`results/*_text.json`)
 
 The sweeps above draw random token ids, which is fine for the engine (a token is a token)
 but useless for anything that depends on the text: prefix caching, and speculation. So the
@@ -310,7 +277,7 @@ client's process count makes no systematic difference. So at v8 the number to qu
 was itself a finding: vLLM's runs land within 1% of each other while ours varied by 20%
 end to end, with TPOT p99 doubling (10 → 24 ms) in the slow runs. That led to v9 (below).
 
-The stall hunt (`PAGEDSERVE_STEP_LOG`, `scripts/stall_report.py`, README_GPU) found two
+The stall hunt (`PAGEDSERVE_STEP_LOG`, `scripts/stall_report.py`, [GPU notes](gpu.md)) found two
 things. Python's garbage collector is the tail: `gc.freeze()` after startup plus raised
 thresholds (`PAGEDSERVE_GC=tune`) took TPOT p99 from 9.7–18.1 to 9.4–11.1 ms over six
 runs and was worth ~5% of throughput. The throughput itself is the API process: the
@@ -333,7 +300,7 @@ still waits on the pipe a quarter of the time; the next step there is a second A
 or the per-token path inside the core's process, but at this point the two engines are
 delivering the same tokens per second through the same kind of bottleneck.
 
-#### Two API processes (`--api-workers`)
+### Two API processes (`--api-workers`)
 
 So the next step was to split that process. `pagedserve serve --api-workers N`
 (`pagedserve/server/multi.py`) runs one engine core and N API processes: a supervisor
@@ -381,7 +348,7 @@ and parsing 200 SSE streams queues for hundreds of milliseconds. The budget hypo
 wrong the other way: an 8,192-token prefill budget gives 243 ms server-side and 17.7k
 tok/s, because bigger prefill steps hold every first token longer, so 2,048 stays.
 `run_vllm_baseline --client-procs 4` runs the load generator from four processes
-(README_GPU).
+([GPU notes](gpu.md)).
 
 **n-gram speculation at 0.5B loses at every rate** (third column): TPOT 2.14 vs 1.84 ms at
 1 req/s and 10.1 vs 2.2 at 16, throughput a fifth of the baseline at saturation. The mode
@@ -440,7 +407,7 @@ already described (29.4 vs 23.9 ms at 16 req/s).
 ![Moonlight on ShareGPT text: TPOT vs offered load](../results/plots/moonlight_text/tpot_vs_rate.png)
 
 
-#### The 7B tail, re-measured
+## The 7B tail, re-measured
 
 The Sep 27 comparison left one open item: TPOT p50 16.5 ms against vLLM's 11.5 at
 16 req/s. Before touching the engine, a per-step trace went in (`PAGEDSERVE_STEP_TRACE`,
@@ -493,7 +460,7 @@ size decides it), one paged varlen attention call per layer instead of two
 launch time 139 vs 393 µs), and fusing the elementwise ops of an eager mixed step.
 
 
-### What the numbers taught us
+## What the numbers taught us
 
 * **Launch overhead dominates a 0.5B model, then kernel count does.** The 4090 decode step
   is ~3.6 ms wall with graphs and ~9 ms without; the attention kernel itself is ~0.1 ms.
@@ -521,3 +488,51 @@ launch time 139 vs 393 µs), and fusing the elementwise ops of an eager mixed st
   ~30 ms of compute and prefill-priority scheduling was the whole gap to vLLM at 16 req/s.
   The knob that matters is prefill cost relative to a decode step, which grows with model
   size.
+
+## Appendix: the earlier front page
+
+The README's first page before the restructure, kept for the record. Its vLLM numbers
+predate the [benchmark correction](#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it).
+
+Qwen2.5-0.5B-Instruct fp16, 200-request ShareGPT-like trace (prompt median 208 tokens,
+output median 131), seed 0, same trace for every row. Raw files in `results/`.
+
+| | RTX 4090 | A100 SXM 80 GB |
+|---|---:|---:|
+| naive per-sequence cache, 8 req/s | 343 tok/s | |
+| paged_flash + CUDA graphs, 8 req/s | 1,441 tok/s, TPOT p50 3.8 ms | 1,381 tok/s, TPOT p50 2.0 ms (HTTP) |
+| paged_flash + CUDA graphs, all 200 at t=0 | 5,459 tok/s (in-process) | **16,635 tok/s** (HTTP, mean of 3; engine process, async scheduling, chunked prefill on piecewise graphs, batched SSE writes) |
+| vLLM, same trace, same GPU, 8 req/s | | 1,377 tok/s, TPOT p50 2.1 ms |
+| vLLM, all 200 at t=0 | | 16,269 tok/s (one run, after five rates of the same trace; see the correction below) |
+| Triton decode kernel vs flash-attn, B=128 / ctx 2048 | 4.2x slower (first version) | **1.16x** slower (835 vs 972 GB/s) |
+| KV-cache slot utilization, block 16 vs 256 | | **98% vs 76%** |
+
+Against vLLM on the A100 with Qwen2.5-0.5B: throughput parity to 16 req/s (100%), lower
+latency than vLLM at every offered rate (TPOT 1.8 vs 2.0 ms and TTFT 9.4 vs 12.9 ms at
+1 req/s; TPOT 5.7 vs 8.1 ms at saturation), and parity at saturation too: 16,635 vs
+16,269 tok/s on the synthetic trace (mean of three) and 22,964 vs 23,111 on real text
+(mean of six, see [Real text](#real-text-sharegpt-conversations-results_textjson)), up
+from 23% at the first measurement. Nine profile-driven fixes; the last one was not in the
+engine at all but in the API process that streams the tokens. At 7B (Qwen2.5-7B-Instruct) both engines sit on the
+weight-read floor and pagedserve reaches 99% of vLLM at saturation with chunked prefill and
+async scheduling; DeepSeek-R1-Distill-Llama-8B (llama path) is also at 99%, and Moonlight-16B-A3B (DeepSeek-V3's
+latent attention + MoE) reaches 84% on the synthetic trace and 89% on real text with a
+batch-1 step of 6.2 ms against vLLM's 7.1 ms TPOT. The [gap analysis](#the-gap-against-vllm) has the per-phase profile and the nine
+fixes it drove, in order; [Models](models.md#models) has the per-model table. With two API
+processes (`serve --api-workers 2`) the 0.5B reaches 28.0k tok/s on real text against
+vLLM 0.30.0's 25.1k on the same pod, 112% ([Two API processes](#two-api-processes---api-workers)).
+And it starts fast: Qwen3-8B goes from process start to first token in **6.7 s against
+vLLM's 69.1 s** (55.2 s with `--enforce-eager`) on the same A100, the 7B in 5.6 s
+([Cold start](cold-start.md#cold-start-process-start-to-first-token-resultscoldstart)); on Runpod
+Serverless a cold Qwen3-8B job is picked up in **17.2 s against worker-vllm's 147.5 s**
+with the weights baked in, and with a small image that streams them from Hugging Face into
+the engine as they download, **91.7 s against 210.4 s on a fresh host** (`delayTime`,
+RTX 4090), every second split into Runpod's and the engine's phases ([On Runpod Serverless](cold-start.md#on-runpod-serverless-pagedserve-vs-worker-vllm-resultsserverless_coldstart_qwen3)).
+
+**A correction (Sep 29).** The sweep harness replayed the identical trace at every rate on
+one server, and vLLM runs with prefix caching on by default (pagedserve's is off), so vLLM
+served every rate after the first partly from cache — its log shows a 48–64% prefix-cache
+hit rate on such a sweep. Re-measured with a trace per rate and fresh servers, the 7B is at
+parity from 2 to 16 req/s and at saturation (3,412 vs 3,415 tok/s), and Qwen3-8B is at
+parity at 16 req/s and 96% at saturation. The rows that are not yet re-measured are
+marked; see [the correction](#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it).

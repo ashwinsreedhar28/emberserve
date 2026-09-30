@@ -7,6 +7,18 @@ graphs, an OpenAI-compatible server), built to understand what vLLM does and mea
 against it on the same GPUs. It matches vLLM's throughput at 7B, and on a cold start it is
 serving while vLLM is still compiling.
 
+## Documentation
+
+| | |
+|---|---|
+| [How it works](docs/design.md) | step loop, scheduler, paged KV cache, prefix caching, attention backends, MLA + MoE, CUDA graphs, int8, tensor parallelism, correctness |
+| [Results in depth](docs/results.md) | ablations, kernels, the benchmark correction, every sweep against vLLM, the fix history, real text, the 7B tail |
+| [Cold start](docs/cold-start.md) | A100 pods and Runpod Serverless, phase by phase |
+| [Models](docs/models.md) | per-model results; hosted APIs for scale |
+| [Running it](docs/running.md) · [GPU notes](docs/gpu.md) | local, GPU pods, Runpod Serverless, benchmark commands; pod pitfalls |
+| [Roadmap](docs/roadmap.md) | what is open |
+| [scripts/](scripts/README.md) · [results/](results/README.md) · [deploy/runpod/](deploy/runpod/README.md) | which script does what; which result file backs which number; the Serverless worker |
+
 ## Results
 
 ### Cold start on Runpod Serverless
@@ -148,61 +160,38 @@ for chunk in client.chat.completions.create(model="models/Qwen2.5-0.5B-Instruct"
 GPU setup, the benchmark commands and the Runpod Serverless worker are in
 [docs/running.md](docs/running.md).
 
-## Documentation
-
-* [How it works](docs/design.md): the step loop, scheduler, paged KV cache, prefix caching,
-  attention backends, latent attention and MoE, CUDA graphs, int8, tensor parallelism,
-  correctness.
-* [Results in depth](docs/results.md): ablations, the decode kernel, the benchmark
-  correction, every sweep against vLLM, the gap analysis and fix history, Moonlight, real
-  text, two API processes, the 7B tail, and what the numbers taught.
-* [Cold start](docs/cold-start.md): the A100 pod series and the Runpod Serverless series,
-  phase by phase, including worker-vllm's breakdown.
-* [Models](docs/models.md): the per-model table and a footnote on hosted APIs.
-* [Running it](docs/running.md): local, GPU, Runpod Serverless, benchmarks.
-
 ## Layout
 
 ```
-pagedserve/
-  config.py            ModelConfig (mirrors HF config.json; MLA / MoE geometry) / EngineConfig (knobs)
-  model/               qwen2.py (dense block, from scratch), deepseek.py (MLA + MoE block), moe.py,
-                       moe_triton.py (router / alignment / grouped-GEMM kernels), ops.py + ops_triton.py
-                       (fused RMSNorm, RoPE, SiLU-mul), rope.py, weights.py (safetensors -> our modules)
-  attn/                base.py (AttnMetadata + backend contract, packed token layout)
-                       naive.py | paged_torch.py | paged_flash.py | paged_triton.py (Triton decode kernel)
-                       mla_torch.py | mla_triton.py (latent attention) | cuda_graphs.py
-  kv/                  block_manager.py, cache.py (paged K/V and latent tensors), prefix_cache.py
-  sched/               request.py, scheduler.py (prefill-priority, preemption, chunked prefill, async lookahead)
-  spec.py              speculative decoding: n-gram proposer + draft verification
-  dist.py              tensor parallelism: process group, collectives, checkpoint sharding, worker main
-  model/quant.py       weight-only int8: per-channel quantizer, Triton dequant GEMM, Int8Linear
-  sampling.py          per-request temperature / top-k / top-p / repetition penalty / seeds / stop
-  engine.py            LLMEngine.step(): schedule -> build inputs -> forward -> sample -> postprocess
-                       (async scheduling: launch N+1, then resolve N)
-  llm.py               offline LLM.generate()
-  tokenizer.py         HF tokenizer wrapper + incremental detokenizer (stop strings)
-  server/              engine_core.py (engine in its own process), AsyncLLMEngine, OpenAI types, FastAPI app
-  bench/               trace, load, metrics, offline, ablation, run_vllm_baseline (--hosted for APIs), plot
-scripts/               download_model, dump_golden, check_golden, profile_step (--kernels), bench_kernels,
-                       bench_moe, merge_sweeps, gpu_smoke, gpu_debug_capture, pod_setup.sh
-tests/                 one file per component; *_gpu.py need CUDA; test_engine.py holds the end-to-end gates
-results/               every JSON the tables above were built from
-deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
+pagedserve/            the engine
+  engine.py            LLMEngine.step(): schedule → build inputs → forward → sample → postprocess
+                       (async scheduling: launch step N+1, then resolve step N)
+  sched/               scheduler: chunked prefill, preemption, async lookahead
+  kv/                  block manager, paged K/V and latent caches, prefix cache
+  attn/                backend contract; paged_flash, paged_triton (Triton decode kernel), MLA,
+                       reference paths; CUDA graphs
+  model/               Qwen2/Qwen3/Llama/Mistral block, DeepSeek MLA + MoE, fused Triton ops,
+                       int8, safetensors loaders (fastload.py: the streaming loader)
+  server/              OpenAI-compatible app, engine-core process, extra API processes,
+                       early engine start
+  sampling.py · spec.py · dist.py · tokenizer.py · steptrace.py · cli.py
+  bench/               traces, load generator, metrics, vLLM baseline runner, plots
+docs/                  the long-form documentation (table above)
+scripts/               setup, correctness, benchmarks, profiling, recorded pod sessions (index inside)
+results/               every file a number in the docs comes from (index inside)
+deploy/runpod/         Serverless worker, Dockerfiles (baked, small), deploy notes
+tests/                 one file per component; *_gpu.py need CUDA; end-to-end gates in test_engine.py
+golden/                Hugging Face reference outputs for the correctness gate
 ```
 
-## Roadmap
+## What's next
 
-* Cold start: Qwen3-8B first token in 6.7 s against vLLM's 69.1 s on the same pod (7B: 5.6 s); on Runpod Serverless `delayTime` 17.2 s against worker-vllm's 147.5 s. On a fresh host the baked 27 GB image lost (328 s vs worker-vllm's 210 s, 317 s of it the pull), so the small image fetches the weights at start and streams them into the engine as they arrive (`deploy/runpod/Dockerfile.slim`, `fetch.py`): 37.9 s median on a warm host against worker-vllm's 147.5 s, 91.7 s on a fresh host against 210.4 s. Next: graph capture during the download (~4 s), `HF_TOKEN` for steadier downloads, more fresh-host samples. Later: the Triton cache in the image (first request 1.3–2.1 s), background graph capture, CUDA checkpoint/restore inside a Serverless container.
-* Re-measure the vLLM rows still marked as from a replayed-trace sweep (R1-8B, Moonlight, TP2, the ShareGPT text sweeps) with a trace per rate.
-* 0.5B saturation: `--api-workers 2` lifted it past vLLM on real text (28.0k vs 25.1k tok/s, 112%) and back to parity on the synthetic trace ([Two API processes](docs/results.md#two-api-processes---api-workers)). Four workers add nothing over two, so the next limit is the engine core's per-step pickling and sending; shared memory for the step's rows, or fewer bytes per row, is the next experiment.
-* 7B mixed steps (the tail at 16 req/s, now at parity with vLLM 0.30.0): the per-kernel profile says a mixed step's GEMMs run at 196 TFLOP/s with a 256-row tile a third full at 339 rows, attention takes two flash calls where one paged varlen call would do, and the elementwise ops run unfused. Each is shared with vLLM, so each is a chance to be ahead rather than to catch up. Piecewise graphs at 7B stay off above 4 GB (`--piecewise-bucket-step 256` recovered the 1% saturation loss but not the tail; `results/pagedserve_7b_flash_v8b.json`).
-* Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
-* Chunked-prefill ablation on a long-prompt trace.
-* Speculative decoding: n-gram lookup implemented (`--speculative-ngram`); 16% acceptance on ShareGPT text and a loss at 0.5B and 7B as built. Next: a fixed-k draft step captured as a CUDA-graph bucket, async scheduling kept on (verify on the device), then a draft-model proposer.
-* Weight-only int8: batch-1 step −37% on the 7B, TPOT 6.6 vs vLLM 10.2 ms at 1 req/s; the large-M GEMM still trails cuBLAS by 31% at batch 128, so saturation loses — next is a better large-M kernel (or dequantize-then-cuBLAS for prefill), then W8A8 with `torch._int_mm` for the compute-bound end.
-* Tensor parallelism: TP2 on the 7B is 1.42× at saturation and −24% on the batch-1 step vs vLLM's 1.55× and a 6.6 ms TPOT; the gap is 56 NCCL all-reduces per step at ~25 µs each. Next: a custom small-message all-reduce over NVLink (or all-reduce fused into the following RMSNorm), piecewise graphs for the TP mixed step, a prefill-step profile (TTFT did not improve under TP2), then MLA/MoE sharding.
-* Runpod Serverless: deployed on both endpoint types ("Run it"); next is a 7B image (`--build-arg MODEL_REPO`) on an A100 worker and a cold-start series with FlashBoot on/off.
+* Cold start: graph capture during the weight download (~4 s), a steadier download with
+  `HF_TOKEN`, more fresh-host samples, then CUDA checkpoint/restore inside a container.
+* Re-measure the vLLM rows still marked as from the replayed-trace harness (R1-8B,
+  Moonlight, TP2, ShareGPT sweeps).
+* Where a 7B step could beat vLLM's: mixed-step GEMM tiling, one paged varlen attention
+  call, fused elementwise ops. The full list is the [roadmap](docs/roadmap.md).
 
 ## License
 

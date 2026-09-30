@@ -1,5 +1,18 @@
 # GPU notes (Runpod RTX 4090 / A100 SXM, torch 2.8.0+cu128, CUDA 12.x)
 
+Part of [pagedserve](../README.md). Setup and the pitfalls that cost GPU time.
+
+## Pod checklist
+
+* **Driver:** filter the deploy page to CUDA 13.0 or newer. vLLM 0.30.0 installs a cu130
+  torch, and on a CUDA 12.8 driver every vLLM run fails at startup ("driver too old");
+  `scripts/coldstart_c.sh` now checks this first.
+* **Disk:** 100 GB of container disk for two 8B-class models plus vLLM's venv (50 GB ran out).
+* **tmux** for anything longer than a minute, SSH over the pod's direct TCP port, and commit
+  `results/` before stopping the pod (no volume: everything under `/root` goes with it).
+* **Fresh servers per comparison, a trace per rate:** the harness default since the
+  [benchmark correction](results.md#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it).
+
 ## Fresh pod, one shot
 
 ```bash
