@@ -361,7 +361,9 @@ class LLMEngine:
         if stats is not None:
             engine.boot_notes = (f"weights {stats.bytes / 1e9:.2f} GB in {stats.seconds:.2f} s = "
                                  f"{stats.gb_per_s:.2f} GB/s ({stats.threads} readers, "
-                                 f"{stats.buffer_mb:g} MB buffers)")
+                                 f"{stats.buffer_mb:g} MB buffers"
+                                 + (f", {stats.wait_seconds:.2f} s waiting for the download"
+                                    if stats.wait_seconds else "") + ")")
         engine._open_trace()  # (re-)writes the trace header with the load phase included
         return engine
 

@@ -1,0 +1,34 @@
+# pagedserve on Runpod Serverless, small image: no weights inside; the worker fetches MODEL_REPO
+# at cold start and streams it into the engine as it arrives (deploy/runpod/fetch.py).
+#
+# Why: with Qwen3-8B baked in (Dockerfile.qwen3, ~27 GB) a host that has the image starts a
+# worker in ~17 s, but a fresh host spent 317 s pulling the image (~85 MB/s), while Hugging
+# Face served the same 16 GB of weights to worker-vllm at ~760 MB/s. This image is the
+# CUDA runtime base plus the Python packages; the build stage exists only to fetch the
+# flash-attn wheel matching this torch (its setup.py needs the devel toolchain to run).
+#
+# Endpoint env: MODEL_REPO (default Qwen/Qwen3-8B), optional HF_TOKEN, MODEL_REVISION,
+# DOWNLOAD_WORKERS (8), plus everything main.py documents. Dockerfile.slim-devel is the same
+# on the devel base, in case this one fails to build or Triton cannot compile at runtime.
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel AS wheels
+RUN pip wheel --no-cache-dir --no-deps --no-build-isolation -w /wheels flash-attn
+
+FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
+# Triton compiles a small C launcher the first time a kernel runs: it needs a C compiler.
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+ && rm -rf /var/lib/apt/lists/*
+ENV MODEL_DIR=/models/model \
+    MODEL_REPO=Qwen/Qwen3-8B \
+    PYTHONUNBUFFERED=1 \
+    HF_XET_HIGH_PERFORMANCE=1
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY pagedserve ./pagedserve
+COPY deploy/runpod/handler.py deploy/runpod/main.py deploy/runpod/timeline.py deploy/runpod/fetch.py ./deploy/runpod/
+COPY --from=wheels /wheels /wheels
+RUN pip install --no-cache-dir -e '.[hf,server]' runpod httpx \
+ && pip install --no-cache-dir /wheels/flash_attn-*.whl \
+ && rm -rf /wheels
+
+CMD ["python", "-u", "deploy/runpod/main.py"]
