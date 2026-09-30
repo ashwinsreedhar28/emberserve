@@ -1,0 +1,150 @@
+{
+ "kind": "serverless_coldstart",
+ "mode": "queue",
+ "endpoint": "rvy2p7bfia91fm",
+ "label": "vllm_qwen3_8b_4090_flashboot_on",
+ "image": "worker-vllm v2.28.0, Qwen3-8B downloaded from HF at start, model cache off",
+ "note": "FlashBoot turned out to be ON for this series (the label at run time said off). Samples 1-2 are full cold boots (FlashBoot misses; sample 2's worker log is serverless_coldstart_vllm_qwen3_8b_worker_log.txt, a fresh container from its first line); sample 3 (532 ms) is a FlashBoot resume. The FlashBoot-off sample is serverless_coldstart_vllm_qwen3_8b_4090_off_b.json.",
+ "max_tokens": 16,
+ "idle_s": 60.0,
+ "runs": [
+  {
+   "health_before": {
+    "jobs": {
+     "completed": 0,
+     "failed": 0,
+     "inProgress": 0,
+     "inQueue": 0,
+     "retried": 0
+    },
+    "workers": {
+     "idle": 0,
+     "initializing": 0,
+     "ready": 0,
+     "running": 0,
+     "throttled": 1,
+     "unhealthy": 0
+    }
+   },
+   "cold": {
+    "status": 200,
+    "total_s": 211.26957749994472,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 210437,
+    "execution_ms": 505,
+    "worker_id": "48ez0c17qte6r0"
+   },
+   "warm": {
+    "status": 200,
+    "total_s": 0.47302937507629395,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 19,
+    "execution_ms": 398,
+    "worker_id": "48ez0c17qte6r0"
+   }
+  },
+  {
+   "health_before": {
+    "jobs": {
+     "completed": 2,
+     "failed": 0,
+     "inProgress": 0,
+     "inQueue": 0,
+     "retried": 0
+    },
+    "workers": {
+     "idle": 1,
+     "initializing": 0,
+     "ready": 1,
+     "running": 0,
+     "throttled": 0,
+     "unhealthy": 0
+    }
+   },
+   "cold": {
+    "status": 200,
+    "total_s": 155.70073033310473,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 154294,
+    "execution_ms": 548,
+    "worker_id": "jodgmz6md7oivx"
+   },
+   "warm": {
+    "status": 200,
+    "total_s": 0.5454342500306666,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 17,
+    "execution_ms": 475,
+    "worker_id": "jodgmz6md7oivx"
+   }
+  },
+  {
+   "health_before": {
+    "jobs": {
+     "completed": 4,
+     "failed": 0,
+     "inProgress": 0,
+     "inQueue": 0,
+     "retried": 0
+    },
+    "workers": {
+     "idle": 1,
+     "initializing": 0,
+     "ready": 1,
+     "running": 0,
+     "throttled": 0,
+     "unhealthy": 0
+    }
+   },
+   "cold": {
+    "status": 200,
+    "total_s": 1.3968685842119157,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 532,
+    "execution_ms": 529,
+    "worker_id": "jodgmz6md7oivx",
+    "cold": false,
+    "flashboot_resume": true
+   },
+   "warm": {
+    "status": 200,
+    "total_s": 0.5626614997163415,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 16,
+    "execution_ms": 506,
+    "worker_id": "jodgmz6md7oivx"
+   }
+  }
+ ],
+ "summary": {
+  "cold_s": {
+   "n": 3,
+   "min": 1.3968685842119157,
+   "median": 155.70073033310473,
+   "max": 211.26957749994472
+  },
+  "cold_delay_ms": {
+   "median": 154294,
+   "values": [
+    210437,
+    154294,
+    532
+   ]
+  },
+  "warm_total_s": {
+   "median": 0.5454342500306666
+  },
+  "failures": 0,
+  "full_boot_delay_ms": [
+   210437,
+   154294
+  ],
+  "flashboot_resumes": "1 of 3"
+ }
+}
