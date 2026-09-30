@@ -36,7 +36,7 @@ output median 131), seed 0, same trace for every row. Raw files in `results/`.
 | paged_flash + CUDA graphs, 8 req/s | 1,441 tok/s, TPOT p50 3.8 ms | 1,381 tok/s, TPOT p50 2.0 ms (HTTP) |
 | paged_flash + CUDA graphs, all 200 at t=0 | 5,459 tok/s (in-process) | **16,635 tok/s** (HTTP, mean of 3; engine process, async scheduling, chunked prefill on piecewise graphs, batched SSE writes) |
 | vLLM, same trace, same GPU, 8 req/s | | 1,377 tok/s, TPOT p50 2.1 ms |
-| vLLM, all 200 at t=0 | | 16,269 tok/s (one run; ±1% over repeats on real text) |
+| vLLM, all 200 at t=0 | | 16,269 tok/s (one run, after five rates of the same trace; see the correction below) |
 | Triton decode kernel vs flash-attn, B=128 / ctx 2048 | 4.2x slower (first version) | **1.16x** slower (835 vs 972 GB/s) |
 | KV-cache slot utilization, block 16 vs 256 | | **98% vs 76%** |
 
@@ -54,8 +54,17 @@ batch-1 step of 6.2 ms against vLLM's 7.1 ms TPOT. The [gap analysis](#the-gap-a
 fixes it drove, in order; [Models](#models) has the per-model table. With two API
 processes (`serve --api-workers 2`) the 0.5B reaches 28.0k tok/s on real text against
 vLLM 0.30.0's 25.1k on the same pod, 112% ([Two API processes](#two-api-processes---api-workers)).
-And it starts fast: a 7B goes from process start to first token in 10.3 s against vLLM's
-49.8–67 s on the same A100 ([Cold start](#cold-start-process-start-to-first-token-resultscoldstart)).
+And it starts fast: Qwen3-8B goes from process start to first token in **6.7 s against
+vLLM's 69.1 s** (55.2 s with `--enforce-eager`) on the same A100, the 7B in 5.6 s
+([Cold start](#cold-start-process-start-to-first-token-resultscoldstart)).
+
+**A correction (Sep 29).** The sweep harness replayed the identical trace at every rate on
+one server, and vLLM runs with prefix caching on by default (pagedserve's is off), so vLLM
+served every rate after the first partly from cache — its log shows a 48–64% prefix-cache
+hit rate on such a sweep. Re-measured with a trace per rate and fresh servers, the 7B is at
+parity from 2 to 16 req/s and at saturation (3,412 vs 3,415 tok/s), and Qwen3-8B is at
+parity at 16 req/s and 96% at saturation. The rows that are not yet re-measured are
+marked; see [the correction](#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it).
 
 ## How it works
 
@@ -458,9 +467,56 @@ The Triton path at block 16 keeps up with flash at block 256 (1,394 vs 1,407 tok
 22 points more slot utilization; its +8 ms TTFT is the gather-path prefill fallback, not
 the kernel. Chunked prefill changes nothing at 0.5B, where a prefill is ~8 ms; at 7B it is the difference between 24.8 and 17.5 ms TPOT (see [Models](#models)).
 
+### A correction: the sweeps replayed one trace, and vLLM cached it
+
+Until Sep 29, `run_vllm_baseline` generated the trace from the same seed at every rate and
+ran all the rates against one server. vLLM enables automatic prefix caching by default;
+pagedserve does not. So from the second rate on, vLLM was serving prompts it had already
+seen: its prefix-cache hit rate on the Qwen3-8B sweep reached 48.4%, 58.9% and 64.3% as the
+rates went by (`results/qwen3/vllm_qwen3_8b.json` has the same 53,404 prompt tokens at every
+rate), and on a fresh server with a trace per rate it is 0.0%. pagedserve's rows were never
+affected; vLLM's rows after the first rate of every committed vLLM sweep were
+(`results/vllm*.json`: 0.5B, 7B, TP2, R1-8B, Moonlight, and the ShareGPT text sweeps).
+
+The harness now draws a different seed per rate by default (recorded as `trace_seed`;
+`--same-trace-every-rate` restores the old behavior). Re-measured on one A100 SXM pod,
+vLLM 0.30.0, fresh servers, each engine alternating with the other:
+
+| Qwen2.5-7B, TPOT p50 | vLLM, old sweep | vLLM, fresh | pagedserve, fresh | tok/s fresh, pagedserve / vLLM |
+|---|---:|---:|---:|---:|
+| 2 req/s (mean of 2) | 10.1 ms | 10.32 ms | 10.41 ms | 341 / 341 |
+| 4 req/s (mean of 2) | 10.2 | 10.86 | 11.15 | 728 / 728 |
+| 8 req/s (mean of 2) | 10.6 | 11.98 | 12.35 | 1,274 / 1,276 |
+| 16 req/s (mean of 4, [below](#the-7b-tail-re-measured)) | 11.5 | 16.05 | **15.85** | parity |
+| all at t=0 (mean of 2) | 29.1 | 29.20 | **27.07** | **3,412 / 3,415 (100%)** |
+
+| Qwen3-8B, mean of 3 fresh servers | pagedserve | vLLM |
+|---|---:|---:|
+| 4 req/s: TPOT p50 / TTFT p50 | 12.71 / 47.7 ms | 11.98 / 44.0 ms |
+| 16 req/s: TPOT p50 / TTFT p50 | **20.90** / 74.8 ms | 20.98 / 73.5 ms |
+| 16 req/s, one run in the old-style sweep | 20.98 ms | *13.77 ms* (cache hits) |
+| all at t=0: tok/s (runs) | 2,839 (2,909, 2,709, 2,899) | 2,972 (2,972, 2,958, 2,985) — pagedserve 96% |
+| all at t=0: TPOT p50 | 36.4 ms | 33.2 ms |
+
+(`results/sweep_fresh/`, `results/qwen3/`.) At 7B the gap the old tables show between 2 and
+16 req/s was the cache, not the engine. At 0.5B the effect is small — a 0.5B prefill is
+cheap, and vLLM's TTFT on the old sweep is 12.9 ms at the first rate and 11.6–12.0 after —
+so the 0.5B rate-sweep conclusions stand. The same replay happened between *repeats* on
+one server (`--rates inf,inf,inf`): in `results/apiw/` vLLM's first synthetic-trace
+saturation run is 17.3–17.6k tok/s and its later ones ~20.2k, with TTFT p50 falling from
+279–296 ms to 152–218 ms, while pagedserve's repeats move by 1–2%. So vLLM's cache-cold
+synthetic saturation on that pod is ~17.5k, and two pagedserve API workers (19.2k) are
+~109% of it rather than the 95% of the cached runs reported there; on ShareGPT text vLLM's
+repeats show no such step (24.8k, 25.4k, 24.8k), and the 112% stands. The tables below keep what was measured, with
+this caveat on vLLM's columns; the Moonlight and R1-8B gaps are not yet re-measured and
+overstate vLLM's lead by an unknown amount.
+
 ### A100, pagedserve over HTTP vs vLLM (`results/vllm.json`, `results/pagedserve_*.json`)
 
 Same load generator, same trace, same GPU, both servers fp16 with `max_model_len 4096`.
+vLLM's rows after 1 req/s were partly served from its prefix cache
+([correction](#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it)); at 0.5B
+that is worth ~1 ms of TTFT.
 pagedserve with its CUDA defaults: `paged_flash`, block 256, CUDA graphs (full-step for
 decode, piecewise for prefill and mixed steps), chunked prefill, engine in its own process,
 async scheduling, batched SSE writes (`results/pagedserve_flash_v9.json`; the saturation
@@ -664,7 +720,9 @@ On real text two workers put pagedserve at **112% of vLLM** (28.0k vs 25.1k tok/
 given the same second API server), with client TPOT p50 3.8 ms against vLLM's 4.4–4.8. On
 the synthetic trace they restore parity: 19.2k against vLLM's 19.2–19.4k, or 95% against
 the ~20.2k of vLLM's runs after its first (each vLLM session's first synthetic run was
-17.3–17.6k). This pod's vLLM is faster on that trace than the Sep 27 run (19.2k against
+17.3–17.6k; the later ones replayed the same trace into vLLM's prefix cache, so against
+the cache-cold runs it is ~109% —
+[correction](#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it)). This pod's vLLM is faster on that trace than the Sep 27 run (19.2k against
 16.3k), which one API worker, at 16.6k as before, no longer matched. A second vLLM API
 server changes nothing for vLLM, and four pagedserve workers nothing over two: past two
 workers the limit is the engine core and its pipe (the core's step is ~2.5 ms at 200
@@ -767,13 +825,41 @@ while the next ones are read, casting bf16 → fp16 on the device: **1.04 s, 14.
 is slower than the default one; the Run:ai streamer ran at its default concurrency, which
 was not tuned here.
 
-Where pagedserve's 10.3 s goes: its own boot phases are ~4 s (weights 1.8–2.1 s, graph
-capture 1.7–1.9 s, KV cache 0.05 s); the rest is before the engine exists — `import torch`
-1.35 s in each of the two processes, CUDA context 0.6 s, and 2.45 s loading the tokenizer
-through `transformers`, all in sequence (`results/coldstart/startup_imports.txt`). Loading
-the tokenizer with `tokenizers` directly and starting the engine core before it are the
-next steps. Not yet measured: a cold page cache (a fresh Serverless host reading the image
-from disk), and Serverless `delayTime` with the new loader.
+Where that 10.3 s went: pagedserve's own boot phases were ~4 s (weights 1.8–2.1 s, graph
+capture 1.7–1.9 s, KV cache 0.05 s); the rest came before the engine existed — `import
+torch` 1.35 s in each of the two processes, CUDA context 0.6 s, and 2.45 s loading the
+tokenizer through `transformers`, all in sequence (`results/coldstart/startup_imports.txt`).
+So the engine core now starts first: `pagedserve serve` parses its arguments without
+importing torch and spawns the core from the raw argv (`pagedserve/server/early.py`), and
+the core imports torch, loads the weights and captures its graphs while the API process
+imports FastAPI and loads the tokenizer. Two pods, both A100 SXM (`scripts/coldstart_c.sh`;
+pod A's JSON was lost with the pod, its console output is `results/coldstart/c_podA_console.txt`;
+pod B's is `results/coldstart/c_*.json`):
+
+| process start → first token | runs 2–3 (warm caches) | run 1 |
+|---|---:|---:|
+| **pagedserve, Qwen2.5-7B, core spawned first** (pod A) | **5.6 s** (5.7, 5.5) | 5.7 s |
+| **pagedserve, Qwen3-8B** (pod A) | **5.5 s** (5.5, 5.5) | 5.8 s |
+| **pagedserve, Qwen3-8B** (pod B) | **6.7 s** (6.9, 6.6) | 6.7 s |
+| vLLM 0.30.0 defaults, Qwen3-8B (pod B) | 69.1 s (69.2, 69.0) | 202.3 s |
+| vLLM `--enforce-eager`, Qwen3-8B (pod B) | 55.2 s (54.8, 55.6) | 57.0 s |
+
+Pod A's driver (CUDA 12.8) could not run vLLM 0.30.0's cu130 torch, so the vLLM rows and
+the Qwen3-8B comparison come from a second pod (driver 580, CUDA 13.0), where pagedserve
+also ran and was ~1 s slower (graph capture 1.9–2.3 s against 1.4–1.6). Same pod, Qwen3-8B:
+**10× faster than vLLM's default once its compile cache is warm, 8.2× faster than its
+`--enforce-eager`, 30× first run against first run**. vLLM spends 24.3–25.6 s loading the
+16.4 GB of weights (~0.65 GB/s) and 17 s in engine init with the compile cache warm (140 s
+cold, 36 s of it torch.compile); pagedserve reads the same weights in 1.11–1.17 s
+(14.0–14.8 GB/s). The 7B on pod B measured 6.9, 10.7 and 6.1 s: run 2 read its weights at
+5.4 GB/s instead of 14, most likely the disk still writing back the model downloaded just
+before; all three are in `results/coldstart/c_local_7b.txt`. The Qwen3-8B golden gate is
+ALL OK through the streaming loader in fp16 and bf16 (`results/qwen3/golden.txt`).
+
+What remains of pagedserve's ~6 s: the core's `import torch` and CUDA context (~2 s), its
+boot (~3.5–4 s: weights 1.1 s plus the fp16 cast and setup, graphs 1.4–2.3 s), then the
+first request. Not yet measured: a cold page cache (a fresh Serverless host reading the
+image from disk), and Serverless `delayTime` with the new loader.
 
 ### What the numbers taught us
 
@@ -793,6 +879,11 @@ from disk), and Serverless `delayTime` with the new loader.
 * **Prefix caching needs prefixes.** With ShareGPT-like traces and no system prompt it is a
   no-op; with a 512-token shared prefix it saves ~1 ms of an ~9 ms TTFT. It pays on long
   shared system prompts, which this trace does not have.
+* **A benchmark harness has state too.** Replaying one seeded trace at every rate on one
+  server is fine for an engine without a prefix cache and quietly wrong for one with it:
+  vLLM's hit rate reached 64% by the last rate, and a 7B "gap" at 16 req/s (16.5 vs
+  11.5 ms) that became the first work item was mostly that. Fresh servers and a trace per rate
+  now; the cache hit rate belongs next to every number that could depend on it.
 * **Chunked prefill needs expensive prefills, not long prompts.** At 0.5B a prefill is
   ~8 ms and chunking changes nothing on a 208-token-median trace; at 7B the same prompt is
   ~30 ms of compute and prefill-priority scheduling was the whole gap to vLLM at 16 req/s.
@@ -801,8 +892,9 @@ from disk), and Serverless `delayTime` with the new loader.
 
 ## Models
 
-Three dense families run through the same decoder block (`model/qwen2.py`), with
-`ModelConfig` carrying the differences: `qwen2` (attention bias, rope_theta 1e6), `llama`
+Four dense families run through the same decoder block (`model/qwen2.py`), with
+`ModelConfig` carrying the differences: `qwen2` (attention bias, rope_theta 1e6), `qwen3`
+(no bias, per-head RMSNorm on q and k before RoPE, an explicit `head_dim`), `llama`
 and `mistral` (no bias, list-valued eos ids, Llama 3's RoPE frequency scaling). The
 DeepSeek-V2/V3 family (`model/deepseek.py`: multi-head latent attention + mixture of
 experts) is its own block; see [Latent attention and MoE](#latent-attention-and-moe). The
@@ -813,14 +905,18 @@ prompt ids drawn from each model's own vocabulary.
 | model | arch | golden vs HF | batch-1 forward | weight-read floor | saturation tok/s, pagedserve / vLLM | TPOT p50 @ 8 req/s |
 |---|---|---|---:|---:|---:|---:|
 | Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **16,635 / 16,269 (102%)** ⁰ | **2.0** / 2.1 ms |
-| Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16; TP2: 6/7 exact, one tie-break) | 10.1 ms (TP2: 7.65) | ~10 ms | **3,166 / 3,188 (99%)**; TP2 on 2× A100: 4,485 / 4,949 (91%) | 12.6 / 10.6 ms (TP2: 9.8 / 7.3) |
-| DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | **2,797 / 2,823 (99%)** ¹ | 14.9 / 12.2 ms |
-| Moonshot Moonlight-16B-A3B-Instruct | deepseek_v3, 27L, MLA (kv_lora 512 + rope 64), 64 experts top-6 + 2 shared, 3B active | all tokens (bf16; 2–3 tie-breaks inside noise, both paths) | 6.2 ms ² | ~3 ms (3B active + 0.7 GB lm_head) | **2,697 / 3,223 (84%)** ³ | 18.8 / 13.4 ms ³ |
+| Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16; TP2: 6/7 exact, one tie-break) | 10.1 ms (TP2: 7.65) | ~10 ms | **3,412 / 3,415 (100%)** ⁴; TP2 on 2× A100: 4,485 / 4,949 (91%) ⁵ | 12.35 / 11.98 ms ⁴ (TP2: 9.8 / 7.3 ⁵) |
+| Qwen3-8B | qwen3, 36L, GQA 32/8, D=128, per-head q/k RMSNorm | all tokens (fp16: one tie-break, logits 4.0e-2; bf16: two, 4.4e-1) | – | ~11 ms | **2,839 / 2,972 (96%)** ⁶ | 12.71 / 11.98 ms @ 4 req/s; 20.90 / 20.98 @ 16 ⁶ |
+| DeepSeek-R1-Distill-Llama-8B | llama (3.1), 32L, GQA 32/8, D=128, llama3 rope | all tokens (fp16) | 10.8 ms | ~11 ms | **2,797 / 2,823 (99%)** ¹ ⁵ | 14.9 / 12.2 ms ⁵ |
+| Moonshot Moonlight-16B-A3B-Instruct | deepseek_v3, 27L, MLA (kv_lora 512 + rope 64), 64 experts top-6 + 2 shared, 3B active | all tokens (bf16; 2–3 tie-breaks inside noise, both paths) | 6.2 ms ² | ~3 ms (3B active + 0.7 GB lm_head) | **2,697 / 3,223 (84%)** ³ ⁵ | 18.8 / 13.4 ms ³ ⁵ |
 
 ⁰ v9, mean of three saturation repeats against vLLM's single run; on real text (six repeats) 22,964 vs 23,111 (99%). Both servers are limited by their API process at this size.
 ¹ `results/pagedserve_r1_8b_flash_v7.json` (CUDA defaults: engine process, chunked prefill, async scheduling); the first measurement, prefill-priority and in-process, was 2,519 (89%) with 19.0 ms TPOT at 8 req/s. TPOT at 1 req/s 11.1 vs 10.8 ms, 20.6 vs 14.0 at 16 req/s: the same chunked-prefill tail as at 7B.
 ² whole decode step at batch 1 (`mla_triton` + fused MoE + CUDA graphs): 63.6 ms with the per-expert loop, 9.4 with the grouped GEMM, 7.2 after the routing/alignment kernels, 6.2 after the split-K fix; vLLM's TPOT at 1 req/s is 7.1 ms, ours over HTTP 7.6. See [Moonlight](#moonlight-mla--moe-on-the-a100).
 ³ chunked prefill (2048-token cap) + async scheduling (`results/pagedserve_moonlight_v3.json`); the first run, prefill-priority and synchronous, was 2,457 (76%) and 26.3 ms.
+⁴ fresh servers, a trace per rate, mean of two, Sep 29 (`results/sweep_fresh/`). The old sweep (`results/pagedserve_7b_flash_v7.json` vs `results/vllm_7b.json`) had 3,166 / 3,188 and 12.6 / 10.6 ms, vLLM's side partly served from its prefix cache ([correction](#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it)).
+⁵ vLLM's number comes from a sweep that replayed one trace into its prefix cache; not yet re-measured, so the gap is overstated by an unknown amount.
+⁶ mean of three fresh servers each, same pod, vLLM 0.30.0 (`results/qwen3/`). pagedserve's saturation repeats spread more (2,709–2,909 vs 2,958–2,985).
 
 ### Hosted APIs, for scale (a footnote)
 
@@ -857,7 +953,8 @@ both engines land there at batch 1. The CPU-side costs that decide the 0.5B resu
 measurable at 7B (2,832 → 2,859 tok/s). What did matter at 7B was *scheduling*: a 7B
 prefill of a 270-token prompt is ~30 ms of compute-bound work, and prefill-priority runs
 one for every arrival while every decoder waits, so TPOT at 16 req/s was 24.8 ms against
-vLLM's 11.5. Chunked prefill (decode rows and a prompt chunk in one step) brings that to
+vLLM's 11.5 (a vLLM number that turned out to be partly its prefix cache; fresh, it is
+16.05 ms). Chunked prefill (decode rows and a prompt chunk in one step) brings that to
 17.6 ms and saturation throughput to 97% of vLLM with a 2048-token cap (3,092 vs 3,188
 tok/s, the same 112 ms p99 tail vLLM shows); a 512-token cap trades 6% of that throughput
 for a 42 ms tail. The first chunked run measured 2x *slower*: the mixed-step attention path
@@ -865,13 +962,15 @@ padded every sequence's queries to the chunk length (100k padded queries per lay
 decodes plus one chunk); the fix batches the decode rows and pads only the chunk rows.
 Async scheduling then took it to 99% (3,166 tok/s) and 16.5 ms at 16 req/s
 (`results/pagedserve_7b_flash_v7.json`) — against the Sep 27 vLLM run's 11.5 ms, a gap
-that did not survive re-measurement ([below](#the-7b-tail-re-measured)). Piecewise CUDA graphs, the fix for the same
+that did not survive re-measurement ([below](#the-7b-tail-re-measured)): vLLM's number was
+served partly from its prefix cache
+([correction](#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it)). Piecewise CUDA graphs, the fix for the same
 eager mixed steps at 0.5B, *lose* 1% here and lengthen the tail (19.9 ms at 16 req/s): a
 7B chunk is compute-bound, so padding it up to a token bucket costs real FLOPs, whereas at
 0.5B the launches it removes were the whole cost. Hence the default is by size (piecewise
 below 4 GB). Finer token buckets (`--piecewise-bucket-step 256`) recover the saturation
 loss (3,168 tok/s) but not the tail (18.3 ms at 16 req/s), so the padding was only part
-of the cost. Any `model_type: qwen2 | llama | mistral | deepseek_v2 | deepseek_v3` snapshot loads with
+of the cost. Any `model_type: qwen2 | qwen3 | llama | mistral | deepseek_v2 | deepseek_v3` snapshot loads with
 `scripts/download_model.py --repo <hf repo>`; DeepSeek-R1-Distill-Qwen, Mistral-7B and
 DeepSeek-V2-Lite are the same code paths as the rows above.
 
@@ -893,10 +992,12 @@ Sep 29, with vLLM 0.30.0 installed the same way, alternating the two engines
 
 The gap does not reproduce: at 16 req/s the two engines are at parity on TPOT (vLLM's
 server-side mean is 0.05 ms lower, the client-side p50 0.2 ms higher) and pagedserve's
-TTFT is 8 ms lower. The Sep 27 vLLM numbers (11.5 ms TPOT, 35 ms TTFT) came from a
-different pod on an unrecorded vLLM version — the setup script installs the latest — and
-stay in the tables above as what was measured then; `results/tail/vllm_version.txt` now
-records the version. The inter-chunk gaps (new in the load generator: the time between
+TTFT is 8 ms lower. The Sep 27 vLLM numbers (11.5 ms TPOT, 35 ms TTFT) came from the
+fifth rate of a sweep that had replayed the same 200 prompts four times into vLLM's prefix
+cache; these runs start a fresh server for the one rate
+([correction](#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it)). This
+section first blamed a different pod and an unrecorded vLLM version; that was wrong, but
+`results/tail/vllm_version.txt` now records the version anyway. The inter-chunk gaps (new in the load generator: the time between
 consecutive streamed chunks, i.e. each engine's step time as a client sees it) say why
 both land at ~16 ms: a decode step of the 7B is 12 ms, and a step that also carries a
 new prompt is 20–50 ms, in vLLM as in pagedserve.
@@ -1064,7 +1165,7 @@ python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/
   --max-model-len 4096 --tokenizer models/Qwen2.5-0.5B-Instruct --sharegpt data/ShareGPT_V3_unfiltered_cleaned_split.json \
   --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs" --name pagedserve_flash_text
 
-# HTTP rate sweeps, same trace, vLLM then pagedserve
+# HTTP rate sweeps, vLLM then pagedserve (a different trace seed per rate; fresh servers for comparisons)
 python -m pagedserve.bench.run_vllm_baseline --server vllm --vllm-bin /opt/vllm/bin/vllm \
   --model Qwen/Qwen2.5-0.5B-Instruct --dtype float16 --max-model-len 4096 --rates 1,2,4,8,16,inf --trace-n 200 --name vllm
 python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct \
@@ -1112,7 +1213,8 @@ deploy/runpod/         Serverless worker (handler.py), Dockerfile, deploy notes
 
 ## Roadmap
 
-* Cold start: 7B first token in 10.3 s (vLLM 49.8–67 s warm). Next: the tokenizer through `tokenizers` instead of `transformers` (2.45 s), the engine core started before the API process loads anything, graph capture in the background while the first requests run eagerly, then a cold-page-cache measurement and Serverless `delayTime` with the streaming loader; CUDA checkpoint/restore after that.
+* Cold start: Qwen3-8B first token in 6.7 s against vLLM's 69.1 s on the same pod (7B: 5.6 s). Next: Serverless `delayTime` with the streaming loader and a cold page cache, graph capture in the background while the first requests run eagerly, then CUDA checkpoint/restore.
+* Re-measure the vLLM rows still marked as from a replayed-trace sweep (R1-8B, Moonlight, TP2, the ShareGPT text sweeps) with a trace per rate.
 * 0.5B saturation: `--api-workers 2` lifted it past vLLM on real text (28.0k vs 25.1k tok/s, 112%) and back to parity on the synthetic trace ([Two API processes](#two-api-processes---api-workers)). Four workers add nothing over two, so the next limit is the engine core's per-step pickling and sending; shared memory for the step's rows, or fewer bytes per row, is the next experiment.
 * 7B mixed steps (the tail at 16 req/s, now at parity with vLLM 0.30.0): the per-kernel profile says a mixed step's GEMMs run at 196 TFLOP/s with a 256-row tile a third full at 339 rows, attention takes two flash calls where one paged varlen call would do, and the elementwise ops run unfused. Each is shared with vLLM, so each is a chance to be ahead rather than to catch up. Piecewise graphs at 7B stay off above 4 GB (`--piecewise-bucket-step 256` recovered the 1% saturation loss but not the tail; `results/pagedserve_7b_flash_v8b.json`).
 * Moonlight: close the remaining gap at batch 1 (per-kernel profile: `scripts/profile_step.py --kernels 1,128`).
