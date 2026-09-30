@@ -1,0 +1,93 @@
+{
+ "kind": "serverless_coldstart",
+ "mode": "queue",
+ "endpoint": "h90byyjfb0ofbu",
+ "label": "pagedserve_qwen3_8b_4090_fresh_host",
+ "image": "pagedserve (a2742f9 build), Qwen3-8B baked in, ~27 GB image, first job to a new endpoint",
+ "note": "",
+ "max_tokens": 16,
+ "idle_s": 0.0,
+ "runs": [
+  {
+   "health_before": null,
+   "cold": {
+    "status": 200,
+    "total_s": 329.9637891659513,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 328385,
+    "execution_ms": 1278,
+    "worker_id": "lxgngri1enzr3v",
+    "submit_wall": 1790741711.435252,
+    "cold": true,
+    "timeline": {
+     "marks": {
+      "container_start": 1790742028.93,
+      "engine_boot": 1790742037.287341,
+      "first_job": 1790742040.1719155,
+      "sdk_ready": 1790742038.001574,
+      "serve_healthy": 1790742037.994375,
+      "serve_spawned": 1790742030.230293,
+      "worker_main": 1790742030.2296252,
+      "worker_start": 1790742029.21
+     },
+     "notes": {
+      "engine_boot": "[boot] load_weights 1.97 s \u00b7 weights_read 1.65 s \u00b7 kv_cache 0.03 s \u00b7 capture_full_graphs 3.26 s (weights 16.38 GB in 1.65 s = 9.92 GB/s (8 readers, 64 MB buffers))"
+     }
+    },
+    "phases_s": {
+     "schedule_pull_create": 317.495,
+     "container_to_python": 0.28,
+     "python_imports": 1.02,
+     "to_serve_spawn": 0.001,
+     "engine_boot": 7.057,
+     "boot_to_healthy": 0.707,
+     "healthy_to_sdk": 0.007,
+     "sdk_to_first_job": 2.17,
+     "submit_to_first_job": 328.737
+    }
+   },
+   "warm": {
+    "status": 200,
+    "total_s": 0.5418067909777164,
+    "ok": true,
+    "job_status": "COMPLETED",
+    "delay_ms": 15,
+    "execution_ms": 469,
+    "worker_id": "lxgngri1enzr3v",
+    "submit_wall": 1790742041.394089,
+    "cold": false
+   }
+  }
+ ],
+ "summary": {
+  "cold_s": {
+   "n": 1,
+   "min": 329.9637891659513,
+   "median": 329.9637891659513,
+   "max": 329.9637891659513
+  },
+  "cold_delay_ms": {
+   "median": 328385,
+   "values": [
+    328385
+   ]
+  },
+  "warm_total_s": {
+   "median": 0.5418067909777164
+  },
+  "failures": 0,
+  "not_cold": 0,
+  "phases_median_s": {
+   "schedule_pull_create": 317.495,
+   "container_to_python": 0.28,
+   "python_imports": 1.02,
+   "to_serve_spawn": 0.001,
+   "engine_boot": 7.057,
+   "boot_to_healthy": 0.707,
+   "healthy_to_sdk": 0.007,
+   "sdk_to_first_job": 2.17,
+   "submit_to_first_job": 328.737
+  }
+ }
+}
