@@ -30,7 +30,7 @@ Runpod's official vLLM worker on the same GPU tier:
 | cold start, `delayTime` | host already has the image | fresh host |
 |---|---:|---:|
 | pagedserve, weights baked into the image | **17.2 s** | 328.4 s |
-| **pagedserve, small image, weights streamed in at start** | **37.9 s** | **91.7 s** |
+| **pagedserve, small image, weights streamed in at start** | **32.8 s** | **91.7 s** |
 | worker-vllm v2.28.0 (vLLM 0.30.0) | 147.5 s | 210.4 s |
 
 The worker reports a wall-clock timeline of its own startup, so every second is attributed.
@@ -39,9 +39,13 @@ Python processes starting and importing one after another, plus ~10 s of config
 resolution), before its 22 s download, and 33 s in torch.compile from an empty cache.
 Baking the weights in made pagedserve fast on a warm host, but a fresh host spent 317 s
 pulling the 27 GB image. So the small image downloads the weights from Hugging Face and
-loads each shard into the GPU the moment it lands, while the engine is already starting.
-Warm hosts: median of three runs for pagedserve, two for worker-vllm; fresh hosts: one
-sample each.
+loads each shard into the GPU the moment it lands, while the engine is already starting;
+since Sep 30 it also sizes its KV cache and captures its CUDA graphs on the empty model
+during the download, which cut the time from the last shard landing to the engine's
+boot line from 5.7 s to 2.2 s (median, 3 vs 6 samples) and the small image's warm median from 37.9 s to
+32.8 s. Most of what is left is the 15–25 s Hugging Face download itself. Warm hosts:
+median of four runs for the small image, three for the baked one, two for worker-vllm;
+fresh hosts: one sample each.
 [Details](docs/cold-start.md#on-runpod-serverless-pagedserve-vs-worker-vllm-resultsserverless_coldstart_qwen3)
 
 ### Cold start on an A100 (process start → first token)
@@ -193,8 +197,10 @@ golden/                Hugging Face reference outputs for the correctness gate
 
 ## What's next
 
-* Cold start: graph capture during the weight download (~4 s), a steadier download with
-  `HF_TOKEN`, more fresh-host samples, then CUDA checkpoint/restore inside a container.
+* Cold start: a steadier download with `HF_TOKEN` (it is now most of a warm start), shards
+  fetched in load order so loading overlaps the download (the last ~2 s), the Triton cache
+  in the image (first request 1.3–2.1 s), more fresh-host samples, then CUDA
+  checkpoint/restore inside a container.
 * Re-measure the vLLM rows still marked as from the replayed-trace harness (R1-8B,
   Moonlight, TP2, ShareGPT sweeps).
 * Where a 7B step could beat vLLM's: mixed-step GEMM tiling, one paged varlen attention

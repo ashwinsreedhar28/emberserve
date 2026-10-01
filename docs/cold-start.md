@@ -147,17 +147,29 @@ default is too small for 16 GB), and the first successful one captured piecewise
 for 15.5 s because the engine sized the checkpoint by the files present — none yet — and
 took it for a small model; it now reads the index's `total_size`. One fresh-host sample per image so far.
 
-**Graphs before the weights (built, not yet measured).** Graph capture needs the
-parameters' addresses and shapes, not their values, so with `PAGEDSERVE_WAIT_WEIGHTS_S` set
-the engine now sizes the KV cache and captures its graphs on the empty (zeroed) model and
-then streams the checkpoint into the same storage (`LLMEngine._from_pretrained_graphs_first`;
-addresses are checked after the load and the graphs re-captured if any moved). That moves
-the ~4 s of capture from after the last shard into the download. The loader also casts
+**Graphs before the weights (Sep 30, `results/serverless_coldstart_pagedserve_slim_qwen3_8b_4090_graphsfirst*.json`).**
+Graph capture needs the parameters' addresses and shapes, not their values, so with
+`PAGEDSERVE_WAIT_WEIGHTS_S` set the engine now sizes the KV cache and captures its graphs on
+the empty (zeroed) model and then streams the checkpoint into the same storage
+(`LLMEngine._from_pretrained_graphs_first`; addresses are checked after the load and the
+graphs re-captured if any moved). Same endpoint, same image apart from this change, six
+cold samples: the time from the last shard landing to the engine's boot line fell from
+7.0 / 5.6 / 5.7 s to **2.3 / 1.9 / 2.0 / 2.2 / 2.1 / 2.6 s** (median 5.7 → 2.2 s). Every
+`[boot]` line shows the capture (2.9–6.6 s) done before `load_weights`, which then spent
+0.9–18.2 s waiting for the download. On the four samples that landed on a host with the
+image, `delayTime` was 26.5 / 29.1 / 36.4 / 36.5 s (median 32.8 s, against 37.9 s), with
+the download alone taking 15–25 s. The other two found their slot `throttled` and were
+placed on hosts without the image: 78.8 s and 112.9 s, of which 59.9 s and 92.5 s were the
+pull. What remains after the last shard (~2 s) is loading: the five shards download in
+parallel and land within moments of each other, so most of the 16 GB is read after the
+download ends; fetching them in load order would overlap it. Exactness on the same RTX 4090
+(pod): the golden gate with graphs captured before and after the weights gave identical
+output on paged_flash and paged_triton, and `tests/test_graphs_before_weights_gpu.py`
+passes. The loader also casts
 bf16 → fp16 one 64 MB piece at a time instead of staging whole tensors, which had left a
 1.24 GB block (Qwen3-8B's embedding) cached when the KV cache was sized, so the KV cache
-should now get about 1.1 GB more in either order (to confirm: `kv_blocks_total` in
-`/metrics`). Exactness: `tests/test_graphs_before_weights_gpu.py` and the golden gate with
-`PAGEDSERVE_GRAPHS_BEFORE_WEIGHTS=1 ... check_golden.py --cuda-graphs`.
+should now get about 1.1 GB more in either order (not yet confirmed against
+`kv_blocks_total` in `/metrics`).
 
 What is left in pagedserve's 17 s, cheapest first: the first request's executionTime is
 1.8–2.1 s against vLLM's 0.5 s (most likely Triton kernels compiling on first use into an

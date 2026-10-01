@@ -84,13 +84,14 @@ device"). A failed download now stops the worker at once instead of leaving the 
 waiting. Measured on a warm host: delayTime 47.4 / 37.9 / 32.9 s (worker-vllm 154.3 /
 140.7 s); fresh host 91.7 s (worker-vllm 210.4 s), 68.7 s of it the image pull.
 
-Since those runs (not measured yet): with `PAGEDSERVE_WAIT_WEIGHTS_S` set the engine is
-built *before* the weights, so the KV cache and the CUDA graphs (3.3–4.5 s of the
-4.9–7.0 s after the last shard landed) are done while the download is still running
+Since Sep 30, with `PAGEDSERVE_WAIT_WEIGHTS_S` set the engine is built *before* the
+weights: the KV cache and the CUDA graphs are done while the download is still running
 (`LLMEngine._from_pretrained_graphs_first`). The `[boot]` line then starts with
 `build_model`, has `load_weights` after the capture, and notes "engine built before the
-weights". `PAGEDSERVE_GRAPHS_BEFORE_WEIGHTS=0` on the endpoint restores the old order
-without a rebuild, for an A/B on the same image.
+weights". Measured on the same endpoint: the time from the last shard to the boot line
+fell from a median 5.7 s to 2.2 s (six samples), and the warm-host `delayTime` median to
+32.8 s (26.5 / 29.1 / 36.4 / 36.5 s). `PAGEDSERVE_GRAPHS_BEFORE_WEIGHTS=0` on the endpoint
+restores the old order without a rebuild.
 
 ## 7B image and the cold-start series
 
