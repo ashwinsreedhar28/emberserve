@@ -49,8 +49,12 @@ def test_fused_is_the_module_path_on_cuda():
     idx, w = moe.gate(x)
     with torch.no_grad():
         via_module = moe(x).float()
-        manual = (fused_moe_forward(x, idx, w, moe.experts_gate_up, moe.experts_down)
-                  + moe.shared_experts(x)).float()
+        # The shared experts add the routed output in their down GEMM's epilogue (addmm:
+        # one rounding), so the manual path must do the same to be bit-identical; adding
+        # the two bf16 results afterwards rounds twice (a 1-ULP difference on ~30% of
+        # elements on an RTX 4090).
+        routed = fused_moe_forward(x, idx, w, moe.experts_gate_up, moe.experts_down)
+        manual = moe.shared_experts(x, add_to=routed).float()
     torch.testing.assert_close(via_module, manual, atol=0, rtol=0)
 
 

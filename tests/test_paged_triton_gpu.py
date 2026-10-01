@@ -155,7 +155,11 @@ def test_backend_block16_matches_paged_torch_over_steps():
     block = 16
     gen = torch.Generator().manual_seed(21)
     lens = [1, 15, 16, 17, 300, 777, 1024, 2000]
-    num_blocks = sum(-(-(n + 40) // block) for n in lens) + 4
+    mixed = ([1, 1, 7, 1, 33, 1, 1, 1], [5, 40, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 9])
+    # Enough blocks for prefill + 40 decode steps + the three mixed steps below (sizing for
+    # only the first two left the last mixed step one block short: OutOfBlocksError).
+    num_blocks = sum(-(-(n + 40 + sum(q[i] for q in mixed)) // block)
+                     for i, n in enumerate(lens)) + 4
     caches = [PagedKVCache(CFG, num_blocks, block, device=DEV, dtype=torch.float16)
               for _ in range(2)]
     bm = BlockManager(num_blocks, block)
@@ -193,7 +197,7 @@ def test_backend_block16_matches_paged_torch_over_steps():
     # a mixed step (chunked prefill): decode rows beside chunk rows that attend through
     # the cache with query_len > 1 -> Triton kernel for the former, gather + flash varlen
     # (or the torch reference without flash-attn) for the latter
-    for qlens in ([1, 1, 7, 1, 33, 1, 1, 1], [5, 40, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 1, 9]):
+    for qlens in mixed:
         starts = [bm.get_num_tokens(s) for s in seqs]
         for sid, n in zip(seqs, qlens):
             bm.append_slots(sid, n)
