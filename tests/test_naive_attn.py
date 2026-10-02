@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 import torch
 
-from pagedserve.attn.base import causal_softmax_attention
-from pagedserve.attn.naive import NaiveAttentionBackend
-from pagedserve.config import ModelConfig
+from emberserve.attn.base import causal_softmax_attention
+from emberserve.attn.naive import NaiveAttentionBackend
+from emberserve.config import ModelConfig
 from tests.test_model import make_decode_meta, make_prefill_meta
 
 torch.set_num_threads(2)

@@ -1,11 +1,14 @@
-# pagedserve
+# emberserve
 
-[![ci](https://github.com/ashwinsreedhar28/pagedserve/actions/workflows/ci.yml/badge.svg)](https://github.com/ashwinsreedhar28/pagedserve/actions/workflows/ci.yml)
+[![ci](https://github.com/ashwinsreedhar28/emberserve/actions/workflows/ci.yml/badge.svg)](https://github.com/ashwinsreedhar28/emberserve/actions/workflows/ci.yml)
 
 A from-scratch LLM inference engine in PyTorch (paged KV cache, continuous batching, CUDA
 graphs, an OpenAI-compatible server), built to understand what vLLM does and measured
 against it on the same GPUs. It matches vLLM's throughput at 7B, and on a cold start it is
 serving while vLLM is still compiling.
+
+Formerly pagedserve (renamed Oct 2026). The old GitHub URL redirects here, and result
+files from before the rename keep the `pagedserve_` prefix.
 
 ## Documentation
 
@@ -29,15 +32,15 @@ Runpod's official vLLM worker on the same GPU tier:
 
 | cold start, `delayTime` | host already has the image | fresh host |
 |---|---:|---:|
-| pagedserve, weights baked into the image | **17.2 s** | 328.4 s |
-| **pagedserve, small image, weights streamed in at start** | **32.8 s** | **91.7 s** |
+| emberserve, weights baked into the image | **17.2 s** | 328.4 s |
+| **emberserve, small image, weights streamed in at start** | **32.8 s** | **91.7 s** |
 | worker-vllm v2.28.0 (vLLM 0.30.0) | 147.5 s | 210.4 s |
 
 The worker reports a wall-clock timeline of its own startup, so every second is attributed.
 In its log, worker-vllm spends 52 s between launch and the start of model loading (three
 Python processes starting and importing one after another, plus ~10 s of config
 resolution), before its 22 s download, and 33 s in torch.compile from an empty cache.
-Baking the weights in made pagedserve fast on a warm host, but a fresh host spent 317 s
+Baking the weights in made emberserve fast on a warm host, but a fresh host spent 317 s
 pulling the 27 GB image. So the small image downloads the weights from Hugging Face and
 loads each shard into the GPU the moment it lands, while the engine is already starting;
 since Sep 30 it also sizes its KV cache and captures its CUDA graphs on the empty model
@@ -46,13 +49,13 @@ boot line from 5.7 s to 2.2 s (median, 3 vs 6 samples) and the small image's war
 32.8 s. Most of what is left is the 15–25 s Hugging Face download itself. Warm hosts:
 median of four runs for the small image, three for the baked one, two for worker-vllm;
 fresh hosts: one sample each.
-[Details](docs/cold-start.md#on-runpod-serverless-pagedserve-vs-worker-vllm-resultsserverless_coldstart_qwen3)
+[Details](docs/cold-start.md#on-runpod-serverless-emberserve-vs-worker-vllm-resultsserverless_coldstart_qwen3)
 
 ### Cold start on an A100 (process start → first token)
 
 | Qwen3-8B, same pod, weights on local disk | runs 2–3 | first run |
 |---|---:|---:|
-| **pagedserve** | **6.7 s** | 6.7 s |
+| **emberserve** | **6.7 s** | 6.7 s |
 | vLLM 0.30.0, defaults (compile cache warm after run 1) | 69.1 s | 202.3 s |
 | vLLM 0.30.0, `--enforce-eager` | 55.2 s | 57.0 s |
 
@@ -66,7 +69,7 @@ server has imported anything. The 7B: 5.6 s.
 Same A100, same load generator, a fresh server per run and a different trace per rate
 ([why that matters](docs/results.md#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it)):
 
-| Qwen2.5-7B-Instruct, fp16 | TPOT p50, pagedserve | TPOT p50, vLLM | tok/s, pagedserve / vLLM |
+| Qwen2.5-7B-Instruct, fp16 | TPOT p50, emberserve | TPOT p50, vLLM | tok/s, emberserve / vLLM |
 |---|---:|---:|---:|
 | 2 req/s | 10.41 ms | 10.32 ms | 341 / 341 |
 | 4 req/s | 11.15 ms | 10.86 ms | 728 / 728 |
@@ -154,7 +157,7 @@ On a Mac or any CPU (fp32):
 ```bash
 pip install -e '.[hf,server,dev]'
 python scripts/download_model.py                 # Qwen2.5-0.5B-Instruct, ~1 GB into models/
-python -m pagedserve.cli serve --model models/Qwen2.5-0.5B-Instruct --port 8000
+python -m emberserve.cli serve --model models/Qwen2.5-0.5B-Instruct --port 8000
 ```
 
 Then any OpenAI client works:
@@ -174,7 +177,7 @@ GPU setup, the benchmark commands and the Runpod Serverless worker are in
 ## Layout
 
 ```
-pagedserve/            the engine
+emberserve/            the engine
   engine.py            LLMEngine.step(): schedule → build inputs → forward → sample → postprocess
                        (async scheduling: launch step N+1, then resolve step N)
   sched/               scheduler: chunked prefill, preemption, async lookahead

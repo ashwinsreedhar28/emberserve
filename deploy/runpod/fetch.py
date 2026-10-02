@@ -10,8 +10,8 @@ start, and does it without making the engine wait for the whole download:
   2. the safetensors shards then download in the background, several at a time, each into
      a staging directory and renamed into place when complete, so a shard that exists at
      its final path is whole;
-  3. meanwhile `pagedserve serve` starts with PAGEDSERVE_WAIT_WEIGHTS_S set, and its
-     streaming loader (pagedserve/model/fastload.py) loads each shard the moment it
+  3. meanwhile `emberserve serve` starts with EMBERSERVE_WAIT_WEIGHTS_S set, and its
+     streaming loader (emberserve/model/fastload.py) loads each shard the moment it
      appears. The engine's own startup (imports, CUDA context, building the model) and the
      loading of shard i overlap the download of the shards after it.
 

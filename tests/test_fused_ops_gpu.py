@@ -1,5 +1,5 @@
 """Fused Triton ops on CUDA vs the PyTorch references, then the whole model with the fused
-path on and off (`PAGEDSERVE_FUSED_OPS`)."""
+path on and off (`EMBERSERVE_FUSED_OPS`)."""
 
 from __future__ import annotations
 
@@ -11,12 +11,12 @@ if not torch.cuda.is_available():
     pytest.skip("needs CUDA", allow_module_level=True)
 pytest.importorskip("triton")
 
-from pagedserve.attn.naive import NaiveAttentionBackend  # noqa: E402
-from pagedserve.model import ops  # noqa: E402
-from pagedserve.model import ops_triton as kt  # noqa: E402
-from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic  # noqa: E402
+from emberserve.attn.naive import NaiveAttentionBackend  # noqa: E402
+from emberserve.model import ops  # noqa: E402
+from emberserve.model import ops_triton as kt  # noqa: E402
+from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic  # noqa: E402
 from tests.test_model import make_prefill_meta  # noqa: E402
-from pagedserve.config import ModelConfig  # noqa: E402
+from emberserve.config import ModelConfig  # noqa: E402
 
 DEV = "cuda"
 DTYPES = [torch.float32, torch.float16, torch.bfloat16]
@@ -85,9 +85,9 @@ def test_model_forward_fused_vs_torch(dtype, monkeypatch):
         with torch.inference_mode():
             return model.forward_logits_all(ids, backend, meta).float().cpu()
 
-    monkeypatch.setenv("PAGEDSERVE_FUSED_OPS", "0")
+    monkeypatch.setenv("EMBERSERVE_FUSED_OPS", "0")
     ref = run()
-    monkeypatch.setenv("PAGEDSERVE_FUSED_OPS", "1")
+    monkeypatch.setenv("EMBERSERVE_FUSED_OPS", "1")
     assert ops.fused_enabled(torch.zeros(1, device=DEV))
     fused = run()
     tol = dict(atol=1e-4, rtol=1e-4) if dtype == torch.float32 else dict(atol=5e-2, rtol=1e-2)

@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 import torch
 
-from pagedserve.attn.naive import NaiveAttentionBackend
-from pagedserve.config import ModelConfig
-from pagedserve.model.weights import load_model
+from emberserve.attn.naive import NaiveAttentionBackend
+from emberserve.config import ModelConfig
+from emberserve.model.weights import load_model
 from tests.test_model import make_prefill_meta
 
 transformers = pytest.importorskip("transformers")
@@ -46,11 +46,11 @@ def test_qwen3_matches_hf(tmp_path: Path, tied: bool) -> None:
 def test_qwen3_engine_batch_equals_alone() -> None:
     """The q/k norm path through the paged engine: a batch of prompts decodes exactly as
     each prompt alone (continuous batching, paged KV)."""
-    from pagedserve.config import EngineConfig
-    from pagedserve.engine import LLMEngine
-    from pagedserve.llm import LLM
-    from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
-    from pagedserve.sched.request import SamplingParams
+    from emberserve.config import EngineConfig
+    from emberserve.engine import LLMEngine
+    from emberserve.llm import LLM
+    from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
+    from emberserve.sched.request import SamplingParams
 
     cfg = ModelConfig.tiny(model_type="qwen3", qk_norm=True, head_dim=32, attention_bias=False)
 

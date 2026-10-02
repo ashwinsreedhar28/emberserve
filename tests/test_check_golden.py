@@ -10,7 +10,7 @@ from pathlib import Path
 
 import torch
 
-from pagedserve.sched.request import SamplingParams
+from emberserve.sched.request import SamplingParams
 from tests.test_engine import make_engine, prompts
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))

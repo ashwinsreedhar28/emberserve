@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Item 2, phase B (one A100 SXM pod, after `bash scripts/pod_setup.sh`): does a second API
-# process lift the 0.5B saturation point, for pagedserve and (if it has the knob) vLLM?
+# process lift the 0.5B saturation point, for emberserve and (if it has the knob) vLLM?
 # ~30 min of pod time; everything lands in results/apiw/. Commit that directory afterwards.
 #   1. the API layer alone on this pod's CPU (fake core, 400k tok/s offered), 1/2/4 workers
-#   2. pagedserve 0.5B saturation, 3 repeats per server lifetime, synthetic trace and
+#   2. emberserve 0.5B saturation, 3 repeats per server lifetime, synthetic trace and
 #      ShareGPT text, --api-workers 1 / 2 / 4
 #   3. vLLM, same traces, one API server and (if `--api-server-count` exists) two
 set -euo pipefail
@@ -21,21 +21,21 @@ for n in 1 2 4; do
   python scripts/bench_api_layer.py --api-workers $n --repeats 3 --client-procs 4 --step-ms 0.5 --max-tokens 512
 done 2>&1 | grep -E "fake core|run " | tee "$OUT/api_layer.txt"
 for n in 1 2 4; do
-  python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model $M --dtype float16 $SAT \
+  python -m emberserve.bench.run_vllm_baseline --server emberserve --model $M --dtype float16 $SAT \
     --server-args "$S --api-workers $n" --out-dir "$OUT" --name ps_sat_w$n
-  python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model $M --dtype float16 $SAT $TXT \
+  python -m emberserve.bench.run_vllm_baseline --server emberserve --model $M --dtype float16 $SAT $TXT \
     --server-args "$S --api-workers $n" --out-dir "$OUT" --name ps_text_w$n
 done
 V=/opt/vllm/bin/vllm
-python -m pagedserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $M --dtype float16 $SAT \
+python -m emberserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $M --dtype float16 $SAT \
   --out-dir "$OUT" --name vllm_sat_a1
-python -m pagedserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $M --dtype float16 $SAT $TXT \
+python -m emberserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $M --dtype float16 $SAT $TXT \
   --out-dir "$OUT" --name vllm_text_a1
 if $V serve --help=all 2>/dev/null | grep -q -- "--api-server-count"; then
   echo "vLLM has --api-server-count" | tee "$OUT/vllm_api_server_count.txt"
-  python -m pagedserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $M --dtype float16 $SAT \
+  python -m emberserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $M --dtype float16 $SAT \
     --server-args "--api-server-count 2" --out-dir "$OUT" --name vllm_sat_a2
-  python -m pagedserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $M --dtype float16 $SAT $TXT \
+  python -m emberserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $M --dtype float16 $SAT $TXT \
     --server-args "--api-server-count 2" --out-dir "$OUT" --name vllm_text_a2
 else
   echo "vLLM has no --api-server-count" | tee "$OUT/vllm_api_server_count.txt"

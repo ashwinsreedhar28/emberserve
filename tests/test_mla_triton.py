@@ -13,7 +13,7 @@ try:
     _HAS_CUDA = _torch_probe.cuda.is_available()
 except Exception:  # noqa: BLE001
     _HAS_CUDA = False
-if _HAS_CUDA and os.environ.get("PAGEDSERVE_FORCE_INTERPRETER") != "1":
+if _HAS_CUDA and os.environ.get("EMBERSERVE_FORCE_INTERPRETER") != "1":
     pytest.skip("CUDA present: interpreter tests skipped", allow_module_level=True)
 import importlib.util  # noqa: E402
 
@@ -25,8 +25,8 @@ import torch  # noqa: E402
 
 pytest.importorskip("triton")
 
-from pagedserve.attn.mla_torch import mla_attention_absorbed  # noqa: E402
-from pagedserve.attn.mla_triton import mla_decode  # noqa: E402
+from emberserve.attn.mla_torch import mla_attention_absorbed  # noqa: E402
+from emberserve.attn.mla_triton import mla_decode  # noqa: E402
 
 torch.set_num_threads(2)
 H, DL, DR, DN, DV = 4, 32, 16, 16, 16  # tiny latent geometry (DL, DR powers of two)

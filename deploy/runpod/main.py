@@ -1,4 +1,4 @@
-"""Runpod Serverless worker entry point: start `pagedserve serve`, wait for it, then serve jobs.
+"""Runpod Serverless worker entry point: start `emberserve serve`, wait for it, then serve jobs.
 
 Environment (all optional): MODEL_DIR (a snapshot baked into the image; default /models/model),
 MODEL_REPO (fetch at cold start instead, streamed into the engine as it arrives: fetch.py;
@@ -6,10 +6,10 @@ MODEL_REVISION, DOWNLOAD_WORKERS (8), WEIGHTS_TIMEOUT (900 s), WEIGHTS_STREAM=0 
 everything before starting), DTYPE (float16), ATTN_BACKEND (paged_flash),
 BLOCK_SIZE (256), MAX_MODEL_LEN (4096), MAX_NUM_SEQS (256), CUDA_GRAPHS (1), PREFIX_CACHING (0),
 QUANTIZATION (unset | int8), TENSOR_PARALLEL_SIZE (1), SERVED_MODEL_NAME (the model dir),
-EXTRA_SERVE_ARGS (appended verbatim), PAGEDSERVE_PORT (8000), MAX_CONCURRENCY (jobs per
+EXTRA_SERVE_ARGS (appended verbatim), EMBERSERVE_PORT (8000), MAX_CONCURRENCY (jobs per
 worker, 64), STARTUP_TIMEOUT (600 s), STREAM_FLUSH_MS (100; see handler.py). Chunked prefill,
 piecewise graphs, async scheduling and the engine-core process follow the CLI's CUDA defaults
-(README, "Run it"). RUNPOD_LB=1 turns the image into a load-balancing worker: `pagedserve serve`
+(README, "Run it"). RUNPOD_LB=1 turns the image into a load-balancing worker: `emberserve serve`
 runs on 0.0.0.0:$PORT with no job wrapper (set PORT and PORT_HEALTH on the endpoint).
 """
 
@@ -32,7 +32,7 @@ import httpx  # noqa: E402
 
 from handler import make_handler  # noqa: E402
 
-PORT = int(os.environ.get("PAGEDSERVE_PORT", "8000"))  # the proxy's local server (queue mode)
+PORT = int(os.environ.get("EMBERSERVE_PORT", "8000"))  # the proxy's local server (queue mode)
 BASE_URL = f"http://127.0.0.1:{PORT}"
 
 
@@ -58,14 +58,14 @@ def snapshot_complete(model_dir: str | os.PathLike) -> bool:
 
 def effective_tp_size() -> int:
     """The tensor-parallel size the server will actually run with: the serve command this
-    worker launches (TENSOR_PARALLEL_SIZE, then EXTRA_SERVE_ARGS) parsed by pagedserve's own
+    worker launches (TENSOR_PARALLEL_SIZE, then EXTRA_SERVE_ARGS) parsed by emberserve's own
     CLI parser, so abbreviations (`--tensor-parallel 2`) and `=` forms count exactly as
     `serve` counts them. The parser imports nothing heavy."""
-    from pagedserve.cli import build_parser
+    from emberserve.cli import build_parser
 
     cmd = serve_command("/models/model")
     try:
-        args, _ = build_parser().parse_known_args(cmd[cmd.index("pagedserve.cli") + 1:])
+        args, _ = build_parser().parse_known_args(cmd[cmd.index("emberserve.cli") + 1:])
         return int(args.tensor_parallel_size)
     except (SystemExit, ValueError, AttributeError):  # malformed args: serve will fail too
         return int(env("TENSOR_PARALLEL_SIZE", "1") or 1)
@@ -76,7 +76,7 @@ def resolve_model_dir() -> str:
 
     Fetched (MODEL_REPO set and nothing baked in): the small files are downloaded now and
     the shards in the background (fetch.py), and the server is told to wait for them
-    (PAGEDSERVE_WAIT_WEIGHTS_S), so the engine starts while the weights are still arriving.
+    (EMBERSERVE_WAIT_WEIGHTS_S), so the engine starts while the weights are still arriving.
     WEIGHTS_STREAM=0 downloads everything first instead."""
     model_dir = env("MODEL_DIR", "/models/model")
     repo = os.environ.get("MODEL_REPO")
@@ -86,7 +86,7 @@ def resolve_model_dir() -> str:
     # Only the streaming loader on one rank can wait for shards still downloading; tensor
     # parallelism and the reference loader read the files present, so they download first.
     streaming = (env("WEIGHTS_STREAM", "1") == "1" and effective_tp_size() == 1
-                 and os.environ.get("PAGEDSERVE_LOADER", "stream") != "safetensors")
+                 and os.environ.get("EMBERSERVE_LOADER", "stream") != "safetensors")
     if not streaming:
         from huggingface_hub import snapshot_download
 
@@ -102,14 +102,14 @@ def resolve_model_dir() -> str:
     fetcher.start_shards(shards)
     global FETCHER
     FETCHER = fetcher
-    os.environ.setdefault("PAGEDSERVE_WAIT_WEIGHTS_S", env("WEIGHTS_TIMEOUT", "900"))
+    os.environ.setdefault("EMBERSERVE_WAIT_WEIGHTS_S", env("WEIGHTS_TIMEOUT", "900"))
     print(f"[worker] fetching {len(shards)} shards of {repo} in the background; the engine starts now",
           flush=True)
     return model_dir
 
 
 def serve_command(model_dir: str, host: str = "127.0.0.1", port: int = PORT) -> list[str]:
-    cmd = [sys.executable, "-m", "pagedserve.cli", "serve", "--model", model_dir,
+    cmd = [sys.executable, "-m", "emberserve.cli", "serve", "--model", model_dir,
            "--device", "cuda", "--dtype", env("DTYPE", "float16"),
            "--attn-backend", env("ATTN_BACKEND", "paged_flash"),
            "--block-size", env("BLOCK_SIZE", "256"),
@@ -160,7 +160,7 @@ def wait_for_server(proc: subprocess.Popen, timeout_s: float, base_url: str = BA
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if proc.poll() is not None:
-            raise SystemExit(f"pagedserve serve exited with code {proc.returncode} during startup")
+            raise SystemExit(f"emberserve serve exited with code {proc.returncode} during startup")
         if FETCHER is not None and FETCHER.error is not None:
             proc.kill()  # the engine would wait for shards that will never arrive
             raise SystemExit(f"weight download failed: {FETCHER.error}")
@@ -170,7 +170,7 @@ def wait_for_server(proc: subprocess.Popen, timeout_s: float, base_url: str = BA
         except httpx.HTTPError:
             pass
         time.sleep(0.5)
-    raise SystemExit(f"pagedserve serve did not become healthy within {timeout_s:.0f} s")
+    raise SystemExit(f"emberserve serve did not become healthy within {timeout_s:.0f} s")
 
 
 def main() -> None:
@@ -188,7 +188,7 @@ def main() -> None:
         proc = spawn_serve(cmd)
         wait_for_server(proc, float(env("STARTUP_TIMEOUT", "600")), f"http://127.0.0.1:{port}")
         timeline.mark("serve_healthy")
-        print(f"[worker] pagedserve up in {time.monotonic() - t0:.1f} s (load-balancing mode)", flush=True)
+        print(f"[worker] emberserve up in {time.monotonic() - t0:.1f} s (load-balancing mode)", flush=True)
         sys.exit(proc.wait())
     cmd = serve_command(model_dir)
     print("[worker] starting: " + " ".join(shlex.quote(c) for c in cmd), flush=True)
@@ -200,7 +200,7 @@ def main() -> None:
     importer.start()
     wait_for_server(proc, float(env("STARTUP_TIMEOUT", "600")))
     timeline.mark("serve_healthy")
-    print(f"[worker] pagedserve up in {time.monotonic() - t0:.1f} s", flush=True)
+    print(f"[worker] emberserve up in {time.monotonic() - t0:.1f} s", flush=True)
     importer.join()
     runpod = sdk["runpod"]
     client = httpx.AsyncClient(base_url=BASE_URL)

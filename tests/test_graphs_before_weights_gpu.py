@@ -4,7 +4,7 @@ tokens through the full and piecewise graphs. Also the streaming loader's piece-
 
 Run: `python -m pytest -m gpu -q tests/test_graphs_before_weights_gpu.py`. The real-model
 check is the golden gate with the flag forced:
-`PAGEDSERVE_GRAPHS_BEFORE_WEIGHTS=1 python scripts/check_golden.py --device cuda
+`EMBERSERVE_GRAPHS_BEFORE_WEIGHTS=1 python scripts/check_golden.py --device cuda
 --dtype float16 --backends paged_flash,paged_triton --block-size 256 --cuda-graphs`.
 """
 
@@ -15,10 +15,10 @@ from pathlib import Path
 import pytest
 import torch
 
-from pagedserve.config import EngineConfig
-from pagedserve.engine import GRAPHS_BEFORE_WEIGHTS_ENV, LLMEngine
-from pagedserve.llm import LLM
-from pagedserve.sched.request import SamplingParams
+from emberserve.config import EngineConfig
+from emberserve.engine import GRAPHS_BEFORE_WEIGHTS_ENV, LLMEngine
+from emberserve.llm import LLM
+from emberserve.sched.request import SamplingParams
 from tests.test_model import tiny_model
 from tests.test_weights import _dump_snapshot
 
@@ -47,7 +47,7 @@ def _gen(eng: LLMEngine) -> list[list[int]]:
 @pytest.mark.parametrize("piecewise", [False, True])
 def test_graphs_first_matches_the_usual_order(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
                                               piecewise: bool) -> None:
-    monkeypatch.delenv("PAGEDSERVE_WAIT_WEIGHTS_S", raising=False)
+    monkeypatch.delenv("EMBERSERVE_WAIT_WEIGHTS_S", raising=False)
     _dump_snapshot(tiny_model(seed=21), tmp_path, split=True)
     monkeypatch.setenv(GRAPHS_BEFORE_WEIGHTS_ENV, "0")
     usual = _engine(tmp_path, piecewise)
@@ -69,15 +69,15 @@ def test_graphs_first_matches_the_usual_order(tmp_path: Path, monkeypatch: pytes
 def test_bf16_checkpoint_cast_piecewise_on_device(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from safetensors.torch import load_file, save_file
 
-    from pagedserve.model.fastload import stream_weights
-    from pagedserve.model.weights import build_empty_model, load_model
+    from emberserve.model.fastload import stream_weights
+    from emberserve.model.weights import build_empty_model, load_model
 
     _dump_snapshot(tiny_model(seed=22), tmp_path)
     f = tmp_path / "model.safetensors"
     save_file({k: v.to(torch.bfloat16) for k, v in load_file(f).items()}, str(f))
-    monkeypatch.setenv("PAGEDSERVE_LOADER", "safetensors")
+    monkeypatch.setenv("EMBERSERVE_LOADER", "safetensors")
     ref = load_model(tmp_path, device="cuda", dtype=torch.float16)
-    monkeypatch.delenv("PAGEDSERVE_LOADER")
+    monkeypatch.delenv("EMBERSERVE_LOADER")
     for buffer_mb in (64, 0.001):
         m = build_empty_model(tmp_path, device="cuda", dtype=torch.float16)
         stats = stream_weights(m, tmp_path, "cuda", buffer_mb=buffer_mb)

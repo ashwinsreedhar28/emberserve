@@ -1,6 +1,6 @@
 # Roadmap
 
-Part of [pagedserve](../README.md). Open items, most promising first within each area.
+Part of [emberserve](../README.md). Open items, most promising first within each area.
 
 * Cold start: Qwen3-8B first token in 6.7 s against vLLM's 69.1 s on the same pod (7B: 5.6 s); on Runpod Serverless `delayTime` 17.2 s against worker-vllm's 147.5 s. On a fresh host the baked 27 GB image lost (328 s vs worker-vllm's 210 s, 317 s of it the pull), so the small image fetches the weights at start and streams them into the engine as they arrive (`deploy/runpod/Dockerfile.slim`, `fetch.py`): 32.8 s median on a warm host against worker-vllm's 147.5 s (37.9 s before graph capture moved into the download, which cut the tail after the last shard from 5.7 s to 2.2 s), 91.7 s on a fresh host against 210.4 s. Next: `HF_TOKEN` for steadier downloads (the download is now most of a warm start), shards fetched in load order (the last ~2 s), more fresh-host samples. Later: the Triton cache in the image (first request 1.3–2.1 s), CUDA checkpoint/restore inside a Serverless container.
 * Re-measure the vLLM rows still marked as from a replayed-trace sweep (R1-8B, Moonlight, TP2, the ShareGPT text sweeps) with a trace per rate.

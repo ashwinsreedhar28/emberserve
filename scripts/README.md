@@ -1,6 +1,6 @@
 # scripts
 
-Part of [pagedserve](../README.md). Every script has a docstring or header with its usage;
+Part of [emberserve](../README.md). Every script has a docstring or header with its usage;
 this page says which one to reach for. Run them from the repo root.
 
 ## Setup
@@ -17,14 +17,14 @@ this page says which one to reach for. Run them from the repo root.
 | script | what it does |
 |---|---|
 | `dump_golden.py` | Hugging Face reference outputs and logits → `golden/<model>/` |
-| `check_golden.py` | the gate: pagedserve against the golden files on every backend, with the fp16/bf16 tie-break rule |
+| `check_golden.py` | the gate: emberserve against the golden files on every backend, with the fp16/bf16 tie-break rule |
 
 ## Benchmarks
 
 | script | what it does |
 |---|---|
-| `python -m pagedserve.bench.run_vllm_baseline` | rate sweeps over HTTP against vLLM, pagedserve or any OpenAI endpoint (a module, not a script) |
-| `bench_coldstart.py` | process start → first token, pagedserve against vLLM on one machine |
+| `python -m emberserve.bench.run_vllm_baseline` | rate sweeps over HTTP against vLLM, emberserve or any OpenAI endpoint (a module, not a script) |
+| `bench_coldstart.py` | process start → first token, emberserve against vLLM on one machine |
 | `serverless_coldstart.py` | Runpod Serverless cold starts; `--timeline` splits `delayTime` into phases |
 | `bench_load.py` | weight loading, reference path against the streaming loader |
 | `bench_api_layer.py` | tokens/s the API process can deliver with no model behind it |
@@ -38,8 +38,8 @@ this page says which one to reach for. Run them from the repo root.
 |---|---|
 | `profile_step.py` | where a decode step's wall time goes, per phase (`--kernels` for per-kernel) |
 | `profile_mixed_step.py` | a mixed prefill + decode step, kernel by kernel |
-| `step_trace_report.py` | reads `PAGEDSERVE_STEP_TRACE`: per-step GPU time, idle gaps, syncs |
-| `stall_report.py` | reads `PAGEDSERVE_STEP_LOG`: where the time went at saturation |
+| `step_trace_report.py` | reads `EMBERSERVE_STEP_TRACE`: per-step GPU time, idle gaps, syncs |
+| `stall_report.py` | reads `EMBERSERVE_STEP_LOG`: where the time went at saturation |
 | `pyspy_summary.py` | summarizes a `py-spy record --format raw` file |
 | `gpu_debug_capture.py` | reproduces a CUDA-graph capture failure with `CUDA_LAUNCH_BLOCKING=1` |
 

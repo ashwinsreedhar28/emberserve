@@ -6,8 +6,8 @@ import random
 
 import pytest
 
-from pagedserve.sched.request import FinishReason, RequestState
-from pagedserve.sched.scheduler import SchedulerOutput
+from emberserve.sched.request import FinishReason, RequestState
+from emberserve.sched.scheduler import SchedulerOutput
 from tests.fakes import FakeEngineLoop, StaticBatchLoop, expected_output, poisson_arrivals
 
 BLOCK = 4
@@ -243,7 +243,7 @@ def test_add_request_rejects_oversized_prompts():
 
 
 def test_add_request_requires_assigned_seq_id():
-    from pagedserve.sched.request import Request, SamplingParams
+    from emberserve.sched.request import Request, SamplingParams
 
     loop = FakeEngineLoop(num_blocks=8, block_size=BLOCK)
     req = Request(request_id="x", prompt_token_ids=[1, 2], sampling_params=SamplingParams())

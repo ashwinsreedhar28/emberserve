@@ -15,16 +15,16 @@ from pathlib import Path
 import pytest
 import torch
 
-from pagedserve import engine as engine_mod
-from pagedserve.config import EngineConfig
-from pagedserve.engine import GRAPHS_BEFORE_WEIGHTS_ENV, LLMEngine, graphs_before_weights
-from pagedserve.llm import LLM
-from pagedserve.sched.request import SamplingParams
+from emberserve import engine as engine_mod
+from emberserve.config import EngineConfig
+from emberserve.engine import GRAPHS_BEFORE_WEIGHTS_ENV, LLMEngine, graphs_before_weights
+from emberserve.llm import LLM
+from emberserve.sched.request import SamplingParams
 from tests.test_fastload import _hold_back_shards
 from tests.test_model import tiny_model
 from tests.test_weights import _dump_snapshot
 
-WAIT = "PAGEDSERVE_WAIT_WEIGHTS_S"
+WAIT = "EMBERSERVE_WAIT_WEIGHTS_S"
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +66,7 @@ def test_not_for_latent_attention(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     flag its forward branches on; a graph captured before would record the other path."""
     _dump_snapshot(tiny_model(seed=1), tmp_path)
     monkeypatch.setenv(GRAPHS_BEFORE_WEIGHTS_ENV, "1")
-    from pagedserve.config import ModelConfig
+    from emberserve.config import ModelConfig
 
     monkeypatch.setattr(ModelConfig, "from_hf_dir",
                         classmethod(lambda cls, d: type("C", (), {"mla": object()})()))
@@ -141,7 +141,7 @@ class _StubRunner:
 def test_graphs_captured_again_if_a_parameter_moved(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A loader that rebinds a parameter instead of copying into it would leave the graphs
     pointing at the old storage; the addresses are compared and the graphs re-captured."""
-    from pagedserve.model import weights as W
+    from emberserve.model import weights as W
 
     _dump_snapshot(tiny_model(seed=4), tmp_path)
     monkeypatch.setenv(GRAPHS_BEFORE_WEIGHTS_ENV, "1")

@@ -12,8 +12,8 @@ C="--dtype float16 --max-model-len 4096 --rates 4,inf --trace-n 200 --out-dir $O
 echo "== vLLM prefix-cache hit rate in the coldstart_c sweep (same trace at every rate):"
 grep -o "Prefix cache hit rate: [0-9.]*%" $OUT/vllm_qwen3_8b.server.log | sort -u -t: -k2 -n | tail -3 || true
 for r in 1 2 3; do
-  python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model $Q $C --server-args "$SA" --name ps_q3_sat_r$r
-  python -m pagedserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $Q $C --name vllm_q3_sat_r$r
+  python -m emberserve.bench.run_vllm_baseline --server emberserve --model $Q $C --server-args "$SA" --name ps_q3_sat_r$r
+  python -m emberserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $Q $C --name vllm_q3_sat_r$r
 done
 echo "== vLLM prefix-cache hit rate with a trace per rate (should be ~0):"
 grep -o "Prefix cache hit rate: [0-9.]*%" $OUT/vllm_q3_sat_r1.server.log | sort -u -t: -k2 -n | tail -3 || true

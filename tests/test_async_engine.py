@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from pagedserve.llm import LLM
-from pagedserve.sched.request import RequestOutput, SamplingParams
-from pagedserve.server.async_engine import AsyncLLMEngine, EngineNotRunningError
+from emberserve.llm import LLM
+from emberserve.sched.request import RequestOutput, SamplingParams
+from emberserve.server.async_engine import AsyncLLMEngine, EngineNotRunningError
 from tests.stub_tokenizer import install
 from tests.test_engine import make_engine, prompts
 

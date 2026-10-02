@@ -12,9 +12,9 @@ if not torch.cuda.is_available():
     pytest.skip("needs CUDA", allow_module_level=True)
 pytest.importorskip("triton")
 
-from pagedserve.config import MoEConfig  # noqa: E402
-from pagedserve.model.moe import DeepseekMoE  # noqa: E402
-from pagedserve.model.moe_triton import fused_moe_forward, moe_align, topk_gate  # noqa: E402
+from emberserve.config import MoEConfig  # noqa: E402
+from emberserve.model.moe import DeepseekMoE  # noqa: E402
+from emberserve.model.moe_triton import fused_moe_forward, moe_align, topk_gate  # noqa: E402
 
 DEV = "cuda"
 

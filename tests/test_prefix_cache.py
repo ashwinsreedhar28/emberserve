@@ -7,13 +7,13 @@ import random
 import pytest
 import torch
 
-from pagedserve.config import EngineConfig
-from pagedserve.engine import LLMEngine
-from pagedserve.kv.block_manager import BlockManager, OutOfBlocksError
-from pagedserve.kv.prefix_cache import PrefixCache
-from pagedserve.llm import LLM
-from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
-from pagedserve.sched.request import SamplingParams
+from emberserve.config import EngineConfig
+from emberserve.engine import LLMEngine
+from emberserve.kv.block_manager import BlockManager, OutOfBlocksError
+from emberserve.kv.prefix_cache import PrefixCache
+from emberserve.llm import LLM
+from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
+from emberserve.sched.request import SamplingParams
 from tests.test_engine import CFG, make_engine
 
 BLOCK = 4

@@ -1,6 +1,6 @@
 # GPU notes (Runpod RTX 4090 / A100 SXM, torch 2.8.0+cu128, CUDA 12.x)
 
-Part of [pagedserve](../README.md). Setup and the pitfalls that cost GPU time.
+Part of [emberserve](../README.md). Setup and the pitfalls that cost GPU time.
 
 ## Pod checklist
 
@@ -16,7 +16,7 @@ Part of [pagedserve](../README.md). Setup and the pitfalls that cost GPU time.
 ## Fresh pod, one shot
 
 ```bash
-git clone https://github.com/ashwinsreedhar28/pagedserve && cd pagedserve && bash scripts/pod_setup.sh
+git clone https://github.com/ashwinsreedhar28/emberserve && cd emberserve && bash scripts/pod_setup.sh
 ```
 
 `pod_setup.sh` installs flash-attn (prebuilt wheel for the pod's torch), the package with
@@ -37,7 +37,7 @@ port from the pod's Connect panel), not through the `ssh.runpod.io` proxy. Witho
 volume everything under `/root` dies with the pod, so copy `results/` back before stopping it:
 
 ```bash
-scp -i ~/.ssh/runpod -P <port> -r root@<ip>:/root/pagedserve/results/ .   # from the Mac clone
+scp -i ~/.ssh/runpod -P <port> -r root@<ip>:/root/emberserve/results/ .   # from the Mac clone
 ```
 
 The engine reserves 90% of free GPU memory for the KV cache at startup, so one GPU job at a
@@ -45,7 +45,7 @@ time; `nvidia-smi --query-gpu=memory.used --format=csv` should read ~0 MiB befor
 
 ## Serving defaults on CUDA
 
-`pagedserve serve --device cuda --enable-cuda-graphs` defaults to the engine in its own
+`emberserve serve --device cuda --enable-cuda-graphs` defaults to the engine in its own
 process (`--no-engine-process` for the single-process path), async scheduling
 (`--no-async-scheduling`), chunked prefill with a 2048-token per-step cap
 (`--no-chunked-prefill`; `--max-num-batched-tokens 512` for a tighter TPOT tail at ~6%
@@ -65,7 +65,7 @@ the padded chunk is real compute at that size, so they are off by default above 
 14,394 tok/s at saturation, TPOT 2.1 → 1.8 ms at 1 req/s):
 
 ```bash
-python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 \
+python -m emberserve.bench.run_vllm_baseline --server emberserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 \
   --max-model-len 4096 --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs" \
   --rates 1,2,4,8,16,inf --trace-n 200 --name pagedserve_flash_v7b
 ```
@@ -84,7 +84,7 @@ graphs: 14,904, TTFT at 1 req/s 9.4 ms). To repeat it:
 
 ```bash
 python -m pytest tests/test_cuda_graphs_gpu.py tests/test_mla_triton_gpu.py -q -k piecewise
-python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 \
+python -m emberserve.bench.run_vllm_baseline --server emberserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 \
   --max-model-len 4096 --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs" \
   --rates 1,2,4,8,16,inf --trace-n 200 --name pagedserve_flash_v8      # add --no-piecewise-cuda-graphs for the other arm
 ```
@@ -93,10 +93,11 @@ The README's by-version figures (`results/plots/progression/`) come from:
 
 ```bash
 python scripts/merge_sweeps.py --low results/pagedserve_flash_v6_low.json --high results/pagedserve_flash_v6.json --split 8 --out results/pagedserve_flash_v6_full.json
-python -m pagedserve.bench.plot --progression results/vllm.json \
+python -m emberserve.bench.plot --progression results/vllm.json \
   results/pagedserve_flash.json results/pagedserve_flash_v2.json results/pagedserve_flash_v3.json results/pagedserve_flash_v4.json \
   results/pagedserve_flash_v5.json results/pagedserve_flash_v6_full.json results/pagedserve_flash_v7b.json results/pagedserve_flash_v8.json \
-  --labels "v1 first sweep,v2 batched sampler,v3 detokenizer + SSE,v4 kernel fusion,v5 pinned inputs,v6 engine process,v7 async scheduling,v8 piecewise graphs" \
+  results/pagedserve_flash_v9.json \
+  --labels "v1 first sweep,v2 batched sampler,v3 detokenizer + SSE,v4 kernel fusion,v5 pinned inputs,v6 engine process,v7 async scheduling,v8 piecewise graphs,v9 batched SSE writes" \
   --out-dir results/plots/progression
 ```
 
@@ -107,7 +108,7 @@ there. `--piecewise-bucket-step 256` captures a bucket every 256 tokens instead 
 8), so the worst-case padding drops from ~2x to +255 tokens. The 7B A/B:
 
 ```bash
-python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-7B-Instruct --dtype float16 \
+python -m emberserve.bench.run_vllm_baseline --server emberserve --model models/Qwen2.5-7B-Instruct --dtype float16 \
   --max-model-len 4096 --rates 1,2,4,8,16,inf --trace-n 200 \
   --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --piecewise-cuda-graphs --piecewise-bucket-step 256" \
   --name pagedserve_7b_flash_v8b     # vs _v7 (no piecewise, 3,166) and _v8 (powers of two, 3,132)
@@ -128,7 +129,7 @@ python scripts/check_golden.py --model models/Moonlight-16B-A3B-Instruct --golde
 
 Serving it: `--attn-backend mla_triton --block-size 16 --enable-cuda-graphs
 --enable-chunked-prefill --async-scheduling` (the Triton MLA decode kernel and the fused MoE
-grouped GEMM are both captured; `PAGEDSERVE_FUSED_MOE=0` falls back to the per-expert loop,
+grouped GEMM are both captured; `EMBERSERVE_FUSED_MOE=0` falls back to the per-expert loop,
 which was 63.6 ms per batch-1 step against 7.2 ms fused). Where a step's time goes, per
 kernel (this is what found the split-K bug under graphs, README "Moonlight"):
 
@@ -150,7 +151,7 @@ _ZN3c104cuda29c10_cuda_check_implementation...`). Keep them apart:
 
 ```bash
 python -m venv /opt/vllm && /opt/vllm/bin/pip install vllm
-python -m pagedserve.bench.run_vllm_baseline --server vllm --vllm-bin /opt/vllm/bin/vllm ...
+python -m emberserve.bench.run_vllm_baseline --server vllm --vllm-bin /opt/vllm/bin/vllm ...
 ```
 
 `run_vllm_baseline` puts the vllm binary's directory on the child's `PATH`; vLLM's
@@ -183,21 +184,21 @@ acceptance rate (`spec_acceptance`) into the sweep JSON; TPOT at low rates is th
 
 ```bash
 T="--tokenizer models/Qwen2.5-7B-Instruct --sharegpt data/ShareGPT_V3_unfiltered_cleaned_split.json --max-model-len 4096 --rates 1,2,4,8,inf --trace-n 200"
-python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-7B-Instruct --dtype float16 $T \
+python -m emberserve.bench.run_vllm_baseline --server emberserve --model models/Qwen2.5-7B-Instruct --dtype float16 $T \
   --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs" --name pagedserve_7b_text
-python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-7B-Instruct --dtype float16 $T \
+python -m emberserve.bench.run_vllm_baseline --server emberserve --model models/Qwen2.5-7B-Instruct --dtype float16 $T \
   --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --speculative-ngram 3 --num-speculative-tokens 5" --name pagedserve_7b_text_spec
-source /opt/vllm/bin/activate && python -m pagedserve.bench.run_vllm_baseline --server vllm --model models/Qwen2.5-7B-Instruct --dtype float16 $T --name vllm_7b_text; deactivate
+source /opt/vllm/bin/activate && python -m emberserve.bench.run_vllm_baseline --server vllm --model models/Qwen2.5-7B-Instruct --dtype float16 $T --name vllm_7b_text; deactivate
 ```
 
 Every sweep now also records **server-side** latency means per rate
 (`server_latency` in the JSON: `ttft_ms_mean`, `tpot_ms_mean`, `e2e_ms_mean`), from
-pagedserve's `/metrics` sums (measured from the request's arrival at the API process) and
+emberserve's `/metrics` sums (measured from the request's arrival at the API process) and
 from vLLM's Prometheus histograms (`vllm:time_to_first_token_seconds_sum/_count`, ...).
 The client-side numbers include the load generator's own queueing, which at a
 200-request burst is most of the TTFT: against a fake SSE server with no model at all,
 200 simultaneous requests measure ~300 ms TTFT p50 on a 2-core box, and at
-pagedserve's saturation token rate (200 streams at 6 ms) the single-process client
+emberserve's saturation token rate (200 streams at 6 ms) the single-process client
 inflates TPOT by ~7%. Compare saturation TTFT server-side, not client-side, and run saturation sweeps with
 `--client-procs 4` (four load-generator processes, one event loop each, started on the
 same instant; the trace is dealt round-robin): against the no-model server, four
@@ -221,14 +222,14 @@ python scripts/check_golden.py --model models/Qwen2.5-7B-Instruct --golden golde
 python scripts/profile_step.py --model models/Qwen2.5-7B-Instruct --device cuda --dtype float16 \
   --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --batches 1,8,32,128 --steps 30 \
   --quantization int8 --out results/profile_7b_int8.json
-python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-7B-Instruct --dtype float16 \
+python -m emberserve.bench.run_vllm_baseline --server emberserve --model models/Qwen2.5-7B-Instruct --dtype float16 \
   --max-model-len 4096 --rates 1,2,4,8,16,inf --trace-n 200 \
   --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --quantization int8" \
   --name pagedserve_7b_flash_int8
 ```
 
 `tests/test_int8_gpu.py` checks the Triton GEMM against the fp32 reference at every tile
-config and a full 7B-shaped projection; `PAGEDSERVE_INT8_KERNEL=0` is the torch path
+config and a full 7B-shaped projection; `EMBERSERVE_INT8_KERNEL=0` is the torch path
 (dequantize + matmul) for an A/B of the kernel itself.
 
 ### Tensor parallelism
@@ -243,12 +244,12 @@ python scripts/check_golden.py --model models/Qwen2.5-7B-Instruct --golden golde
 python scripts/profile_step.py --model models/Qwen2.5-7B-Instruct --device cuda --dtype float16 \
   --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --batches 1,8,32,128 --steps 30 \
   --tensor-parallel-size 2 --out results/profile_7b_tp2.json
-python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-7B-Instruct --dtype float16 \
+python -m emberserve.bench.run_vllm_baseline --server emberserve --model models/Qwen2.5-7B-Instruct --dtype float16 \
   --max-model-len 4096 --rates 1,2,4,8,16,inf --trace-n 200 \
   --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs --tensor-parallel-size 2" \
   --name pagedserve_7b_flash_tp2
 source /opt/vllm/bin/activate
-python -m pagedserve.bench.run_vllm_baseline --server vllm --model models/Qwen2.5-7B-Instruct --dtype float16 \
+python -m emberserve.bench.run_vllm_baseline --server vllm --model models/Qwen2.5-7B-Instruct --dtype float16 \
   --max-model-len 4096 --rates 1,2,4,8,16,inf --trace-n 200 --server-args "--tensor-parallel-size 2" --name vllm_7b_tp2
 deactivate
 ```
@@ -258,7 +259,7 @@ parallelism"): batch-1 step 10.09 → 7.65 ms, saturation 3,166 → 4,485 tok/s 
 4,949; 6.6 ms TPOT at 1 req/s vs our 7.4). The 0.5B/7B TP1 rows from the single-A100 pod
 are the comparison; the same GPU type matters more than the same pod.
 
-`PAGEDSERVE_TP_LOG_DIR=/tmp` writes each worker's output to `tp_worker_<rank>.log` there
+`EMBERSERVE_TP_LOG_DIR=/tmp` writes each worker's output to `tp_worker_<rank>.log` there
 (otherwise it shares the driver's stderr). `kill -USR1 <pid>` on any rank dumps every
 thread's Python stack (faulthandler is registered in `init_tp`), and
 `-o faulthandler_timeout=120` does the same for a pytest run that has gone quiet. What a
@@ -285,11 +286,11 @@ warmup guarantees).
 ## Saturation stalls: the step log and the GC knob
 
 Eight repeats of the 0.5B saturation point spread 17.0–20.8k tok/s (vLLM's: within 1%),
-with TPOT p99 doubling in the slow runs. `PAGEDSERVE_STEP_LOG=<path>` makes the engine
+with TPOT p99 doubling in the slow runs. `EMBERSERVE_STEP_LOG=<path>` makes the engine
 core write every step (start, duration, running sequences, tokens) and both processes
 write their GC pauses (`<path>.gc-core`, `<path>.gc-api`); `scripts/stall_report.py`
 prints step and inter-step-gap percentiles, the worst stalls with the GC pauses that
-overlap them, and each process's GC totals. `PAGEDSERVE_GC=tune` is the first candidate
+overlap them, and each process's GC totals. `EMBERSERVE_GC=tune` is the first candidate
 fix: `gc.freeze()` after startup plus raised thresholds (50,000 / 20 / 25), so the
 collector stops walking the model, tokenizer and stream state every few thousand
 allocations. (On the CPU tiny model one gen-2 pass in the API process took 108 ms.) The
@@ -298,9 +299,9 @@ A/B, three repeats each, server-side numbers from `/metrics`:
 ```bash
 T="--tokenizer models/Qwen2.5-0.5B-Instruct --sharegpt data/ShareGPT_V3_unfiltered_cleaned_split.json --max-model-len 4096 --rates inf,inf,inf --trace-n 200 --client-procs 4"
 S="--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs"
-PAGEDSERVE_STEP_LOG=results/steps_sat_default.tsv python -m pagedserve.bench.run_vllm_baseline --server pagedserve \
+EMBERSERVE_STEP_LOG=results/steps_sat_default.tsv python -m emberserve.bench.run_vllm_baseline --server emberserve \
   --model models/Qwen2.5-0.5B-Instruct --dtype float16 $T --server-args "$S" --name pagedserve_flash_text_sat_gcdefault
-PAGEDSERVE_GC=tune PAGEDSERVE_STEP_LOG=results/steps_sat_gctune.tsv python -m pagedserve.bench.run_vllm_baseline --server pagedserve \
+EMBERSERVE_GC=tune EMBERSERVE_STEP_LOG=results/steps_sat_gctune.tsv python -m emberserve.bench.run_vllm_baseline --server emberserve \
   --model models/Qwen2.5-0.5B-Instruct --dtype float16 $T --server-args "$S" --name pagedserve_flash_text_sat_gctune
 python scripts/stall_report.py results/steps_sat_default.tsv; python scripts/stall_report.py results/steps_sat_gctune.tsv
 ```
@@ -313,7 +314,7 @@ What the A100 logs said (`results/steps_sat_*.tsv`, pasted in the README): the G
 removes the p99 tail (18 → ≤ 11 ms) and is worth ~5%; but the core's step is 2.5 ms at
 100–200 running sequences and the core is inside `step()` only ~65% of its active time —
 the rest is blocked in the pipe `send` to the API process (39% of the core's non-idle
-samples, `PAGEDSERVE_SAMPLE_PROFILE`). The API process, one Python event loop encoding
+samples, `EMBERSERVE_SAMPLE_PROFILE`). The API process, one Python event loop encoding
 and writing one SSE event per token, is the 0.5B saturation limit. v9 (`generate_batches`
 + raw `StreamingResponse`): every wake-up of a request's route takes all the outputs
 queued for it and sends them in one write, and the per-token list copies in the reader
@@ -324,8 +325,8 @@ from 34–42 µs to 18–24 µs. The pod A/B, three repeats, default GC and tune
 ```bash
 T="--tokenizer models/Qwen2.5-0.5B-Instruct --sharegpt data/ShareGPT_V3_unfiltered_cleaned_split.json --max-model-len 4096 --rates inf,inf,inf --trace-n 200 --client-procs 4"
 S="--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs"
-python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 $T --server-args "$S" --name pagedserve_flash_text_sat_v9
-PAGEDSERVE_GC=tune python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 $T --server-args "$S" --name pagedserve_flash_text_sat_v9gc
+python -m emberserve.bench.run_vllm_baseline --server emberserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 $T --server-args "$S" --name pagedserve_flash_text_sat_v9
+EMBERSERVE_GC=tune python -m emberserve.bench.run_vllm_baseline --server emberserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 $T --server-args "$S" --name pagedserve_flash_text_sat_v9gc
 python scripts/bench_api_layer.py --repeats 3     # the API layer's ceiling on the pod's CPU, no model
 ```
 
@@ -339,12 +340,12 @@ ablation runner clamps per backend (`MIN_BLOCK`) so one command can compare back
 their own minimum block size. `paged_torch` and `paged_triton` support 16, which is the
 memory-utilization ablation: 98% slot utilization at block 16 vs 76% at 256 on the same
 request mix (A100). If a future flash-attn release relaxes the check, lower
-`FLASH_PAGE_MULTIPLE` in `pagedserve/attn/paged_flash.py` (gate it on
+`FLASH_PAGE_MULTIPLE` in `emberserve/attn/paged_flash.py` (gate it on
 `flash_attn.__version__`).
 
 ## Triton decode kernel (`--attn-backend paged_triton`)
 
-`pagedserve/attn/paged_triton.py` is a hand-written Triton PagedAttention kernel for the
+`emberserve/attn/paged_triton.py` is a hand-written Triton PagedAttention kernel for the
 decode step. Prefill runs flash-attn's packed *varlen* kernel, which has no block-size
 constraint: a fresh prompt attends over the step's own packed k/v, and a chunk row that
 attends through the cache (chunked prefill, cached prefix) has its context gathered out of
@@ -371,7 +372,7 @@ the low-fragmentation block-16 layout usable on the GPU, and it is graph-capable
 ```bash
 python -m pytest -m gpu -n 4 -v -k triton   # kernel vs paged_torch/paged_flash at B in {1,8,32,128}, block 16/256; engine greedy parity; graphs
 python scripts/bench_kernels.py             # ms/call + effective K/V GB/s, B x ctx, block 256 and 16
-python -m pagedserve.cli serve --model models/Qwen2.5-0.5B-Instruct --device cuda --dtype float16 \
+python -m emberserve.cli serve --model models/Qwen2.5-0.5B-Instruct --device cuda --dtype float16 \
   --attn-backend paged_triton --block-size 16 --enable-prefix-caching --enable-cuda-graphs
 ```
 
@@ -406,7 +407,7 @@ Knobs for A/B runs:
 python scripts/bench_kernels.py --variant sum            # CUDA-core path
 python scripts/bench_kernels.py --variant dot            # tensor-core path (default)
 python scripts/bench_kernels.py --splits 1               # no split-K
-PAGEDSERVE_TRITON_VARIANT=sum PAGEDSERVE_TRITON_SPLITS=1 python scripts/gpu_smoke.py   # same knobs, engine-wide
+EMBERSERVE_TRITON_VARIANT=sum EMBERSERVE_TRITON_SPLITS=1 python scripts/gpu_smoke.py   # same knobs, engine-wide
 ```
 
 ## CUDA graphs
@@ -425,7 +426,7 @@ at import so the kernel can run on CPU; pytest imported it into the same process
 tests, the kernel cache was built in interpreter mode, and every "GPU" kernel test silently
 ran on the CPU (10-minute runs at 0% GPU). Inside a graph capture the interpreter's host
 copies are illegal, hence the error. Fixed by skipping the interpreter module when CUDA is
-present (`PAGEDSERVE_FORCE_INTERPRETER=1` overrides) and by making the backend refuse
+present (`EMBERSERVE_FORCE_INTERPRETER=1` overrides) and by making the backend refuse
 `TRITON_INTERPRET=1` with a CUDA cache. Lesson: process-global env flags in a test module
 are shared state.
 

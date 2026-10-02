@@ -1,4 +1,4 @@
-"""Read a PAGEDSERVE_STEP_LOG and say where the time went at saturation.
+"""Read a EMBERSERVE_STEP_LOG and say where the time went at saturation.
 
     python scripts/stall_report.py results/steps_sat.tsv [--threshold-ms 15]
 

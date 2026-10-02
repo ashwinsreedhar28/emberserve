@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import torch
 
-from pagedserve.attn.base import AttnMetadata
-from pagedserve.attn.naive import NaiveAttentionBackend
-from pagedserve.config import ModelConfig
-from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
+from emberserve.attn.base import AttnMetadata
+from emberserve.attn.naive import NaiveAttentionBackend
+from emberserve.config import ModelConfig
+from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
 
 torch.set_num_threads(2)
 

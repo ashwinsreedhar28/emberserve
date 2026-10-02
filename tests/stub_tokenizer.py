@@ -1,12 +1,12 @@
-"""Byte-level stand-in for `pagedserve.tokenizer.Tokenizer` (no `transformers` needed).
+"""Byte-level stand-in for `emberserve.tokenizer.Tokenizer` (no `transformers` needed).
 
 Ids are bytes 0-255, which matches the tiny test model's 256-token vocab. Id 1 is EOS.
 """
 
 from __future__ import annotations
 
-from pagedserve.engine import LLMEngine
-from pagedserve.tokenizer import IncrementalDetokenizer
+from emberserve.engine import LLMEngine
+from emberserve.tokenizer import IncrementalDetokenizer
 
 EOS = 1
 

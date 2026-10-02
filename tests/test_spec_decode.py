@@ -6,13 +6,13 @@ from __future__ import annotations
 import pytest
 import torch
 
-from pagedserve import spec as specmod
-from pagedserve.config import EngineConfig, ModelConfig
-from pagedserve.engine import LLMEngine
-from pagedserve.llm import LLM
-from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
-from pagedserve.sched.request import FinishReason, SamplingParams
-from pagedserve.spec import accepted_prefix, propose_ngram
+from emberserve import spec as specmod
+from emberserve.config import EngineConfig, ModelConfig
+from emberserve.engine import LLMEngine
+from emberserve.llm import LLM
+from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
+from emberserve.sched.request import FinishReason, SamplingParams
+from emberserve.spec import accepted_prefix, propose_ngram
 from tests.test_engine import prompts
 
 torch.set_num_threads(2)
@@ -169,7 +169,7 @@ def test_async_is_turned_off_with_a_warning():
 
 
 def test_block_manager_truncate():
-    from pagedserve.kv.block_manager import BlockManager
+    from emberserve.kv.block_manager import BlockManager
 
     bm = BlockManager(16, 4)
     bm.allocate(0, 6)  # 2 blocks

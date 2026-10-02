@@ -11,12 +11,12 @@ from __future__ import annotations
 import pytest
 import torch
 
-from pagedserve.attn.piecewise_graphs import PiecewiseGraphRunner
-from pagedserve.config import EngineConfig, ModelConfig
-from pagedserve.engine import LLMEngine
-from pagedserve.llm import LLM
-from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
-from pagedserve.sched.request import SamplingParams
+from emberserve.attn.piecewise_graphs import PiecewiseGraphRunner
+from emberserve.config import EngineConfig, ModelConfig
+from emberserve.engine import LLMEngine
+from emberserve.llm import LLM
+from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
+from emberserve.sched.request import SamplingParams
 from tests.test_deepseek import tiny_model as tiny_deepseek
 
 torch.set_num_threads(2)
@@ -119,7 +119,7 @@ def test_runner_matches_eager_forward(family, chunked):
 
 
 def test_token_buckets():
-    from pagedserve.attn.piecewise_graphs import DEFAULT_TOKEN_BUCKETS, token_buckets
+    from emberserve.attn.piecewise_graphs import DEFAULT_TOKEN_BUCKETS, token_buckets
 
     assert token_buckets(2048, 0) == DEFAULT_TOKEN_BUCKETS
     assert token_buckets(2048, 256) == (16, 32, 64, 128, 256, 512, 768, 1024, 1280, 1536, 1792, 2048)

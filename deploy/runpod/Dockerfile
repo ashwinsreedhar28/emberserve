@@ -1,7 +1,7 @@
-# pagedserve on Runpod Serverless.
+# emberserve on Runpod Serverless.
 #
-#   docker build --platform linux/amd64 -f deploy/runpod/Dockerfile -t <you>/pagedserve-worker:0.5b .
-#   docker push <you>/pagedserve-worker:0.5b
+#   docker build --platform linux/amd64 -f deploy/runpod/Dockerfile -t <you>/emberserve-worker:0.5b .
+#   docker push <you>/emberserve-worker:0.5b
 #
 # or let Runpod build it from the GitHub repo (Serverless -> New endpoint -> GitHub repo, Dockerfile
 # path deploy/runpod/Dockerfile). Then an endpoint from the image: any 24 GB GPU is plenty for the
@@ -9,7 +9,7 @@
 # in by default (--build-arg MODEL_REPO=Qwen/Qwen2.5-7B-Instruct for the 7B; an empty MODEL_REPO
 # makes a model-free image that downloads the MODEL_REPO env var at cold start instead).
 #
-# The worker (deploy/runpod/main.py) starts `pagedserve serve` — the same server the benchmarks
+# The worker (deploy/runpod/main.py) starts `emberserve serve` — the same server the benchmarks
 # ran against — and proxies Runpod jobs to it, so the endpoint speaks OpenAI at
 # https://api.runpod.ai/v2/<endpoint>/openai/v1/... .
 FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
@@ -21,7 +21,7 @@ ENV MODEL_DIR=/models/model \
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
-COPY pagedserve ./pagedserve
+COPY emberserve ./emberserve
 COPY scripts/download_model.py ./scripts/download_model.py
 COPY deploy/runpod/handler.py deploy/runpod/main.py deploy/runpod/timeline.py deploy/runpod/fetch.py ./deploy/runpod/
 

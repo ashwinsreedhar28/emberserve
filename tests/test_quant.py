@@ -8,12 +8,12 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from pagedserve.config import EngineConfig, ModelConfig
-from pagedserve.engine import LLMEngine
-from pagedserve.llm import LLM
-from pagedserve.model.quant import Int8Linear, int8_gemm_torch, quantize_int8_weight, quantize_model
-from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
-from pagedserve.sched.request import SamplingParams
+from emberserve.config import EngineConfig, ModelConfig
+from emberserve.engine import LLMEngine
+from emberserve.llm import LLM
+from emberserve.model.quant import Int8Linear, int8_gemm_torch, quantize_int8_weight, quantize_model
+from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
+from emberserve.sched.request import SamplingParams
 from tests.test_deepseek import tiny_model as tiny_deepseek
 from tests.test_engine import prompts
 

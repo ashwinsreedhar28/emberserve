@@ -11,12 +11,12 @@ if not torch.cuda.is_available():
     pytest.skip("needs CUDA", allow_module_level=True)
 pytest.importorskip("triton")
 
-from pagedserve.config import EngineConfig, ModelConfig  # noqa: E402
-from pagedserve.engine import LLMEngine  # noqa: E402
-from pagedserve.llm import LLM  # noqa: E402
-from pagedserve.model.quant import int8_gemm, int8_gemm_torch, quantize_int8_weight, quantize_model  # noqa: E402
-from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic  # noqa: E402
-from pagedserve.sched.request import SamplingParams  # noqa: E402
+from emberserve.config import EngineConfig, ModelConfig  # noqa: E402
+from emberserve.engine import LLMEngine  # noqa: E402
+from emberserve.llm import LLM  # noqa: E402
+from emberserve.model.quant import int8_gemm, int8_gemm_torch, quantize_int8_weight, quantize_model  # noqa: E402
+from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic  # noqa: E402
+from emberserve.sched.request import SamplingParams  # noqa: E402
 
 DEV = "cuda"
 
@@ -40,7 +40,7 @@ def test_kernel_matches_reference(dtype, m, n, k):
 def test_fixed_configs_match_autotuned(monkeypatch):
     """Every tile config the autotuner can pick computes the same thing (the [BK, BN]
     weight-tile read is exercised by each), and the load-time warmup runs every bucket."""
-    from pagedserve.model import quant
+    from emberserve.model import quant
 
     g = torch.Generator().manual_seed(3)
     q, s = quantize_int8_weight(torch.randn(3584, 4608, generator=g) * 0.02)
@@ -61,9 +61,9 @@ def test_fixed_configs_match_autotuned(monkeypatch):
                                   num_stages=cfg["num_stages"])
             torch.testing.assert_close(out.float(), want, atol=2e-2, rtol=2e-2), cfg
         # split-K off must give the same answer as the host's choice of splits
-        monkeypatch.setenv("PAGEDSERVE_INT8_SPLITK", "0")
+        monkeypatch.setenv("EMBERSERVE_INT8_SPLITK", "0")
         torch.testing.assert_close(int8_gemm(x, q, s).float(), want, atol=2e-2, rtol=2e-2)
-        monkeypatch.delenv("PAGEDSERVE_INT8_SPLITK")
+        monkeypatch.delenv("EMBERSERVE_INT8_SPLITK")
     lin = torch.nn.Linear(4608, 3584, bias=False).to(DEV, torch.float16)
     model = torch.nn.Sequential(lin)
     quantize_model(model)
@@ -88,6 +88,6 @@ def test_quantized_engine_kernel_equals_torch_path(monkeypatch):
         return [r.output_token_ids for r in LLM.from_engine(LLMEngine(model, cfg, ecfg, tokenizer=None)).generate(ps, sp)]
 
     kernel = run(True)
-    monkeypatch.setenv("PAGEDSERVE_INT8_KERNEL", "0")
+    monkeypatch.setenv("EMBERSERVE_INT8_KERNEL", "0")
     torch_path = run(False)
     assert kernel == torch_path

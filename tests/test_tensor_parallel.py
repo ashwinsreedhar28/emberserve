@@ -9,14 +9,14 @@ import asyncio
 import pytest
 import torch
 
-from pagedserve import dist as tpdist
-from pagedserve.config import EngineConfig, ModelConfig
-from pagedserve.dist import TPState, WorkerSpec, shard_tensor, vocab_shard
-from pagedserve.engine import LLMEngine
-from pagedserve.llm import LLM
-from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
-from pagedserve.model.weights import hf_state_dict, load_hf_state_dict
-from pagedserve.sched.request import SamplingParams
+from emberserve import dist as tpdist
+from emberserve.config import EngineConfig, ModelConfig
+from emberserve.dist import TPState, WorkerSpec, shard_tensor, vocab_shard
+from emberserve.engine import LLMEngine
+from emberserve.llm import LLM
+from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
+from emberserve.model.weights import hf_state_dict, load_hf_state_dict
+from emberserve.sched.request import SamplingParams
 from tests.test_engine import prompts
 
 torch.set_num_threads(2)
@@ -185,8 +185,8 @@ def test_driver_failure_mid_step_does_not_hang_shutdown():
 
 def test_tp2_through_the_engine_core_process():
     """The core process (itself daemonic) starts the worker as a subprocess and stops it."""
-    from pagedserve.server.async_engine import AsyncEngineCoreClient
-    from pagedserve.server.engine_core import EngineSpec
+    from emberserve.server.async_engine import AsyncEngineCoreClient
+    from emberserve.server.engine_core import EngineSpec
     from tests.stub_tokenizer import StubTokenizer
 
     tiny = dict(num_hidden_layers=CFG.num_hidden_layers, num_attention_heads=CFG.num_attention_heads,

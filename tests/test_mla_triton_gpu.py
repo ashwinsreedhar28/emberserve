@@ -12,12 +12,12 @@ if not torch.cuda.is_available():
     pytest.skip("needs CUDA", allow_module_level=True)
 pytest.importorskip("triton")
 
-from pagedserve.attn.mla_torch import mla_attention_absorbed  # noqa: E402
-from pagedserve.attn.mla_triton import mla_decode  # noqa: E402
-from pagedserve.config import EngineConfig  # noqa: E402
-from pagedserve.engine import LLMEngine  # noqa: E402
-from pagedserve.llm import LLM  # noqa: E402
-from pagedserve.sched.request import SamplingParams  # noqa: E402
+from emberserve.attn.mla_torch import mla_attention_absorbed  # noqa: E402
+from emberserve.attn.mla_triton import mla_decode  # noqa: E402
+from emberserve.config import EngineConfig  # noqa: E402
+from emberserve.engine import LLMEngine  # noqa: E402
+from emberserve.llm import LLM  # noqa: E402
+from emberserve.sched.request import SamplingParams  # noqa: E402
 from tests.test_deepseek import tiny_model  # noqa: E402
 
 DEV = "cuda"

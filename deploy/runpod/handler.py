@@ -1,6 +1,6 @@
-"""Runpod Serverless handler for pagedserve: a proxy to the real server.
+"""Runpod Serverless handler for emberserve: a proxy to the real server.
 
-`main.py` starts `pagedserve serve` on 127.0.0.1:PAGEDSERVE_PORT (the same OpenAI-compatible
+`main.py` starts `emberserve serve` on 127.0.0.1:EMBERSERVE_PORT (the same OpenAI-compatible
 server the benchmarks ran against, engine-core process and all) and then the Runpod job
 loop; every job is forwarded to it. This is the layout Runpod's own `worker-vllm` uses,
 and it means the endpoint speaks OpenAI at `https://api.runpod.ai/v2/<id>/openai/v1/...`:
@@ -149,7 +149,7 @@ def make_handler(client: httpx.AsyncClient, served_model: str | None = None,
             yield _error(str(exc))
             return
         if not alive():
-            yield _error("pagedserve server process is not running; worker is unhealthy")
+            yield _error("emberserve server process is not running; worker is unhealthy")
             return
         if body is not None and served_model and "model" not in body:
             body = {**body, "model": served_model}
@@ -159,7 +159,7 @@ def make_handler(client: httpx.AsyncClient, served_model: str | None = None,
                                      timeout=REQUEST_TIMEOUT_S) as resp:
                 if resp.status_code >= 400:
                     detail = (await resp.aread()).decode("utf-8", errors="replace")
-                    yield _error(f"pagedserve returned HTTP {resp.status_code}: {detail}")
+                    yield _error(f"emberserve returned HTTP {resp.status_code}: {detail}")
                     return
                 if wants_stream:
                     async for chunk in _coalesced(resp.aiter_text(), STREAM_FLUSH_S):
@@ -169,6 +169,6 @@ def make_handler(client: httpx.AsyncClient, served_model: str | None = None,
                     parsed = httpx.Response(200, content=raw).json()
                     yield {"timeline": timeline.snapshot(), "output": parsed} if want_timeline else parsed
         except httpx.HTTPError as exc:
-            yield _error(f"request to pagedserve failed: {type(exc).__name__}: {exc}")
+            yield _error(f"request to emberserve failed: {type(exc).__name__}: {exc}")
 
     return handler

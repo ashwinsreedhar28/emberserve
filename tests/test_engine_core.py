@@ -10,11 +10,11 @@ import httpx
 import pytest
 import torch
 
-from pagedserve.config import EngineConfig
-from pagedserve.llm import LLM
-from pagedserve.sched.request import FinishReason, RequestOutput, SamplingParams
-from pagedserve.server.async_engine import AsyncEngineCoreClient
-from pagedserve.server.engine_core import EngineSpec
+from emberserve.config import EngineConfig
+from emberserve.llm import LLM
+from emberserve.sched.request import FinishReason, RequestOutput, SamplingParams
+from emberserve.server.async_engine import AsyncEngineCoreClient
+from emberserve.server.engine_core import EngineSpec
 from tests.stub_tokenizer import StubTokenizer, install
 from tests.test_engine import CFG, make_engine, prompts
 
@@ -114,7 +114,7 @@ async def test_bad_prompt_fails_only_its_stream(client: AsyncEngineCoreClient) -
 
 async def test_served_over_http_with_engine_process() -> None:
     """The FastAPI app on top of the core client: streaming completion end to end."""
-    from pagedserve.server.app import create_app
+    from emberserve.server.app import create_app
 
     c = AsyncEngineCoreClient(spec(), StubTokenizer())
     app = create_app(c, "tiny", manage_lifespan=True)
@@ -187,7 +187,7 @@ def test_command_writer_never_blocks_on_a_full_pipe() -> None:
     import time
     from multiprocessing import Pipe
 
-    from pagedserve.server.engine_core import _CommandWriter
+    from emberserve.server.engine_core import _CommandWriter
 
     r, w = Pipe(duplex=False)
     writer = _CommandWriter(w)
@@ -207,7 +207,7 @@ def test_command_writer_reports_a_closed_pipe() -> None:
 
     import pytest
 
-    from pagedserve.server.engine_core import _CommandWriter
+    from emberserve.server.engine_core import _CommandWriter
 
     r, w = Pipe(duplex=False)
     writer = _CommandWriter(w)
@@ -225,12 +225,12 @@ def test_failed_start_leaves_no_writer_thread_or_process(tmp_path) -> None:
     to start (here: no model at that path) left the writer thread and the pipes behind."""
     import threading
 
-    from pagedserve.server.engine_core import EngineCoreProcess
+    from emberserve.server.engine_core import EngineCoreProcess
 
     core = EngineCoreProcess(EngineSpec(EngineConfig(device="cpu"), model_dir=str(tmp_path / "none")))
     with pytest.raises(RuntimeError, match="failed to start|exited during startup"):
         core.start(ready_timeout_s=120)
     assert not core.alive and core._writer is None and core._cmd_send is None
-    assert not [t for t in threading.enumerate() if t.name == "pagedserve-core-writer"]
+    assert not [t for t in threading.enumerate() if t.name == "emberserve-core-writer"]
     with pytest.raises(RuntimeError, match="not running"):
         core.send(("abort", "x"))

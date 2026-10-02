@@ -1,4 +1,4 @@
-"""Read a PAGEDSERVE_STEP_TRACE file and say where the per-token time goes.
+"""Read a EMBERSERVE_STEP_TRACE file and say where the per-token time goes.
 
     python scripts/step_trace_report.py results/trace_7b_16rps.jsonl [--skip 50] [--json out.json]
 
@@ -14,7 +14,7 @@ question needs:
       GPU idle gaps
     + other gaps (idle GPU before decode-only steps)
 
-and the excess per prompt chunk admitted. With PAGEDSERVE_SYNC_DEBUG=1 it also lists the
+and the excess per prompt chunk admitted. With EMBERSERVE_SYNC_DEBUG=1 it also lists the
 synchronizing calls per step kind. On a CPU trace (no GPU fields) the host launch +
 resolve time stands in for the step time.
 """

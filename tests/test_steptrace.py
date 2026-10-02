@@ -1,4 +1,4 @@
-"""The per-step trace (PAGEDSERVE_STEP_TRACE), the report that reads it, the engine's boot
+"""The per-step trace (EMBERSERVE_STEP_TRACE), the report that reads it, the engine's boot
 phases, and the non-synchronizing index helper — all on the tiny CPU model."""
 
 from __future__ import annotations
@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 import torch
 
-from pagedserve.devutil import index_tensor
-from pagedserve.steptrace import classify
+from emberserve.devutil import index_tensor
+from emberserve.steptrace import classify
 from tests.test_engine import CFG, make_engine, prompts
-from pagedserve.sched.request import SamplingParams
+from emberserve.sched.request import SamplingParams
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -42,7 +42,7 @@ def test_classify_kinds() -> None:
 
 def _run_traced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, async_sched: bool) -> Path:
     path = tmp_path / f"trace_{int(async_sched)}.jsonl"
-    monkeypatch.setenv("PAGEDSERVE_STEP_TRACE", str(path))
+    monkeypatch.setenv("EMBERSERVE_STEP_TRACE", str(path))
     eng = make_engine("paged_torch", max_batched=8, enable_chunked_prefill=True)
     eng.async_scheduling = async_sched
     sp = SamplingParams.greedy(12, ignore_eos=True)

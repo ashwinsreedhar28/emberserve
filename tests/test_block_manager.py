@@ -2,7 +2,7 @@
 
 import pytest
 
-from pagedserve.kv.block_manager import BlockManager, OutOfBlocksError
+from emberserve.kv.block_manager import BlockManager, OutOfBlocksError
 
 
 def test_blocks_needed_ceil():

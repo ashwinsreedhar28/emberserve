@@ -1,4 +1,4 @@
-# pagedserve on Runpod Serverless, small image: no weights inside; the worker fetches MODEL_REPO
+# emberserve on Runpod Serverless, small image: no weights inside; the worker fetches MODEL_REPO
 # at cold start and streams it into the engine as it arrives (deploy/runpod/fetch.py).
 #
 # Why: with Qwen3-8B baked in (Dockerfile.qwen3, ~27 GB) a host that has the image starts a
@@ -27,7 +27,7 @@ ENV MODEL_DIR=/models/model \
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
-COPY pagedserve ./pagedserve
+COPY emberserve ./emberserve
 COPY deploy/runpod/handler.py deploy/runpod/main.py deploy/runpod/timeline.py deploy/runpod/fetch.py ./deploy/runpod/
 COPY --from=wheels /wheels /wheels
 RUN pip install --no-cache-dir -e '.[hf,server]' runpod httpx \

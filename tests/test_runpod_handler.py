@@ -11,8 +11,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from pagedserve.server.app import create_app
-from pagedserve.server.async_engine import AsyncLLMEngine
+from emberserve.server.app import create_app
+from emberserve.server.async_engine import AsyncLLMEngine
 from tests.stub_tokenizer import install
 from tests.test_engine import make_engine
 
@@ -114,7 +114,7 @@ def test_serve_command_from_env(monkeypatch) -> None:
               "EXTRA_SERVE_ARGS", "SERVED_MODEL_NAME"):
         monkeypatch.delenv(k, raising=False)
     cmd = main.serve_command("/models/m")
-    assert cmd[1:4] == ["-m", "pagedserve.cli", "serve"] and "--enable-cuda-graphs" in cmd
+    assert cmd[1:4] == ["-m", "emberserve.cli", "serve"] and "--enable-cuda-graphs" in cmd
     assert cmd[cmd.index("--served-model-name") + 1] == "/models/m"
     monkeypatch.setenv("QUANTIZATION", "int8")
     monkeypatch.setenv("TENSOR_PARALLEL_SIZE", "2")
@@ -253,14 +253,14 @@ def test_coldstart_phases_from_marks() -> None:
 
 def test_fetcher_streams_a_checkpoint_into_the_loader(tmp_path, monkeypatch) -> None:
     """Small files first, shards in the background with a delay each, and the engine's
-    loader (waiting via PAGEDSERVE_WAIT_WEIGHTS_S) ends up with the same weights."""
+    loader (waiting via EMBERSERVE_WAIT_WEIGHTS_S) ends up with the same weights."""
     import shutil
     import sys
     import time
 
     import torch
 
-    from pagedserve.model.weights import load_model
+    from emberserve.model.weights import load_model
     from tests.test_model import tiny_model
     from tests.test_weights import _dump_snapshot
 
@@ -278,9 +278,9 @@ def test_fetcher_streams_a_checkpoint_into_the_loader(tmp_path, monkeypatch) -> 
         with safe_open(str(sh), framework="pt") as f:
             wm.update({k: sh.name for k in f.keys()})
     (repo / "model.safetensors.index.json").write_text(json.dumps({"weight_map": wm}))
-    monkeypatch.setenv("PAGEDSERVE_LOADER", "safetensors")
+    monkeypatch.setenv("EMBERSERVE_LOADER", "safetensors")
     ref = load_model(repo, dtype=torch.float32)
-    monkeypatch.delenv("PAGEDSERVE_LOADER")
+    monkeypatch.delenv("EMBERSERVE_LOADER")
 
     def download(r, name, local_dir, revision):
         if name.endswith(".safetensors"):
@@ -297,7 +297,7 @@ def test_fetcher_streams_a_checkpoint_into_the_loader(tmp_path, monkeypatch) -> 
     assert (dst / "config.json").exists() and not list(dst.glob("*.safetensors"))
     assert shards == sorted(p.name for p in repo.glob("*.safetensors"))
     f.start_shards(shards)
-    monkeypatch.setenv("PAGEDSERVE_WAIT_WEIGHTS_S", "10")
+    monkeypatch.setenv("EMBERSERVE_WAIT_WEIGHTS_S", "10")
     m = load_model(dst, dtype=torch.float32)
     assert f.done.wait(10) and f.error is None
     assert m.load_stats.wait_seconds > 0.1
@@ -348,7 +348,7 @@ def test_snapshot_complete_needs_every_indexed_shard(tmp_path) -> None:
     assert main.snapshot_complete(single) and not main.snapshot_complete(tmp_path / "nothing")
 
 
-@pytest.mark.parametrize("env", [{"TENSOR_PARALLEL_SIZE": "2"}, {"PAGEDSERVE_LOADER": "safetensors"},
+@pytest.mark.parametrize("env", [{"TENSOR_PARALLEL_SIZE": "2"}, {"EMBERSERVE_LOADER": "safetensors"},
                                  {"EXTRA_SERVE_ARGS": "--no-chunked-prefill --tensor-parallel-size 2"},
                                  {"EXTRA_SERVE_ARGS": "--tensor-parallel-size=2"},
                                  {"EXTRA_SERVE_ARGS": "--tensor-parallel 2"},
@@ -367,7 +367,7 @@ def test_weights_download_first_when_the_loader_cannot_wait(tmp_path, monkeypatc
         Path(local_dir, "model.safetensors").write_bytes(b"x")
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
-    for k in ("TENSOR_PARALLEL_SIZE", "PAGEDSERVE_LOADER", "WEIGHTS_STREAM", "PAGEDSERVE_WAIT_WEIGHTS_S",
+    for k in ("TENSOR_PARALLEL_SIZE", "EMBERSERVE_LOADER", "WEIGHTS_STREAM", "EMBERSERVE_WAIT_WEIGHTS_S",
               "EXTRA_SERVE_ARGS"):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
@@ -379,4 +379,4 @@ def test_weights_download_first_when_the_loader_cannot_wait(tmp_path, monkeypatc
     assert calls == ["org/model"] and main.snapshot_complete(tmp_path / "m")
     import os
 
-    assert "PAGEDSERVE_WAIT_WEIGHTS_S" not in os.environ
+    assert "EMBERSERVE_WAIT_WEIGHTS_S" not in os.environ

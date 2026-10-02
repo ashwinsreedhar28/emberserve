@@ -1,7 +1,7 @@
-# pagedserve on Runpod Serverless
+# emberserve on Runpod Serverless
 
 The worker is a proxy in front of the real server, the layout Runpod's own `worker-vllm`
-uses: `main.py` starts `pagedserve serve` on localhost (engine-core process, chunked prefill,
+uses: `main.py` starts `emberserve serve` on localhost (engine-core process, chunked prefill,
 async scheduling, CUDA graphs — the CLI's CUDA defaults, i.e. exactly the server the
 benchmarks ran against) and forwards every job to it. Runpod wraps a request to
 `https://api.runpod.ai/v2/<endpoint>/openai/v1/...` as a job with `openai_route` and
@@ -15,8 +15,8 @@ Either let Runpod build it (Serverless → New endpoint → GitHub repo, branch 
 Dockerfile path `deploy/runpod/Dockerfile`), or locally:
 
 ```bash
-docker build --platform linux/amd64 -f deploy/runpod/Dockerfile -t <dockerhub-user>/pagedserve-worker:0.5b .
-docker push <dockerhub-user>/pagedserve-worker:0.5b
+docker build --platform linux/amd64 -f deploy/runpod/Dockerfile -t <dockerhub-user>/emberserve-worker:0.5b .
+docker push <dockerhub-user>/emberserve-worker:0.5b
 ```
 
 Qwen2.5-0.5B-Instruct is baked in by default; `--build-arg MODEL_REPO=Qwen/Qwen2.5-7B-Instruct`
@@ -29,14 +29,14 @@ Image above, any 24 GB GPU (A100 80 GB for Moonlight), min workers 0, max worker
 as the budget allows. Environment overrides, all optional: `DTYPE` (float16), `ATTN_BACKEND`
 (paged_flash), `BLOCK_SIZE` (256), `MAX_MODEL_LEN` (4096), `MAX_NUM_SEQS` (256), `CUDA_GRAPHS`
 (1), `PREFIX_CACHING` (0), `QUANTIZATION` (int8), `TENSOR_PARALLEL_SIZE`, `SERVED_MODEL_NAME`,
-`EXTRA_SERVE_ARGS` (anything `pagedserve serve` takes), `MAX_CONCURRENCY` (64).
+`EXTRA_SERVE_ARGS` (anything `emberserve serve` takes), `MAX_CONCURRENCY` (64).
 
 ```bash
 E=<endpoint id>; K=$RUNPOD_API_KEY
 # OpenAI-compatible, through Runpod's proxy (stream or not)
 curl -s https://api.runpod.ai/v2/$E/openai/v1/chat/completions -H "Authorization: Bearer $K" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"pagedserve","messages":[{"role":"user","content":"Explain paged attention in one paragraph."}],"max_tokens":128}'
+  -d '{"model":"emberserve","messages":[{"role":"user","content":"Explain paged attention in one paragraph."}],"max_tokens":128}'
 # the job API, shorthand input
 curl -s https://api.runpod.ai/v2/$E/runsync -H "Authorization: Bearer $K" -H 'Content-Type: application/json' \
   -d '{"input": {"prompt": "Once upon a time", "sampling_params": {"max_tokens": 32}}}'
@@ -70,7 +70,7 @@ fresh host spent 317 s pulling it (~85 MB/s), while Hugging Face served the same
 worker-vllm at ~760 MB/s. `Dockerfile.slim` carries no weights (CUDA runtime base, ~5–6 GB
 expected) and the worker fetches `MODEL_REPO` at start (`fetch.py`): config and tokenizer
 first, then the shards in the background, 8 at a time, each renamed into place when
-complete, while `pagedserve serve` is already starting with `PAGEDSERVE_WAIT_WEIGHTS_S` set,
+complete, while `emberserve serve` is already starting with `EMBERSERVE_WAIT_WEIGHTS_S` set,
 so the streaming loader loads each shard the moment it lands. `--timeline` then also
 reports `fetch_small_files`, `download_after_spawn` and `boot_after_download`, and the
 download rate.
@@ -84,13 +84,13 @@ device"). A failed download now stops the worker at once instead of leaving the 
 waiting. Measured on a warm host: delayTime 47.4 / 37.9 / 32.9 s (worker-vllm 154.3 /
 140.7 s); fresh host 91.7 s (worker-vllm 210.4 s), 68.7 s of it the image pull.
 
-Since Sep 30, with `PAGEDSERVE_WAIT_WEIGHTS_S` set the engine is built *before* the
+Since Sep 30, with `EMBERSERVE_WAIT_WEIGHTS_S` set the engine is built *before* the
 weights: the KV cache and the CUDA graphs are done while the download is still running
 (`LLMEngine._from_pretrained_graphs_first`). The `[boot]` line then starts with
 `build_model`, has `load_weights` after the capture, and notes "engine built before the
 weights". Measured on the same endpoint: the time from the last shard to the boot line
 fell from a median 5.7 s to 2.2 s (six samples), and the warm-host `delayTime` median to
-32.8 s (26.5 / 29.1 / 36.4 / 36.5 s). `PAGEDSERVE_GRAPHS_BEFORE_WEIGHTS=0` on the endpoint
+32.8 s (26.5 / 29.1 / 36.4 / 36.5 s). `EMBERSERVE_GRAPHS_BEFORE_WEIGHTS=0` on the endpoint
 restores the old order without a rebuild.
 
 ## 7B image and the cold-start series
@@ -117,7 +117,7 @@ engine's boot, and the SDK hand-off. The split across the client/worker boundary
 the two clocks' skew (NTP, well under 100 ms).
 
 then toggle FlashBoot on the endpoint and run it again with the other label. Both worker
-modes log `[worker] pagedserve up in X s` (container start to healthy); read it off the
+modes log `[worker] emberserve up in X s` (container start to healthy); read it off the
 worker log and pass it as `--note`. `--mode lb` does the same series against a
 load-balancing endpoint by wall clock to the first byte (no delayTime there). A `/runsync`
 answers `IN_QUEUE` after 90 s whatever the job is doing, so the script keeps polling
@@ -127,7 +127,7 @@ answers `IN_QUEUE` after 90 s whatever the job is doing, so the script keeps pol
 
 Three cold samples per row (`results/serverless_coldstart_*.json`). A sample counts only
 when `/health` reported no running worker beforehand and the worker log has a fresh
-`[worker] pagedserve up in X s` line for it — the container really restarted. Nothing is
+`[worker] emberserve up in X s` line for it — the container really restarted. Nothing is
 downloaded at start: both images carry the weights (`Dockerfile`: Qwen2.5-0.5B-Instruct,
 9.8 GB; `Dockerfile.7b`: Qwen2.5-7B-Instruct, ~25 GB).
 
@@ -181,7 +181,7 @@ engine was admitting 30. The default KV budget subtracted the weights from a `fr
 memory reading taken *after* they were loaded; on an 80 GB card that only cost some cache
 (7B: 42 GB instead of 57), on a 24 GB card it drove the budget negative and the engine
 fell to its 64-block floor — 16K tokens, and this trace averages 2.17 blocks per request,
-so 29.5 of them at a time. Fixed in `pagedserve/engine.py` (`kv_blocks_for`, with a CPU
+so 29.5 of them at a time. Fixed in `emberserve/engine.py` (`kv_blocks_for`, with a CPU
 test). The other edge of the same card: a hand-set `EXTRA_SERVE_ARGS=--num-blocks 512`
 (7.0 GiB of cache) OOMed at the bucket-256 graph capture with 71 MiB left — the container
 sees the 4090 as 22.04 GiB, and 14.18 GiB of weights plus the cache left nothing for the
@@ -235,9 +235,9 @@ built as one.
 ## Benchmark it
 
 ```bash
-python -m pagedserve.bench.run_vllm_baseline --base-url https://api.runpod.ai/v2/$E/openai/v1 \
+python -m emberserve.bench.run_vllm_baseline --base-url https://api.runpod.ai/v2/$E/openai/v1 \
   --completions-path /completions --no-health --api-key "$RUNPOD_API_KEY" \
-  --model pagedserve --tokenizer models/Qwen2.5-0.5B-Instruct --max-model-len 4096 \
+  --model emberserve --tokenizer models/Qwen2.5-0.5B-Instruct --max-model-len 4096 \
   --rates 1,2,4,8,inf --trace-n 100 --name runpod_serverless_pagedserve
 ```
 

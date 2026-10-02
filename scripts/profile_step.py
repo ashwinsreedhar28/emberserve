@@ -26,9 +26,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pagedserve.config import EngineConfig, ModelConfig  # noqa: E402
-from pagedserve.engine import LLMEngine  # noqa: E402
-from pagedserve.sched.request import SamplingParams  # noqa: E402
+from emberserve.config import EngineConfig, ModelConfig  # noqa: E402
+from emberserve.engine import LLMEngine  # noqa: E402
+from emberserve.sched.request import SamplingParams  # noqa: E402
 
 PHASES = ("schedule", "build_inputs", "forward", "sample", "postprocess")
 
@@ -44,7 +44,7 @@ def build_engine(args: argparse.Namespace) -> LLMEngine:
                         quantization=getattr(args, "quantization", None),
                         tensor_parallel_size=getattr(args, "tensor_parallel_size", 1))
     if args.tiny:
-        from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
+        from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
 
         mcfg = ModelConfig.tiny()
         model = Qwen2ForCausalLM(mcfg)

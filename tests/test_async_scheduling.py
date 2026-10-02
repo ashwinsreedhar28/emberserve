@@ -8,11 +8,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from pagedserve.config import EngineConfig, ModelConfig
-from pagedserve.engine import LLMEngine
-from pagedserve.llm import LLM
-from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
-from pagedserve.sched.request import FinishReason, SamplingParams
+from emberserve.config import EngineConfig, ModelConfig
+from emberserve.engine import LLMEngine
+from emberserve.llm import LLM
+from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
+from emberserve.sched.request import FinishReason, SamplingParams
 from tests.test_engine import prompts
 
 torch.set_num_threads(2)
@@ -215,7 +215,7 @@ def test_penalty_resolve_path_keeps_the_step_trace(monkeypatch, tmp_path) -> Non
     import json
     import time as _time
 
-    from pagedserve import steptrace
+    from emberserve import steptrace
 
     eng = _untied_engine(True)
     path = tmp_path / "trace.jsonl"

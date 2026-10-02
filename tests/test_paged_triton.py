@@ -25,9 +25,9 @@ try:
     _HAS_CUDA = _torch_probe.cuda.is_available()
 except Exception:  # noqa: BLE001
     _HAS_CUDA = False
-if _HAS_CUDA and os.environ.get("PAGEDSERVE_FORCE_INTERPRETER") != "1":
+if _HAS_CUDA and os.environ.get("EMBERSERVE_FORCE_INTERPRETER") != "1":
     pytest.skip("CUDA present: interpreter tests skipped so TRITON_INTERPRET does not leak "
-                "into the GPU tests (set PAGEDSERVE_FORCE_INTERPRETER=1 to run them alone)",
+                "into the GPU tests (set EMBERSERVE_FORCE_INTERPRETER=1 to run them alone)",
                 allow_module_level=True)
 import importlib.util  # noqa: E402
 
@@ -41,14 +41,14 @@ import torch  # noqa: E402
 
 pytest.importorskip("triton")
 
-from pagedserve.attn.base import AttnMetadata, causal_softmax_attention  # noqa: E402
-from pagedserve.attn.paged_torch import (  # noqa: E402
+from emberserve.attn.base import AttnMetadata, causal_softmax_attention  # noqa: E402
+from emberserve.attn.paged_torch import (  # noqa: E402
     PagedTorchAttentionBackend, build_block_tables_tensor, build_slot_mapping)
-from pagedserve.attn.paged_triton import (  # noqa: E402
+from emberserve.attn.paged_triton import (  # noqa: E402
     PagedTritonAttentionBackend, default_num_splits, is_available, paged_attention_decode)
-from pagedserve.config import ModelConfig  # noqa: E402
-from pagedserve.kv.block_manager import BlockManager  # noqa: E402
-from pagedserve.kv.cache import PagedKVCache  # noqa: E402
+from emberserve.config import ModelConfig  # noqa: E402
+from emberserve.kv.block_manager import BlockManager  # noqa: E402
+from emberserve.kv.cache import PagedKVCache  # noqa: E402
 
 H, HKV, D, L = 4, 2, 64, 2
 CFG = ModelConfig.tiny(num_hidden_layers=L, num_attention_heads=H, num_key_value_heads=HKV,
@@ -214,7 +214,7 @@ def test_kernel_fp16_cache_and_padded_groups():
 def test_kernel_real_config_groups7_d64():
     """Qwen2.5-0.5B geometry: 14 q heads / 2 kv heads -> 7 groups padded to 8, D=64, fp16
     cache, block 16, contexts straddling tile and block boundaries, single and split-K."""
-    from pagedserve.attn.paged_triton import _tile_for
+    from emberserve.attn.paged_triton import _tile_for
     Hq, Hk = 14, 2
     assert _tile_for(BLOCK, D, 8) == 16
     gen = torch.Generator().manual_seed(11)
@@ -397,13 +397,13 @@ def test_kernel_dot_variant_against_reference():
 
 
 def test_variant_env_knob(monkeypatch):
-    from pagedserve.attn.paged_triton import default_variant
-    monkeypatch.setenv("PAGEDSERVE_TRITON_VARIANT", "dot")
+    from emberserve.attn.paged_triton import default_variant
+    monkeypatch.setenv("EMBERSERVE_TRITON_VARIANT", "dot")
     assert default_variant() == "dot"
-    monkeypatch.setenv("PAGEDSERVE_TRITON_VARIANT", "nope")
+    monkeypatch.setenv("EMBERSERVE_TRITON_VARIANT", "nope")
     with pytest.raises(ValueError):
         default_variant()
-    monkeypatch.delenv("PAGEDSERVE_TRITON_VARIANT")
+    monkeypatch.delenv("EMBERSERVE_TRITON_VARIANT")
     assert default_variant() == "dot"
 
 

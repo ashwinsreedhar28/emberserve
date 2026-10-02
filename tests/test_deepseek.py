@@ -12,13 +12,13 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from pagedserve.config import EngineConfig, MLAConfig, ModelConfig, MoEConfig
-from pagedserve.engine import LLMEngine
-from pagedserve.llm import LLM
-from pagedserve.model.deepseek import DeepseekForCausalLM, MLAAttention
-from pagedserve.model.qwen2 import reset_parameters_deterministic
-from pagedserve.model.weights import hf_state_dict, load_model
-from pagedserve.sched.request import SamplingParams
+from emberserve.config import EngineConfig, MLAConfig, ModelConfig, MoEConfig
+from emberserve.engine import LLMEngine
+from emberserve.llm import LLM
+from emberserve.model.deepseek import DeepseekForCausalLM, MLAAttention
+from emberserve.model.qwen2 import reset_parameters_deterministic
+from emberserve.model.weights import hf_state_dict, load_model
+from emberserve.sched.request import SamplingParams
 
 torch.set_num_threads(2)
 
@@ -155,8 +155,8 @@ def test_generate_batched_equals_alone():
 
 def test_moe_layers_placed_by_config():
     model = tiny_model(seed=6)
-    from pagedserve.model.moe import DeepseekMoE
-    from pagedserve.model.qwen2 import Qwen2MLP
+    from emberserve.model.moe import DeepseekMoE
+    from emberserve.model.qwen2 import Qwen2MLP
 
     assert isinstance(model.model.layers[0].mlp, Qwen2MLP)  # first_k_dense_replace = 1
     assert isinstance(model.model.layers[1].mlp, DeepseekMoE)

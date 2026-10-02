@@ -2,10 +2,10 @@
 
 import torch
 
-from pagedserve.attn.paged_torch import build_block_tables_tensor
-from pagedserve.config import ModelConfig
-from pagedserve.kv.block_manager import BlockManager
-from pagedserve.kv.cache import PagedKVCache
+from emberserve.attn.paged_torch import build_block_tables_tensor
+from emberserve.config import ModelConfig
+from emberserve.kv.block_manager import BlockManager
+from emberserve.kv.cache import PagedKVCache
 
 CFG = ModelConfig.tiny(num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2,
                        hidden_size=64)  # head_dim 16

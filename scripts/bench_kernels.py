@@ -32,12 +32,12 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pagedserve.attn.base import AttnMetadata  # noqa: E402
-from pagedserve.attn.paged_torch import (PagedTorchAttentionBackend,  # noqa: E402
+from emberserve.attn.base import AttnMetadata  # noqa: E402
+from emberserve.attn.paged_torch import (PagedTorchAttentionBackend,  # noqa: E402
                                          build_block_tables_tensor, build_slot_mapping)
-from pagedserve.config import ModelConfig  # noqa: E402
-from pagedserve.kv.block_manager import BlockManager  # noqa: E402
-from pagedserve.kv.cache import PagedKVCache  # noqa: E402
+from emberserve.config import ModelConfig  # noqa: E402
+from emberserve.kv.block_manager import BlockManager  # noqa: E402
+from emberserve.kv.cache import PagedKVCache  # noqa: E402
 
 H, HKV, D = 14, 2, 64
 DTYPE = torch.float16
@@ -84,17 +84,17 @@ def make_backend(name: str, cache: PagedKVCache, splits: int | None = None,
     if name == "paged_torch":
         return PagedTorchAttentionBackend(CFG, cache)
     if name == "paged_flash":
-        from pagedserve.attn.paged_flash import PagedFlashAttentionBackend
+        from emberserve.attn.paged_flash import PagedFlashAttentionBackend
         return PagedFlashAttentionBackend(CFG, cache)
     if name == "paged_triton":
-        from pagedserve.attn.paged_triton import PagedTritonAttentionBackend
+        from emberserve.attn.paged_triton import PagedTritonAttentionBackend
         return PagedTritonAttentionBackend(CFG, cache, num_splits=splits, variant=variant)
     raise ValueError(name)
 
 
 def time_decode(backend, q: torch.Tensor, meta: AttnMetadata, iters: int, warmup: int) -> float:
     """Median ms of `backend._decode(0, q, meta)` measured with CUDA events."""
-    from pagedserve.attn.paged_flash import block_tables_nonneg, context_lens_tensor
+    from emberserve.attn.paged_flash import block_tables_nonneg, context_lens_tensor
     block_tables_nonneg(meta)  # prepare the cached device tensors outside the timed region
     context_lens_tensor(meta, q.device)
     with torch.inference_mode():
@@ -162,7 +162,7 @@ def main() -> int:
     ap.add_argument("--splits", type=int, default=None,
                     help="force the Triton split-K factor (default: shape heuristic)")
     ap.add_argument("--variant", choices=["sum", "dot"], default=None,
-                    help="Triton kernel variant (default: PAGEDSERVE_TRITON_VARIANT or sum)")
+                    help="Triton kernel variant (default: EMBERSERVE_TRITON_VARIANT or sum)")
     args = ap.parse_args()
     if not torch.cuda.is_available():
         print("no CUDA: skipping")
@@ -171,7 +171,7 @@ def main() -> int:
     ctxs = [int(x) for x in args.ctxs.split(",")]
 
     available = {"paged_torch": True}
-    from pagedserve.attn import paged_flash, paged_triton
+    from emberserve.attn import paged_flash, paged_triton
     available["paged_flash"] = paged_flash.is_available()
     available["paged_triton"] = paged_triton.is_available()
     for name, ok in available.items():

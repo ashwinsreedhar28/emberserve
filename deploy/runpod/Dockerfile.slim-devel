@@ -1,5 +1,5 @@
 # The small image (see Dockerfile.slim) on the devel base: larger (~10 GB), but the same base
-# every other pagedserve image has been built and run on. Use it if Dockerfile.slim fails.
+# every other emberserve image has been built and run on. Use it if Dockerfile.slim fails.
 FROM pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
 
 ENV MODEL_DIR=/models/model \
@@ -10,7 +10,7 @@ ENV MODEL_DIR=/models/model \
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
-COPY pagedserve ./pagedserve
+COPY emberserve ./emberserve
 COPY deploy/runpod/handler.py deploy/runpod/main.py deploy/runpod/timeline.py deploy/runpod/fetch.py ./deploy/runpod/
 RUN pip install --no-cache-dir -e '.[hf,server]' runpod httpx \
  && pip install --no-cache-dir flash-attn --no-build-isolation

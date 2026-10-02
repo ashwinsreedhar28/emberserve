@@ -2,9 +2,9 @@
 
 import pytest
 
-from pagedserve.config import EngineConfig, ModelConfig
-from pagedserve.engine import LLMEngine
-from pagedserve.model.qwen2 import Qwen2ForCausalLM
+from emberserve.config import EngineConfig, ModelConfig
+from emberserve.engine import LLMEngine
+from emberserve.model.qwen2 import Qwen2ForCausalLM
 
 CFG = ModelConfig.tiny()
 

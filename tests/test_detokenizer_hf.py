@@ -20,7 +20,7 @@ if not MODEL.exists():
     pytest.skip("model files missing", allow_module_level=True)
 pytest.importorskip("transformers")
 
-from pagedserve.tokenizer import IncrementalDetokenizer, Tokenizer  # noqa: E402
+from emberserve.tokenizer import IncrementalDetokenizer, Tokenizer  # noqa: E402
 
 TEXTS = [
     "The quick brown fox jumps over the lazy dog. Numbers: 3.14159, 1,000,000; code: x[i]=y;",

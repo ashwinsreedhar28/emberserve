@@ -11,11 +11,11 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, field
 
-from pagedserve.config import EngineConfig
-from pagedserve.kv.block_manager import BlockManager
-from pagedserve.sampling import check_stop
-from pagedserve.sched.request import Request, SamplingParams
-from pagedserve.sched.scheduler import Scheduler, SchedulerOutput
+from emberserve.config import EngineConfig
+from emberserve.kv.block_manager import BlockManager
+from emberserve.sampling import check_stop
+from emberserve.sched.request import Request, SamplingParams
+from emberserve.sched.scheduler import Scheduler, SchedulerOutput
 
 EOS_TOKEN_ID = 1
 

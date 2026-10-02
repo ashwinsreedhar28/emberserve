@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import torch
 
-from pagedserve.model.rope import RotaryEmbedding, apply_rotary, rotate_half
+from emberserve.model.rope import RotaryEmbedding, apply_rotary, rotate_half
 
 torch.set_num_threads(2)
 

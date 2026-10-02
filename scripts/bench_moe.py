@@ -21,9 +21,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pagedserve.config import MoEConfig  # noqa: E402
-from pagedserve.model.moe import DeepseekMoE  # noqa: E402
-from pagedserve.model.moe_triton import fused_moe_forward  # noqa: E402
+from emberserve.config import MoEConfig  # noqa: E402
+from emberserve.model.moe import DeepseekMoE  # noqa: E402
+from emberserve.model.moe_triton import fused_moe_forward  # noqa: E402
 
 
 def main() -> int:
@@ -52,9 +52,9 @@ def main() -> int:
     print(f"{'config':>14} " + " ".join(f"{'M=' + str(m):>16}" for m in tokens))
     for conf in args.configs:
         if conf == "default":
-            os.environ.pop("PAGEDSERVE_MOE_CONFIG", None)
+            os.environ.pop("EMBERSERVE_MOE_CONFIG", None)
         else:
-            os.environ["PAGEDSERVE_MOE_CONFIG"] = conf
+            os.environ["EMBERSERVE_MOE_CONFIG"] = conf
         cells = []
         for m in tokens:
             x = torch.randn(m, 2048, device="cuda", dtype=dtype)

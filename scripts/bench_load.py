@@ -22,8 +22,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pagedserve.config import EngineConfig, ModelConfig  # noqa: E402
-from pagedserve.model.weights import build_model, load_hf_weights  # noqa: E402
+from emberserve.config import EngineConfig, ModelConfig  # noqa: E402
+from emberserve.model.weights import build_model, load_hf_weights  # noqa: E402
 
 
 def fresh(model_dir: str, device: str, dtype: torch.dtype):
@@ -45,15 +45,15 @@ def one(model_dir: str, device: str, dtype: torch.dtype, loader: str, threads: i
     nbytes = sum(p.stat().st_size for p in Path(model_dir).glob("*.safetensors"))
     t0 = time.perf_counter()
     if loader == "stream":
-        from pagedserve.model.fastload import stream_weights
+        from emberserve.model.fastload import stream_weights
 
         stream_weights(model, model_dir, device, threads=threads, buffer_mb=buffer_mb)
     else:
-        os.environ["PAGEDSERVE_LOADER"] = "safetensors"
+        os.environ["EMBERSERVE_LOADER"] = "safetensors"
         try:
             load_hf_weights(model, model_dir, dtype=dtype, device=device)
         finally:
-            os.environ.pop("PAGEDSERVE_LOADER", None)
+            os.environ.pop("EMBERSERVE_LOADER", None)
     if device.startswith("cuda"):
         torch.cuda.synchronize()
     dt = time.perf_counter() - t0

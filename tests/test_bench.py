@@ -16,13 +16,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from starlette.routing import Route
 
-from pagedserve.bench import ablation, plot
-from pagedserve.bench.load import run_http_benchmark, wait_for_health
-from pagedserve.bench.metrics import RequestRecord, Stat, summarize
-from pagedserve.bench.offline import run_offline_benchmark
-from pagedserve.bench.trace import (MIN_LEN, LogNormal, TraceRequest, from_json, generate_trace,
+from emberserve.bench import ablation, plot
+from emberserve.bench.load import run_http_benchmark, wait_for_health
+from emberserve.bench.metrics import RequestRecord, Stat, summarize
+from emberserve.bench.offline import run_offline_benchmark
+from emberserve.bench.trace import (MIN_LEN, LogNormal, TraceRequest, from_json, generate_trace,
                                     render_prompt, to_json)
-from pagedserve.config import ModelConfig
+from emberserve.config import ModelConfig
 from tests.test_engine import make_engine
 
 torch.set_num_threads(2)
@@ -294,7 +294,7 @@ def test_http_load_generator_asgi() -> None:
 
 
 def test_fetch_metrics_json_or_none() -> None:
-    from pagedserve.bench.load import fetch_metrics
+    from emberserve.bench.load import fetch_metrics
 
     transport = httpx.ASGITransport(app=_fake_app())
     m = asyncio.run(fetch_metrics("http://test", transport=transport))
@@ -303,7 +303,7 @@ def test_fetch_metrics_json_or_none() -> None:
 
 
 def test_prometheus_metrics_are_reduced_to_the_json_keys() -> None:
-    from pagedserve.bench.load import fetch_metrics, parse_prometheus
+    from emberserve.bench.load import fetch_metrics, parse_prometheus
 
     text = """# HELP vllm:time_to_first_token_seconds Histogram of time to first token in seconds.
 # TYPE vllm:time_to_first_token_seconds histogram
@@ -355,7 +355,7 @@ def test_plot_functions_write_pngs(tmp_path: Path) -> None:
         name: {"kind": "sweep", "system": name,
                "runs": [{"request_rate": r, "summary": _fake_summary(k * (i + 1))}
                         for i, r in enumerate(rates)]}
-        for k, name in ((1.0, "vllm"), (1.4, "pagedserve"))
+        for k, name in ((1.0, "vllm"), (1.4, "emberserve"))
     }
     abl = {"kind": "ablation", "model": "tiny", "gpu": None, "device": "cpu",
            "trace": {"n": 8, "request_rate": None},
@@ -409,7 +409,7 @@ def test_multiprocess_client_merges_records_in_trace_order() -> None:
 
     import uvicorn
 
-    from pagedserve.bench.load import run_http_benchmark_procs
+    from emberserve.bench.load import run_http_benchmark_procs
 
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -442,8 +442,8 @@ def test_hosted_request_omits_ignore_eos_and_uses_path():
 
     import httpx
 
-    from pagedserve.bench.load import run_http_benchmark
-    from pagedserve.bench.trace import generate_trace
+    from emberserve.bench.load import run_http_benchmark
+    from emberserve.bench.trace import generate_trace
 
     seen: list[tuple[str, dict]] = []
 
@@ -466,7 +466,7 @@ def test_hosted_request_omits_ignore_eos_and_uses_path():
 
 
 def test_sharegpt_trace_samples_and_filters(tmp_path):
-    from pagedserve.bench.trace import render_prompt, sharegpt_trace
+    from emberserve.bench.trace import render_prompt, sharegpt_trace
 
     class Tok:  # one token per character
         def encode(self, s):
@@ -511,7 +511,7 @@ def _sse_transport(events: list[tuple[float, str]]) -> httpx.MockTransport:
 
 
 def _one(events: list[tuple[float, str]], path: str = "/v1/chat/completions"):
-    from pagedserve.bench.trace import TraceRequest
+    from emberserve.bench.trace import TraceRequest
 
     trace = [TraceRequest("r0", prompt_len=3, output_len=2, arrival_s=0.0, prompt_text="hi")]
     return asyncio.run(run_http_benchmark("http://test", "m", trace, transport=_sse_transport(events),
@@ -549,7 +549,7 @@ def test_failures_count_in_the_run_duration() -> None:
 
 
 def test_usage_trailer_does_not_move_the_last_token() -> None:
-    """vLLM's completions stream ends with a separate usage-only chunk; pagedserve puts usage
+    """vLLM's completions stream ends with a separate usage-only chunk; emberserve puts usage
     on its last token. The trailer must not become the "last token" (a reviewer's repro:
     two tokens 11 ms apart and a trailer 150 ms later read as 162 ms TPOT)."""
     tok = '{"choices":[{"text":"%s","finish_reason":%s}]}'
@@ -561,7 +561,7 @@ def test_usage_trailer_does_not_move_the_last_token() -> None:
 
 
 def test_final_token_with_empty_text_is_a_token() -> None:
-    """pagedserve sends its last token with the finish reason, and its text can be empty
+    """emberserve sends its last token with the finish reason, and its text can be empty
     (suppressed by the detokenizer): a one-token completion is not an empty stream."""
     fin = '{"choices":[{"text":"","finish_reason":"length"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}'
     r = _one([(0.02, fin), (0.0, "[DONE]")], path="/v1/completions")

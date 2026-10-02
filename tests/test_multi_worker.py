@@ -13,11 +13,11 @@ import time
 import httpx
 import pytest
 
-from pagedserve.llm import LLM
-from pagedserve.sched.request import SamplingParams
-from pagedserve.server.async_engine import AsyncEngineCoreClient, SharedCounters
-from pagedserve.server.engine_core import AttachedCore, spawn_core
-from pagedserve.server.multi import MultiServer
+from emberserve.llm import LLM
+from emberserve.sched.request import SamplingParams
+from emberserve.server.async_engine import AsyncEngineCoreClient, SharedCounters
+from emberserve.server.engine_core import AttachedCore, spawn_core
+from emberserve.server.multi import MultiServer
 from tests.stub_tokenizer import StubTokenizer, install
 from tests.test_engine import make_engine, prompts
 from tests.test_engine_core import collect, spec
@@ -98,7 +98,7 @@ async def test_closed_worker_is_aborted_other_keeps_serving() -> None:
 def test_core_routes_rows_and_enforces_ownership() -> None:
     """Pipe-level: worker 1 cannot abort worker 0's request, and each worker's step
     messages carry only its own request ids."""
-    from pagedserve.server.engine_core import CoreRequest
+    from emberserve.server.engine_core import CoreRequest
 
     proc, chans = spawn_core(spec(), 2)
     try:

@@ -6,7 +6,7 @@ prompt set and saves:
   golden/greedy.pt            {"prompt_ids": [...], "output_ids": [...]} per prompt (64 new tokens)
   golden/logits_prompt0.pt    all-position logits for prompt 0 (fp32)
 
-pagedserve must reproduce output_ids token-for-token and logits within atol.
+emberserve must reproduce output_ids token-for-token and logits within atol.
 
     python scripts/dump_golden.py --model models/Qwen2.5-0.5B-Instruct
 """

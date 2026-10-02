@@ -10,10 +10,10 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from pagedserve.attn.naive import NaiveAttentionBackend
-from pagedserve.config import ModelConfig
-from pagedserve.model.qwen2 import Qwen2ForCausalLM
-from pagedserve.model.weights import hf_state_dict, hf_to_local, hf_to_local_name, load_hf_weights, load_model
+from emberserve.attn.naive import NaiveAttentionBackend
+from emberserve.config import ModelConfig
+from emberserve.model.qwen2 import Qwen2ForCausalLM
+from emberserve.model.weights import hf_state_dict, hf_to_local, hf_to_local_name, load_hf_weights, load_model
 from tests.test_model import make_prefill_meta, tiny_model
 
 torch.set_num_threads(2)

@@ -21,10 +21,10 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pagedserve.config import EngineConfig  # noqa: E402
-from pagedserve.engine import LLMEngine  # noqa: E402
-from pagedserve.llm import LLM  # noqa: E402
-from pagedserve.sched.request import SamplingParams  # noqa: E402
+from emberserve.config import EngineConfig  # noqa: E402
+from emberserve.engine import LLMEngine  # noqa: E402
+from emberserve.llm import LLM  # noqa: E402
+from emberserve.sched.request import SamplingParams  # noqa: E402
 
 BACKENDS = [("naive", 16, False), ("paged_torch", 16, False),
             ("paged_flash", 256, False), ("paged_flash+graphs", 256, True),

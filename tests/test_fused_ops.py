@@ -14,7 +14,7 @@ try:
     _HAS_CUDA = _torch_probe.cuda.is_available()
 except Exception:  # noqa: BLE001
     _HAS_CUDA = False
-if _HAS_CUDA and os.environ.get("PAGEDSERVE_FORCE_INTERPRETER") != "1":
+if _HAS_CUDA and os.environ.get("EMBERSERVE_FORCE_INTERPRETER") != "1":
     pytest.skip("CUDA present: interpreter tests skipped so TRITON_INTERPRET does not leak "
                 "into the GPU tests", allow_module_level=True)
 import importlib.util  # noqa: E402
@@ -27,8 +27,8 @@ import torch  # noqa: E402
 
 pytest.importorskip("triton")
 
-from pagedserve.model import ops  # noqa: E402
-from pagedserve.model import ops_triton as kt  # noqa: E402
+from emberserve.model import ops  # noqa: E402
+from emberserve.model import ops_triton as kt  # noqa: E402
 
 torch.set_num_threads(2)
 DTYPES = [torch.float32, torch.float16]

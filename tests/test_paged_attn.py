@@ -11,12 +11,12 @@ from collections import defaultdict
 import pytest
 import torch
 
-from pagedserve.attn.base import AttnMetadata, causal_softmax_attention
-from pagedserve.attn.paged_torch import (PagedTorchAttentionBackend, build_block_tables_tensor,
+from emberserve.attn.base import AttnMetadata, causal_softmax_attention
+from emberserve.attn.paged_torch import (PagedTorchAttentionBackend, build_block_tables_tensor,
                                          build_slot_mapping)
-from pagedserve.config import ModelConfig
-from pagedserve.kv.block_manager import BlockManager
-from pagedserve.kv.cache import PagedKVCache
+from emberserve.config import ModelConfig
+from emberserve.kv.block_manager import BlockManager
+from emberserve.kv.cache import PagedKVCache
 
 CFG = ModelConfig.tiny(num_hidden_layers=2, num_attention_heads=4, num_key_value_heads=2,
                        hidden_size=64)  # H=4, Hkv=2, D=16

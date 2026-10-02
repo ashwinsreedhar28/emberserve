@@ -10,10 +10,10 @@ from pathlib import Path
 import pytest
 import torch
 
-from pagedserve.config import EngineConfig
-from pagedserve.sched.request import SamplingParams
-from pagedserve.server.async_engine import AsyncEngineCoreClient
-from pagedserve.server.engine_core import EngineSpec
+from emberserve.config import EngineConfig
+from emberserve.sched.request import SamplingParams
+from emberserve.server.async_engine import AsyncEngineCoreClient
+from emberserve.server.engine_core import EngineSpec
 from tests.stub_tokenizer import StubTokenizer
 from tests.test_engine import CFG, prompts
 
@@ -24,8 +24,8 @@ TINY = dict(num_hidden_layers=CFG.num_hidden_layers, num_attention_heads=CFG.num
 
 def test_step_log_and_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     log = tmp_path / "steps.tsv"
-    monkeypatch.setenv("PAGEDSERVE_STEP_LOG", str(log))
-    monkeypatch.setenv("PAGEDSERVE_GC", "tune")  # (the default; explicit here)
+    monkeypatch.setenv("EMBERSERVE_STEP_LOG", str(log))
+    monkeypatch.setenv("EMBERSERVE_GC", "tune")  # (the default; explicit here)
     ecfg = EngineConfig(device="cpu", dtype=torch.float32, block_size=4, num_gpu_blocks=256,
                         max_num_seqs=64, max_num_batched_tokens=512, max_model_len=256)
     spec = EngineSpec(ecfg, tiny=True, tiny_seed=0, tiny_overrides=TINY)
@@ -61,7 +61,7 @@ async def _collect(c, rid, prompt, sp):
 def test_tune_gc_is_idempotent_and_freezes() -> None:
     import gc
 
-    from pagedserve import diag
+    from emberserve import diag
 
     before = gc.get_threshold()
     try:

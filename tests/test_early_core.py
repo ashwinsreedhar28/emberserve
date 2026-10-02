@@ -1,4 +1,4 @@
-"""`pagedserve serve --engine-process` spawns the engine core first, from the raw argv
+"""`emberserve serve --engine-process` spawns the engine core first, from the raw argv
 (server/early.py), and attaches to it: the server serves, the CLI module imports without
 torch, and stopping the server leaves no core process behind."""
 
@@ -28,7 +28,7 @@ def _free_port() -> int:
 
 def test_cli_imports_without_torch() -> None:
     out = subprocess.run([sys.executable, "-c",
-                          "import sys, pagedserve.cli, pagedserve.server.early; print('torch' in sys.modules)"],
+                          "import sys, emberserve.cli, emberserve.server.early; print('torch' in sys.modules)"],
                          capture_output=True, text=True, cwd=ROOT, check=True)
     assert out.stdout.strip() == "False"
 
@@ -37,7 +37,7 @@ def test_serve_with_early_core_and_clean_shutdown(tmp_path: Path) -> None:
     _dump_snapshot(tiny_model(seed=7), tmp_path / "m")
     port = _free_port()
     proc = subprocess.Popen(
-        [sys.executable, "-m", "pagedserve.cli", "serve", "--model", str(tmp_path / "m"), "--engine-process",
+        [sys.executable, "-m", "emberserve.cli", "serve", "--model", str(tmp_path / "m"), "--engine-process",
          "--port", str(port), "--num-blocks", "256", "--block-size", "4"],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True)
     base = f"http://127.0.0.1:{port}"
@@ -80,7 +80,7 @@ def test_checkpoint_bytes_uses_the_index_while_shards_download(tmp_path) -> None
     treat the checkpoint as small."""
     import json
 
-    from pagedserve.cli import SMALL_CHECKPOINT_BYTES, checkpoint_bytes
+    from emberserve.cli import SMALL_CHECKPOINT_BYTES, checkpoint_bytes
 
     (tmp_path / "model.safetensors.index.json").write_text(
         json.dumps({"metadata": {"total_size": 16_381_470_720}, "weight_map": {"a": "model-1.safetensors"}}))

@@ -12,7 +12,7 @@ try:
     _HAS_CUDA = _torch_probe.cuda.is_available()
 except Exception:  # noqa: BLE001
     _HAS_CUDA = False
-if _HAS_CUDA and os.environ.get("PAGEDSERVE_FORCE_INTERPRETER") != "1":
+if _HAS_CUDA and os.environ.get("EMBERSERVE_FORCE_INTERPRETER") != "1":
     pytest.skip("CUDA present: interpreter tests skipped", allow_module_level=True)
 import importlib.util  # noqa: E402
 
@@ -24,8 +24,8 @@ import torch  # noqa: E402
 
 pytest.importorskip("triton")
 
-from pagedserve.model.moe import DeepseekMoE, moe_forward_reference  # noqa: E402
-from pagedserve.model.moe_triton import fused_moe_forward, moe_align  # noqa: E402
+from emberserve.model.moe import DeepseekMoE, moe_forward_reference  # noqa: E402
+from emberserve.model.moe_triton import fused_moe_forward, moe_align  # noqa: E402
 from tests.test_moe import H, cfg, seed_module  # noqa: E402
 
 torch.set_num_threads(2)
@@ -86,7 +86,7 @@ def _assert_gate_equal(got, want):
 @pytest.mark.parametrize("n", [1, 5, 33])
 @pytest.mark.parametrize("norm", [True, False])
 def test_topk_gate_matches_torch(n, norm):
-    from pagedserve.model.moe_triton import topk_gate
+    from emberserve.model.moe_triton import topk_gate
 
     moe = seed_module(DeepseekMoE(cfg(n_shared_experts=0, norm_topk_prob=norm)), 70 + n)
     x = torch.randn(n, H, generator=torch.Generator().manual_seed(n))

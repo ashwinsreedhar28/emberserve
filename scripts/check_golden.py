@@ -1,4 +1,4 @@
-"""Correctness gate: pagedserve vs the HF golden files, on every backend that can run here.
+"""Correctness gate: emberserve vs the HF golden files, on every backend that can run here.
 
     python scripts/check_golden.py --model models/Qwen2.5-0.5B-Instruct [--backends naive,paged_torch]
         [--device cpu|cuda|mps] [--dtype float32] [--prefix-caching]
@@ -18,10 +18,10 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pagedserve.config import EngineConfig  # noqa: E402
-from pagedserve.engine import LLMEngine  # noqa: E402
-from pagedserve.llm import LLM  # noqa: E402
-from pagedserve.sched.request import SamplingParams  # noqa: E402
+from emberserve.config import EngineConfig  # noqa: E402
+from emberserve.engine import LLMEngine  # noqa: E402
+from emberserve.llm import LLM  # noqa: E402
+from emberserve.sched.request import SamplingParams  # noqa: E402
 
 
 def check_logits(engine: LLMEngine, prompt_ids: list[int], ref: torch.Tensor, atol: float) -> float:
@@ -133,7 +133,7 @@ def main() -> None:
                          "reference; mismatches below the measured logits error are tie-breaks")
     ap.add_argument("--tensor-parallel-size", type=int, default=1)
     ap.add_argument("--cuda-graphs", action="store_true",
-                    help="decode through CUDA graphs (with PAGEDSERVE_GRAPHS_BEFORE_WEIGHTS=1: "
+                    help="decode through CUDA graphs (with EMBERSERVE_GRAPHS_BEFORE_WEIGHTS=1: "
                          "captured on the empty model, then the weights loaded)")
     args = ap.parse_args()
     all_ok = True

@@ -1,0 +1,250 @@
+"""DeepSeek-V2/V3 decoder (Moonshot Moonlight, DeepSeek-V2-Lite): multi-head latent
+attention + (dense or mixture-of-experts) SwiGLU, written against `MLATorchBackend` and
+friends. Module names mirror HF `DeepseekV3ForCausalLM` so checkpoints load by name.
+
+Attention (HF `DeepseekV3Attention`):
+    q      = q_proj(x)                              or  q_b_proj(q_a_layernorm(q_a_proj(x)))
+    q_nope, q_pe = split(q.view(H, qk_nope + qk_rope))
+    ckv    = kv_a_proj_with_mqa(x)  ->  c (kv_lora_rank), k_pe (qk_rope, one per token, all heads)
+    (q_proj / q_a_proj and kv_a_proj_with_mqa both read x, so they are one fused GEMM here:
+     `qkv_a_proj` with rows [q | c | k_pe]; the loader splits the HF tensors into it)
+    c      = kv_a_layernorm(c)
+    k_pe, q_pe rotated with RoPE in DeepSeek's interleaved-pair convention
+    cache row = [c | k_pe]; k_nope and v are W_UK c / W_UV c from kv_b_proj, never stored
+    out    = attention(q, k, v) with scale 1/sqrt(qk_nope + qk_rope);  o_proj
+"""
+
+from __future__ import annotations
+
+import torch
+from torch import nn
+
+from emberserve.attn.base import AttnMetadata
+from emberserve.config import ModelConfig
+from emberserve.model.moe import DeepseekMoE
+from emberserve.model.qwen2 import Qwen2MLP, RMSNorm
+from emberserve.model.rope import RotaryEmbedding
+
+
+def interleave_to_halves(x: torch.Tensor) -> torch.Tensor:
+    """DeepSeek pairs dimension 2i with 2i+1 for RoPE; the rotate-half kernel pairs i with
+    i + D/2. Permute so the same pairs meet: [..., D] -> [..., D/2, 2] -> [..., 2, D/2]."""
+    *lead, d = x.shape
+    return x.view(*lead, d // 2, 2).transpose(-1, -2).reshape(*lead, d)
+
+
+def halves_permutation(d: int) -> torch.Tensor:
+    """`perm` with `interleave_to_halves(y) == y[perm]` for a `[d]` vector: the even
+    indices then the odd ones."""
+    return torch.cat([torch.arange(0, d, 2), torch.arange(1, d, 2)])
+
+
+def _permute_rows(weight: torch.Tensor, rows: torch.Tensor, perm: torch.Tensor) -> None:
+    """In place: `weight[rows] = weight[rows][perm]` (rows of a linear layer's weight are
+    output dimensions, so permuting them permutes that projection's output)."""
+    with torch.no_grad():
+        weight[rows] = weight[rows][perm.to(weight.device)]
+
+
+class MLAAttention(nn.Module):
+    def __init__(self, config: ModelConfig, layer_idx: int, rotary_emb: RotaryEmbedding) -> None:
+        super().__init__()
+        assert config.mla is not None
+        m = config.mla
+        self.layer_idx = layer_idx
+        self.num_heads = config.num_attention_heads
+        self.qk_nope = m.qk_nope_head_dim
+        self.qk_rope = m.qk_rope_head_dim
+        self.v_head_dim = m.v_head_dim
+        self.kv_lora_rank = m.kv_lora_rank
+        self.q_head_dim = m.qk_head_dim
+        hidden = config.hidden_size
+        self.q_lora_rank = m.q_lora_rank
+        # rows of the fused first projection: [q (or q_a) | c | k_pe]
+        self.q_size = self.num_heads * self.q_head_dim if m.q_lora_rank is None else m.q_lora_rank
+        self.qkv_a_proj = nn.Linear(hidden, self.q_size + m.kv_lora_rank + m.qk_rope_head_dim,
+                                    bias=False)
+        if m.q_lora_rank is not None:
+            self.q_a_layernorm = RMSNorm(m.q_lora_rank, config.rms_norm_eps)
+            self.q_b_proj = nn.Linear(m.q_lora_rank, self.num_heads * self.q_head_dim, bias=False)
+        self.kv_a_layernorm = RMSNorm(m.kv_lora_rank, config.rms_norm_eps)
+        self.kv_b_proj = nn.Linear(m.kv_lora_rank, self.num_heads * (m.qk_nope_head_dim + m.v_head_dim),
+                                   bias=False)
+        self.o_proj = nn.Linear(self.num_heads * m.v_head_dim, hidden, bias=False)
+        self.softmax_scale = self.q_head_dim ** -0.5
+        self.rotary_emb = rotary_emb
+        # True once the rope permutation lives in the weights (see `fold_rope_permutation`).
+        self.rope_folded = False
+
+    # ---- rope layout folded into the projections -------------------------------------
+    def _rope_rows(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """(q rope rows over all heads in the weight that emits q, k rope rows in the fused
+        first projection, the halves permutation of one head)."""
+        dr = self.qk_rope
+        per_head = torch.arange(self.qk_nope, self.q_head_dim)
+        q_rows = (torch.arange(self.num_heads)[:, None] * self.q_head_dim + per_head[None, :]).reshape(-1)
+        k0 = self.q_size + self.kv_lora_rank
+        return q_rows, torch.arange(k0, k0 + dr), halves_permutation(dr)
+
+    def fold_rope_permutation(self, fold: bool = True) -> None:
+        """Move `interleave_to_halves` into the weights: permuting the rope rows of the q
+        projection (per head) and of `kv_a_proj_with_mqa` makes those projections emit
+        q_pe / k_pe already in halves order, so the forward skips two copies per layer.
+        Exact: the rope rotation commutes with a permutation applied to both q_pe and k_pe
+        alike, and the scores are dot products of the two. `fold=False` undoes it (for
+        exporting HF-layout checkpoints); idempotent either way."""
+        if fold == self.rope_folded:
+            return
+        q_rows, k_rows, perm = self._rope_rows()
+        if not fold:
+            perm = torch.argsort(perm)
+        # q comes straight out of the fused projection (rows [0, q_size)) without q_lora,
+        # out of q_b_proj with it; k_pe always out of the fused projection.
+        q_weight = self.qkv_a_proj.weight if self.q_lora_rank is None else self.q_b_proj.weight
+        per_head_perm = (torch.arange(self.num_heads)[:, None] * self.qk_rope + perm[None, :]).reshape(-1)
+        _permute_rows(q_weight, q_rows, per_head_perm)
+        _permute_rows(self.qkv_a_proj.weight, k_rows, perm)
+        self.rope_folded = fold
+
+    def up_projections(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """`(w_uk [H, Dn, Dl], w_uv [H, Dv, Dl])`: kv_b_proj split per head into the
+        k_nope and v up-projections the absorbed attention folds into q and out."""
+        w = self.kv_b_proj.weight.view(self.num_heads, self.qk_nope + self.v_head_dim, self.kv_lora_rank)
+        return w[:, :self.qk_nope, :], w[:, self.qk_nope:, :]
+
+    def pre_attention(self, hidden: torch.Tensor,
+                      positions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Projections and rope: `(q_nope [n, H, Dn], q_pe [n, H, Dr], latent [n, Dl + Dr])`."""
+        n = hidden.shape[0]
+        qkv = self.qkv_a_proj(hidden)
+        q, ckv = qkv.split([self.q_size, self.kv_lora_rank + self.qk_rope], dim=-1)
+        if self.q_lora_rank is not None:
+            q = self.q_b_proj(self.q_a_layernorm(q))
+        q = q.view(n, self.num_heads, self.q_head_dim)
+        q_nope, q_pe = q.split([self.qk_nope, self.qk_rope], dim=-1)
+        c, k_pe = ckv.split([self.kv_lora_rank, self.qk_rope], dim=-1)
+        c = self.kv_a_layernorm(c)
+        if self.rope_folded:  # the projections already emit halves order: rope on the views
+            q_pe, k_pe = self.rotary_emb(q_pe, k_pe.unsqueeze(1), positions)
+        else:
+            q_pe, k_pe = self.rotary_emb(interleave_to_halves(q_pe).contiguous(),
+                                         interleave_to_halves(k_pe).unsqueeze(1).contiguous(),
+                                         positions)
+        latent = torch.cat([c, k_pe.squeeze(1)], dim=-1)  # [n, Dl + Dr]
+        return q_nope, q_pe, latent
+
+    def attend(self, pre: tuple[torch.Tensor, ...], backend, meta: AttnMetadata) -> torch.Tensor:
+        q_nope, q_pe, latent = pre
+        w_uk, w_uv = self.up_projections()
+        return backend.forward(self.layer_idx, q_nope, q_pe, latent, w_uk, w_uv,
+                               self.softmax_scale, meta, kv_b_weight=self.kv_b_proj.weight)  # [n, H, Dv]
+
+    def attn_out_shape(self, n: int) -> tuple[int, int, int]:
+        return (n, self.num_heads, self.v_head_dim)
+
+    def post_attention(self, out: torch.Tensor) -> torch.Tensor:
+        return self.o_proj(out.reshape(out.shape[0], self.num_heads * self.v_head_dim))
+
+    def forward(self, hidden: torch.Tensor, backend, meta: AttnMetadata) -> torch.Tensor:
+        pre = self.pre_attention(hidden, meta.positions)
+        return self.post_attention(self.attend(pre, backend, meta))
+
+
+class DeepseekDecoderLayer(nn.Module):
+    """Pre-norm block in the (hidden, residual) form of `Qwen2DecoderLayer`; the MLP is
+    dense for the first `first_k_dense_replace` layers and MoE after that."""
+
+    def __init__(self, config: ModelConfig, layer_idx: int, rotary_emb: RotaryEmbedding) -> None:
+        super().__init__()
+        self.self_attn = MLAAttention(config, layer_idx, rotary_emb)
+        if config.is_moe_layer(layer_idx):
+            assert config.moe is not None
+            self.mlp: nn.Module = DeepseekMoE(config.moe)
+        else:
+            self.mlp = Qwen2MLP(config)
+        self.input_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+
+    # Same three-piece layout as `Qwen2DecoderLayer` (see attn/piecewise_graphs.py).
+    def pre(self, hidden: torch.Tensor, residual: torch.Tensor | None,
+            positions: torch.Tensor) -> tuple[tuple[torch.Tensor, ...], torch.Tensor]:
+        if residual is None:
+            residual = hidden
+            hidden = self.input_layernorm(hidden)
+        else:
+            hidden, residual = self.input_layernorm.forward_with_residual(hidden, residual)
+        return self.self_attn.pre_attention(hidden, positions), residual
+
+    def attend(self, pre: tuple[torch.Tensor, ...], backend, meta: AttnMetadata) -> torch.Tensor:
+        return self.self_attn.attend(pre, backend, meta)
+
+    def post(self, attn_out: torch.Tensor,
+             residual: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        hidden = self.self_attn.post_attention(attn_out)
+        hidden, residual = self.post_attention_layernorm.forward_with_residual(hidden, residual)
+        return self.mlp(hidden), residual
+
+    def forward(self, hidden: torch.Tensor, residual: torch.Tensor | None, backend,
+                meta: AttnMetadata) -> tuple[torch.Tensor, torch.Tensor]:
+        pre, residual = self.pre(hidden, residual, meta.positions)
+        return self.post(self.attend(pre, backend, meta), residual)
+
+
+class DeepseekModel(nn.Module):
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        assert config.mla is not None
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.rotary_emb = RotaryEmbedding(config.mla.qk_rope_head_dim, config.max_position_embeddings,
+                                          config.rope_theta, rope_scaling=config.rope_scaling)
+        self.layers = nn.ModuleList(
+            DeepseekDecoderLayer(config, i, self.rotary_emb) for i in range(config.num_hidden_layers))
+        self.norm = RMSNorm(config.hidden_size, config.rms_norm_eps)
+
+    def forward(self, input_ids: torch.Tensor, backend, meta: AttnMetadata) -> torch.Tensor:
+        hidden = self.embed_tokens(input_ids)
+        residual = None
+        for layer in self.layers:
+            hidden, residual = layer(hidden, residual, backend, meta)
+        normed, _ = self.norm.forward_with_residual(hidden, residual)
+        return normed
+
+
+class DeepseekForCausalLM(nn.Module):
+    """Same interface as `Qwen2ForCausalLM`."""
+
+    def __init__(self, config: ModelConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.model = DeepseekModel(config)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        if config.tie_word_embeddings:
+            self.lm_head.weight = self.model.embed_tokens.weight
+
+    def forward(self, input_ids: torch.Tensor, backend, meta: AttnMetadata) -> torch.Tensor:
+        return self.model(input_ids, backend, meta)
+
+    def fold_rope_permutation(self, fold: bool = True) -> None:
+        """See `MLAAttention.fold_rope_permutation`; `load_model` calls this after loading."""
+        for layer in self.model.layers:
+            layer.self_attn.fold_rope_permutation(fold)
+
+    @property
+    def rope_folded(self) -> bool:
+        return all(layer.self_attn.rope_folded for layer in self.model.layers)
+
+    def compute_logits(self, hidden: torch.Tensor, meta: AttnMetadata | None = None) -> torch.Tensor:
+        if meta is not None:
+            if meta.logit_indices is not None:
+                rows = meta.logit_indices
+            else:
+                rows = (meta.cu_seqlens_q[1:] - 1).to(torch.long)
+            hidden = hidden.index_select(0, rows)
+        return self.lm_head(hidden)
+
+    def forward_logits_all(self, input_ids: torch.Tensor, backend, meta: AttnMetadata) -> torch.Tensor:
+        return self.compute_logits(self.forward(input_ids, backend, meta))
+
+
+__all__ = ["DeepseekForCausalLM", "DeepseekDecoderLayer", "MLAAttention", "halves_permutation",
+           "interleave_to_halves"]

@@ -1,4 +1,4 @@
-# pagedserve documentation
+# emberserve documentation
 
 Back to the [README](../README.md).
 

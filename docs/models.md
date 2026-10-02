@@ -1,6 +1,6 @@
 # Models
 
-Part of [pagedserve](../README.md). Numbers come from the files in `results/` named in each section.
+Part of [emberserve](../README.md). Numbers come from the files in `results/` named in each section.
 
 Four dense families run through the same decoder block (`model/qwen2.py`), with
 `ModelConfig` carrying the differences: `qwen2` (attention bias, rope_theta 1e6), `qwen3`
@@ -12,7 +12,7 @@ golden gate is run per model on the A100 (`golden/<model>/`), the profile is
 `scripts/profile_step.py` at batch 1, and the sweeps are the same 200-request trace with
 prompt ids drawn from each model's own vocabulary.
 
-| model | arch | golden vs HF | batch-1 forward | weight-read floor | saturation tok/s, pagedserve / vLLM | TPOT p50 @ 8 req/s |
+| model | arch | golden vs HF | batch-1 forward | weight-read floor | saturation tok/s, emberserve / vLLM | TPOT p50 @ 8 req/s |
 |---|---|---|---:|---:|---:|---:|
 | Qwen2.5-0.5B-Instruct | qwen2, 24L, GQA 14/2, D=64 | exact (fp32), all tokens (fp16) | 1.9 ms | ~0.9 ms | **16,635 / 16,269 (102%)** ⁰ | **2.0** / 2.1 ms |
 | Qwen2.5-7B-Instruct | qwen2, 28L, GQA 28/4, D=128 | all tokens (fp16; TP2: 6/7 exact, one tie-break) | 10.1 ms (TP2: 7.65) | ~10 ms | **3,412 / 3,415 (100%)** ⁴; TP2 on 2× A100: 4,485 / 4,949 (91%) ⁵ | 12.35 / 11.98 ms ⁴ (TP2: 9.8 / 7.3 ⁵) |
@@ -26,7 +26,7 @@ prompt ids drawn from each model's own vocabulary.
 ³ chunked prefill (2048-token cap) + async scheduling (`results/pagedserve_moonlight_v3.json`); the first run, prefill-priority and synchronous, was 2,457 (76%) and 26.3 ms.
 ⁴ fresh servers, a trace per rate, mean of two, Sep 29 (`results/sweep_fresh/`). The old sweep (`results/pagedserve_7b_flash_v7.json` vs `results/vllm_7b.json`) had 3,166 / 3,188 and 12.6 / 10.6 ms, vLLM's side partly served from its prefix cache ([correction](results.md#a-correction-the-sweeps-replayed-one-trace-and-vllm-cached-it)).
 ⁵ vLLM's number comes from a sweep that replayed one trace into its prefix cache; not yet re-measured, so the gap is overstated by an unknown amount.
-⁶ mean of three fresh servers each, same pod, vLLM 0.30.0 (`results/qwen3/`). pagedserve's saturation repeats spread more (2,709–2,909 vs 2,958–2,985).
+⁶ mean of three fresh servers each, same pod, vLLM 0.30.0 (`results/qwen3/`). emberserve's saturation repeats spread more (2,709–2,909 vs 2,958–2,985).
 
 ## Hosted APIs, for scale (a footnote)
 
@@ -40,8 +40,8 @@ measured throughput (prompt tokens ride free inside the hour).
 
 | endpoint | TTFT p50 | TPOT p50 | $/M output tokens | what it is |
 |---|---:|---:|---:|---|
-| pagedserve, Qwen2.5-0.5B, one A100 | 9 ms | 1.8–2.0 ms | $0.03 at saturation (16.6k tok/s) | this repo |
-| pagedserve, Qwen2.5-7B, one A100 | 39 ms | 10.2 ms | $2.50 at 1 req/s · $0.22 at 16 req/s · $0.14 at saturation (3,166 tok/s) | this repo |
+| emberserve, Qwen2.5-0.5B, one A100 | 9 ms | 1.8–2.0 ms | $0.03 at saturation (16.6k tok/s) | this repo |
+| emberserve, Qwen2.5-7B, one A100 | 39 ms | 10.2 ms | $2.50 at 1 req/s · $0.22 at 16 req/s · $0.14 at saturation (3,166 tok/s) | this repo |
 | vLLM, Qwen3-8B, Runpod Serverless | 770–930 ms | 8.2–8.7 ms | per-second GPU billing | Runpod's `worker-vllm`, through their proxy; a 100-stream burst at one H100 worker (`MAX_CONCURRENCY` 64) measured TTFT p50 **63.6 s** while TPOT stayed at 8 ms (queueing before the first token) |
 | DeepSeek V4.1 Flash, OpenRouter | 530–1,070 ms | 4.1–6.9 ms | $0.29 (in: $0.035) | 50/50 at 1, 2 and 4 req/s |
 | Claude Haiku 4.5, OpenRouter | 940 ms | 7.8 ms | $5 (in: $1) | 20 requests at 0.3 req/s |

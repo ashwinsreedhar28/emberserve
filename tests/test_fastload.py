@@ -11,22 +11,22 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from pagedserve.model.fastload import read_header, stream_weights
-from pagedserve.model.qwen2 import Qwen2ForCausalLM
-from pagedserve.model.weights import load_model
+from emberserve.model.fastload import read_header, stream_weights
+from emberserve.model.qwen2 import Qwen2ForCausalLM
+from emberserve.model.weights import load_model
 from tests.test_weights import _dump_snapshot
 from tests.test_model import tiny_model
 
 
 def _reference(tmp: Path, monkeypatch: pytest.MonkeyPatch, dtype=torch.float32) -> Qwen2ForCausalLM:
-    monkeypatch.setenv("PAGEDSERVE_LOADER", "safetensors")
+    monkeypatch.setenv("EMBERSERVE_LOADER", "safetensors")
     m = load_model(tmp, dtype=dtype)
-    monkeypatch.delenv("PAGEDSERVE_LOADER")
+    monkeypatch.delenv("EMBERSERVE_LOADER")
     return m
 
 
 def _fresh(tmp: Path, dtype=torch.float32) -> Qwen2ForCausalLM:
-    from pagedserve.config import ModelConfig
+    from emberserve.config import ModelConfig
 
     cfg = ModelConfig.from_hf_dir(tmp)
     prev = torch.get_default_dtype()
@@ -197,7 +197,7 @@ def test_load_model_waits_via_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
             (dst / (sh.name + ".part")).rename(dst / sh.name)
 
     threading.Thread(target=download).start()
-    monkeypatch.setenv("PAGEDSERVE_WAIT_WEIGHTS_S", "10")
+    monkeypatch.setenv("EMBERSERVE_WAIT_WEIGHTS_S", "10")
     m = load_model(dst, dtype=torch.float32)
     _same(m, ref)
     assert m.load_stats.wait_seconds > 0.1

@@ -12,9 +12,9 @@ import torch
 from safetensors.torch import save_file
 from torch import nn
 
-from pagedserve.config import ModelConfig
-from pagedserve.model.moe import DeepseekMoE, MoEConfig, MoEGate, moe_forward_reference
-from pagedserve.model.weights import hf_state_dict, hf_to_local, load_hf_weights
+from emberserve.config import ModelConfig
+from emberserve.model.moe import DeepseekMoE, MoEConfig, MoEGate, moe_forward_reference
+from emberserve.model.weights import hf_state_dict, hf_to_local, load_hf_weights
 
 torch.set_num_threads(2)
 H, I_MOE = 32, 16

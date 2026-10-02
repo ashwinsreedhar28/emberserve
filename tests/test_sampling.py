@@ -7,8 +7,8 @@ from collections import Counter
 import pytest
 import torch
 
-from pagedserve.sampling import Sampler, apply_repetition_penalty, check_stop, get_generator
-from pagedserve.sched.request import FinishReason, Request, SamplingParams
+from emberserve.sampling import Sampler, apply_repetition_penalty, check_stop, get_generator
+from emberserve.sched.request import FinishReason, Request, SamplingParams
 
 VOCAB = 32
 
@@ -34,14 +34,14 @@ def draw(sampler: Sampler, logits: torch.Tensor, req: Request, n: int) -> list[i
 
 
 def _reference_filter(row: torch.Tensor, k: int, p: float) -> torch.Tensor:
-    from pagedserve.sampling import _apply_top_k, _apply_top_p
+    from emberserve.sampling import _apply_top_k, _apply_top_p
 
     return _apply_top_p(_apply_top_k(row, k), p)
 
 
 @pytest.mark.parametrize("seed", [0, 1, 2])
 def test_batched_filter_matches_per_row_reference(seed):
-    from pagedserve.sampling import _filter_rows
+    from emberserve.sampling import _filter_rows
 
     logits = random_logits(6, seed=seed)
     logits[0, :4] = logits[0, 0]  # ties at the k-th value must survive top-k

@@ -23,9 +23,9 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pagedserve.config import EngineConfig  # noqa: E402
-from pagedserve.engine import LLMEngine  # noqa: E402
-from pagedserve.sched.request import SamplingParams  # noqa: E402
+from emberserve.config import EngineConfig  # noqa: E402
+from emberserve.engine import LLMEngine  # noqa: E402
+from emberserve.sched.request import SamplingParams  # noqa: E402
 
 
 def group(name: str) -> str:

@@ -5,7 +5,7 @@ Queue endpoint (comparable to worker-vllm's numbers: Runpod's own `delayTime` an
 workers exist, so a sample is only taken once the endpoint is really at zero):
 
     python scripts/serverless_coldstart.py --mode queue --endpoint <id> --api-key "$RUNPOD_API_KEY" \\
-        --repeats 3 --idle-s 60 --label 7b_4090_flashboot_on --image "pagedserve 7B, 25 GB, weights baked in" \\
+        --repeats 3 --idle-s 60 --label 7b_4090_flashboot_on --image "emberserve 7B, 25 GB, weights baked in" \\
         --out results/serverless_coldstart_7b_4090_flashboot_on.json
 
 Load-balancing endpoint (no delayTime; wall clock to the first byte through the gateway):
@@ -15,7 +15,7 @@ Load-balancing endpoint (no delayTime; wall clock to the first byte through the 
 Set the endpoint's idle timeout to 5 s for a series. Each sample: wait `--idle-s`, in queue
 mode also wait for `/health` to report zero workers (a parked worker is not a cold start),
 send one 16-token request, time it, then one warm request right after. Container start to
-healthy is the worker log's `[worker] pagedserve up in X s` line; note it by hand in `--note`.
+healthy is the worker log's `[worker] emberserve up in X s` line; note it by hand in `--note`.
 """
 
 from __future__ import annotations
@@ -158,7 +158,7 @@ def main() -> None:
     ap.add_argument("--mode", choices=["queue", "lb"], required=True)
     ap.add_argument("--endpoint", required=True, help="endpoint id")
     ap.add_argument("--api-key", required=True)
-    ap.add_argument("--model", default="pagedserve", help="lb mode: the model field")
+    ap.add_argument("--model", default="emberserve", help="lb mode: the model field")
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--idle-s", type=float, default=60.0, help="wait before each cold sample")
     ap.add_argument("--zero-wait-s", type=float, default=300.0, help="queue: max extra wait for /health to show zero workers")

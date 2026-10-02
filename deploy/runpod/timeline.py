@@ -8,7 +8,7 @@ time. Marks:
     container_start   PID 1's start time (/proc/1/stat), i.e. the container's init process
     worker_start      this Python process's start time (/proc/self/stat)
     worker_main       main() entered (after imports)
-    serve_spawned     `pagedserve serve` launched
+    serve_spawned     `emberserve serve` launched
     engine_boot       the engine core printed its `[boot]` line (weights, KV cache, graphs done)
     serve_healthy     /health answered 200
     sdk_ready         the Runpod SDK imported and its job loop about to start

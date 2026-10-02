@@ -18,24 +18,24 @@ from __future__ import annotations
 import pytest
 import torch
 
-from pagedserve.attn.base import AttnMetadata
-from pagedserve.attn.paged_torch import (PagedTorchAttentionBackend, build_block_tables_tensor,
+from emberserve.attn.base import AttnMetadata
+from emberserve.attn.paged_torch import (PagedTorchAttentionBackend, build_block_tables_tensor,
                                          build_slot_mapping)
-from pagedserve.config import EngineConfig, ModelConfig
-from pagedserve.engine import LLMEngine
-from pagedserve.kv.block_manager import BlockManager
-from pagedserve.kv.cache import PagedKVCache
-from pagedserve.llm import LLM
-from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
-from pagedserve.sched.request import SamplingParams
+from emberserve.config import EngineConfig, ModelConfig
+from emberserve.engine import LLMEngine
+from emberserve.kv.block_manager import BlockManager
+from emberserve.kv.cache import PagedKVCache
+from emberserve.llm import LLM
+from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
+from emberserve.sched.request import SamplingParams
 
 pytestmark = pytest.mark.gpu
 if not torch.cuda.is_available():
     pytest.skip("needs CUDA", allow_module_level=True)
 pytest.importorskip("triton")
 
-from pagedserve.attn import paged_flash  # noqa: E402
-from pagedserve.attn.paged_triton import (  # noqa: E402
+from emberserve.attn import paged_flash  # noqa: E402
+from emberserve.attn.paged_triton import (  # noqa: E402
     PagedTritonAttentionBackend, paged_attention_decode)
 
 DEV = "cuda"

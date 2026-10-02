@@ -14,8 +14,8 @@ import openai
 import pytest
 import uvicorn
 
-from pagedserve.server.app import create_app
-from pagedserve.server.async_engine import AsyncLLMEngine
+from emberserve.server.app import create_app
+from emberserve.server.async_engine import AsyncLLMEngine
 from tests.stub_tokenizer import EOS, install
 from tests.test_engine import make_engine
 
@@ -73,7 +73,7 @@ async def test_completion_non_stream(served) -> None:
     assert body["choices"][0]["finish_reason"] == "length"
     assert body["usage"] == {"prompt_tokens": 11, "completion_tokens": 10, "total_tokens": 21}
     # Same ids through the async engine directly -> the text is their byte decode.
-    from pagedserve.sched.request import SamplingParams
+    from emberserve.sched.request import SamplingParams
     outs = [o async for o in aeng.generate("ref", list(b"hello world"),
                                            SamplingParams.greedy(10, ignore_eos=True))]
     assert body["choices"][0]["text"] == text_of(outs[-1].output_token_ids)
@@ -188,7 +188,7 @@ async def test_metrics(served) -> None:
         assert k in m
     assert m["requests_finished_total"] >= 1 and m["requests_running"] == 0
     prom = (await client.get("/metrics", params={"format": "prometheus"})).text
-    assert "pagedserve_steps_total " in prom and "# TYPE pagedserve_steps_total counter" in prom
+    assert "emberserve_steps_total " in prom and "# TYPE emberserve_steps_total counter" in prom
 
 
 async def test_engine_not_started_is_503() -> None:
@@ -303,7 +303,7 @@ def test_client_disconnect_aborts(live: LiveServer) -> None:
 def test_cli_defaults_by_device_and_checkpoint_size(tmp_path):
     """CUDA defaults: async scheduling on; chunked prefill only for checkpoints >= 4 GB
     (measured +8% at 7B, -11% at 0.5B); explicit flags always win."""
-    from pagedserve.cli import build_parser, engine_config_from_args
+    from emberserve.cli import build_parser, engine_config_from_args
 
     def cfg(*extra):
         return engine_config_from_args(build_parser().parse_args(["serve", "--model", str(tmp_path), *extra]))

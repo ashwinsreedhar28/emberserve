@@ -13,8 +13,8 @@ grep -o "Prefix cache hit rate: [0-9.]*%" results/qwen3/vllm_qwen3_8b.server.log
 SA="--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs"
 C="--dtype float16 --max-model-len 4096 --rates 2,4,8,inf --trace-n 200 --out-dir $OUT"
 for r in 1 2; do
-  python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model $M $C --server-args "$SA" --name ps_7b_r$r
-  python -m pagedserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $M $C --name vllm_7b_r$r
+  python -m emberserve.bench.run_vllm_baseline --server emberserve --model $M $C --server-args "$SA" --name ps_7b_r$r
+  python -m emberserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $M $C --name vllm_7b_r$r
 done
 grep -o "Prefix cache hit rate: [0-9.]*%" $OUT/vllm_7b_r1.server.log | sort -u -t: -k2 -n | tail -1 || true
 python - <<'PY' | tee $OUT/summary.txt

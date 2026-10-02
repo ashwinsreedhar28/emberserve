@@ -16,9 +16,9 @@ import torch  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pagedserve.config import EngineConfig, ModelConfig  # noqa: E402
-from pagedserve.engine import LLMEngine  # noqa: E402
-from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic  # noqa: E402
+from emberserve.config import EngineConfig, ModelConfig  # noqa: E402
+from emberserve.engine import LLMEngine  # noqa: E402
+from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic  # noqa: E402
 
 
 def main() -> int:

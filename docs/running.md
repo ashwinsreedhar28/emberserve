@@ -1,6 +1,6 @@
 # Running it
 
-Part of [pagedserve](../README.md). Locally, on a GPU, on Runpod Serverless, and the benchmark commands behind the numbers.
+Part of [emberserve](../README.md). Locally, on a GPU, on Runpod Serverless, and the benchmark commands behind the numbers.
 
 ## Locally (Mac / CPU, fp32)
 
@@ -8,8 +8,8 @@ Part of [pagedserve](../README.md). Locally, on a GPU, on Runpod Serverless, and
 pip install -e '.[hf,server,dev]'
 python scripts/download_model.py                 # ~1 GB into models/
 make golden                                      # HF reference -> golden/, then check naive + paged_torch
-python -m pagedserve.cli generate --model models/Qwen2.5-0.5B-Instruct --prompt "The capital of France is" --max-tokens 32
-python -m pagedserve.cli serve --model models/Qwen2.5-0.5B-Instruct --port 8000
+python -m emberserve.cli generate --model models/Qwen2.5-0.5B-Instruct --prompt "The capital of France is" --max-tokens 32
+python -m emberserve.cli serve --model models/Qwen2.5-0.5B-Instruct --port 8000
 ```
 
 Then any OpenAI client works:
@@ -30,7 +30,7 @@ flash-attn block-256 constraint, the vLLM venv, the Triton kernel knobs, CUDA-gr
 and the pitfalls we hit. The serving config used for the numbers above:
 
 ```bash
-python -m pagedserve.cli serve --model models/Qwen2.5-0.5B-Instruct --device cuda --dtype float16 \
+python -m emberserve.cli serve --model models/Qwen2.5-0.5B-Instruct --device cuda --dtype float16 \
   --attn-backend paged_triton --block-size 16 --enable-cuda-graphs --enable-prefix-caching
 ```
 
@@ -40,7 +40,7 @@ front of the one engine core ([Two API processes](results.md#two-api-processes--
 ## On Runpod Serverless
 
 `deploy/runpod/` has a worker and a Dockerfile that bakes a model into the image. The
-worker is a proxy in front of `pagedserve serve` (the layout Runpod's own `worker-vllm`
+worker is a proxy in front of `emberserve serve` (the layout Runpod's own `worker-vllm`
 uses): the same server as everywhere else, engine-core process and all, so the endpoint is
 OpenAI-compatible and the benchmark client runs against it unchanged. Runpod builds the
 image from the repo (Serverless → New endpoint → GitHub repo, Dockerfile path
@@ -77,7 +77,7 @@ image, chosen by `RUNPOD_LB=1`.
 
 Cold starts were measured as a series (`scripts/serverless_coldstart.py`, three samples
 per row, each taken only after `/health` showed no worker and confirmed by a fresh
-`[worker] pagedserve up in X s` line in the worker log, so a parked container never
+`[worker] emberserve up in X s` line in the worker log, so a parked container never
 counts as one). The weights are baked into the image (9.8 GB for 0.5B, ~25 GB for 7B via
 `deploy/runpod/Dockerfile.7b`), so nothing downloads at start. Runpod's `delayTime` is
 its own queue-to-handler number:
@@ -126,28 +126,28 @@ tables.
 
 ```bash
 # in-process ablation: one command, every backend at its own minimum block size
-python -m pagedserve.bench.ablation --model models/Qwen2.5-0.5B-Instruct --device cuda --dtype float16 \
+python -m emberserve.bench.ablation --model models/Qwen2.5-0.5B-Instruct --device cuda --dtype float16 \
   --configs naive,static,paged_torch,paged_flash,paged_flash+graphs,paged_triton,paged_triton+graphs,paged_triton+graphs+prefix \
   --trace-n 200 --request-rate 8 --shared-prefix-len 64 --block-size 16 --out results/ablation.json
-python -m pagedserve.bench.ablation ... --request-rate inf --out results/ablation_sat.json      # saturation
+python -m emberserve.bench.ablation ... --request-rate inf --out results/ablation_sat.json      # saturation
 
 # real-text traces (ShareGPT conversations; the synthetic trace draws random token ids)
 python scripts/download_sharegpt.py                                  # ~670 MB, once
-python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 \
+python -m emberserve.bench.run_vllm_baseline --server emberserve --model models/Qwen2.5-0.5B-Instruct --dtype float16 \
   --max-model-len 4096 --tokenizer models/Qwen2.5-0.5B-Instruct --sharegpt data/ShareGPT_V3_unfiltered_cleaned_split.json \
   --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs" --name pagedserve_flash_text
 
-# HTTP rate sweeps, vLLM then pagedserve (a different trace seed per rate; fresh servers for comparisons)
-python -m pagedserve.bench.run_vllm_baseline --server vllm --vllm-bin /opt/vllm/bin/vllm \
+# HTTP rate sweeps, vLLM then emberserve (a different trace seed per rate; fresh servers for comparisons)
+python -m emberserve.bench.run_vllm_baseline --server vllm --vllm-bin /opt/vllm/bin/vllm \
   --model Qwen/Qwen2.5-0.5B-Instruct --dtype float16 --max-model-len 4096 --rates 1,2,4,8,16,inf --trace-n 200 --name vllm
-python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model models/Qwen2.5-0.5B-Instruct \
+python -m emberserve.bench.run_vllm_baseline --server emberserve --model models/Qwen2.5-0.5B-Instruct \
   --dtype float16 --max-model-len 4096 \
   --server-args "--device cuda --attn-backend paged_triton --block-size 16 --enable-cuda-graphs" \
   --rates 1,2,4,8,16,inf --trace-n 200 --name pagedserve_triton
 
 # kernel micro-benchmark and figures
 python scripts/bench_kernels.py                  # ms/call + effective K/V GB/s, Triton vs flash ratio table
-python -m pagedserve.bench.plot results/vllm.json results/pagedserve_triton.json --ablation results/ablation.json --out-dir results/plots
+python -m emberserve.bench.plot results/vllm.json results/pagedserve_triton.json --ablation results/ablation.json --out-dir results/plots
 ```
 
 `run_vllm_baseline --base-url https://...` points the same load generator at any live

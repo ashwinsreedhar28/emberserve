@@ -1,6 +1,6 @@
 # How it works
 
-Part of [pagedserve](../README.md). The engine's design, component by component, and how its correctness is checked.
+Part of [emberserve](../README.md). The engine's design, component by component, and how its correctness is checked.
 
 ```mermaid
 flowchart LR
@@ -122,7 +122,7 @@ with **multi-head latent attention**: each token is projected to a 512-dim compr
 `c` plus a 64-dim rope key `k_pe` shared by all heads, and per-head keys and values are
 `W_UK[h] c` and `W_UV[h] c`, never stored. The cache row is `[c | k_pe]`, 576 values per
 token per layer (`kv/cache.py: PagedLatentCache`): Moonlight caches 31 KB per token where
-its GQA equivalent would need ~220 KB. pagedserve runs the *absorbed* form
+its GQA equivalent would need ~220 KB. emberserve runs the *absorbed* form
 (`attn/mla_torch.py`): `W_UK` is folded into the query (`q_c = W_UK[h]^T q_nope`, a
 512-dim query per head) so scores are dot products against the raw cache rows, and `W_UV`
 is applied after the softmax. Attention becomes MQA over the latent, 16 query heads
@@ -202,7 +202,7 @@ graphs; `results/profile_7b_fp16.json`, `profile_7b_int8_v2.json`,
 | int8, first kernel | 7.78 | 8.59 | 19.43 | 29.18 |
 | int8, v2 (autotuned tiles + split-K) | **6.37** | **6.88** | **9.57** | 19.81 |
 
-| req/s offered | vLLM TPOT p50 | pagedserve fp16 | pagedserve int8 |
+| req/s offered | vLLM TPOT p50 | emberserve fp16 | emberserve int8 |
 |---|---:|---:|---:|
 | 1 | 10.2 ms | 10.2 ms | **6.6 ms** |
 | 4 | 10.2 | 11.1 | **7.9** |
@@ -226,9 +226,9 @@ at M = 2048. Quality: the golden check reports 2 of 7 prompts exact for 64 token
 other 5 diverging at a near-tie (top-2 margins 0.05–0.39 logits), the expected cost of
 per-channel rounding. So `--quantization int8` is the right flag for a latency-bound
 deployment at small batch, and the wrong one at saturation until the large-M path is
-either a better kernel or a dequantize-then-cuBLAS step. `PAGEDSERVE_INT8_KERNEL=0`
-routes through the torch reference, `PAGEDSERVE_INT8_AUTOTUNE=0` and
-`PAGEDSERVE_INT8_SPLITK=0` pin the kernel for A/B.
+either a better kernel or a dequantize-then-cuBLAS step. `EMBERSERVE_INT8_KERNEL=0`
+routes through the torch reference, `EMBERSERVE_INT8_AUTOTUNE=0` and
+`EMBERSERVE_INT8_SPLITK=0` pin the kernel for A/B.
 
 ![7B int8 vs fp16 vs vLLM: TPOT vs offered load](../results/plots/7b_int8/tpot_vs_rate.png)
 
@@ -248,7 +248,7 @@ is the weight read, streams half the bytes.
 
 The process model is vLLM's driver + workers: rank 0 is the engine (scheduler, block
 manager, sampler; the API's engine-core process), the other ranks are
-`python -m pagedserve.dist` subprocesses running `LLMEngine.worker_loop` with no scheduler of
+`python -m emberserve.dist` subprocesses running `LLMEngine.worker_loop` with no scheduler of
 their own. Per step the driver broadcasts the step plan (the host-side lists
 `_plan_inputs` computes: tokens, positions, slots, block tables) over a gloo group, every
 rank materializes the same device tensors from it, and the driver's `input_ids` (which
@@ -270,7 +270,7 @@ are single-GPU for now.
 Measured on 2× A100 SXM (`results/pagedserve_7b_flash_tp2.json`, `results/vllm_7b_tp2.json`,
 `results/profile_7b_tp2.json`), against the single-GPU rows from the same GPU type:
 
-| Qwen2.5-7B fp16 | pagedserve TP1 | pagedserve TP2 | vLLM TP1 | vLLM TP2 |
+| Qwen2.5-7B fp16 | emberserve TP1 | emberserve TP2 | vLLM TP1 | vLLM TP2 |
 |---|---|---|---|---|
 | batch-1 decode step (`profile_step`) | 10.09 ms | **7.65 ms** | | |
 | TPOT p50 @ 1 req/s | 10.2 ms | **7.4 ms** | 10.2 ms | 6.6 ms |

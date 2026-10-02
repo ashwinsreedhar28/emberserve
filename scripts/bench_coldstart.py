@@ -1,19 +1,19 @@
-"""Process start to first token, pagedserve against vLLM, on one machine.
+"""Process start to first token, emberserve against vLLM, on one machine.
 
     python scripts/bench_coldstart.py --model models/Qwen2.5-7B-Instruct --repeats 3 \\
-        --system pagedserve --system vllm --system vllm_tuned --system vllm_eager \\
+        --system emberserve --system vllm --system vllm_tuned --system vllm_eager \\
         --vllm-bin /opt/vllm/bin/vllm --out results/coldstart/local_7b.json
 
 For each system and repeat: start the server as a fresh process (weights already on local
 disk, nothing downloaded), then poll `/health` every 50 ms and, the moment it answers, send
 one streamed 1-token completion. Recorded per run: seconds from `Popen` to healthy, to the
 first streamed byte, and to the end of that request, plus what the server's own log says
-about its startup (pagedserve's `[boot]` line; vLLM's "init engine ... took" and
+about its startup (emberserve's `[boot]` line; vLLM's "init engine ... took" and
 torch.compile lines). The server is stopped before the next run.
 
 The systems (all the same weights, dtype and max-model-len):
 
-  pagedserve   `pagedserve serve --device cuda --attn-backend paged_flash --block-size 256
+  emberserve   `emberserve serve --device cuda --attn-backend paged_flash --block-size 256
                --enable-cuda-graphs` (the benchmarked config)
   vllm         `vllm serve` with its defaults: torch.compile + piecewise and full CUDA graphs;
                its compile cache persists across runs in ~/.cache/vllm, so run 1 is a cold
@@ -43,17 +43,17 @@ import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pagedserve.bench.run_vllm_baseline import kill  # noqa: E402
+from emberserve.bench.run_vllm_baseline import kill  # noqa: E402
 
 
 def commands(system: str, args: argparse.Namespace) -> tuple[list[str], dict[str, str]]:
     m, port = args.model, str(args.port)
     common = ["--host", "127.0.0.1", "--port", port, "--dtype", args.dtype,
               "--max-model-len", str(args.max_model_len)]
-    if system == "pagedserve":
-        return ([sys.executable, "-m", "pagedserve.cli", "serve", "--model", m, *common,
+    if system == "emberserve":
+        return ([sys.executable, "-m", "emberserve.cli", "serve", "--model", m, *common,
                  "--device", "cuda", "--attn-backend", "paged_flash", "--block-size", "256",
-                 "--enable-cuda-graphs", *shlex.split(args.pagedserve_args)], {})
+                 "--enable-cuda-graphs", *shlex.split(args.emberserve_args)], {})
     v = [args.vllm_bin, "serve", m, "--served-model-name", m, *common]
     if system == "vllm":
         return v, {}
@@ -100,7 +100,7 @@ def log_facts(text: str) -> dict:
     facts: dict = {}
     m = re.search(r"\[boot\] (.*)", text)
     if m:
-        facts["pagedserve_boot"] = m.group(1).strip()
+        facts["emberserve_boot"] = m.group(1).strip()
     m = re.search(r"init engine .*? took ([\d.]+) s(?:econds)?(?: \(compilation: ([\d.]+) s\))?", text)
     if m:
         facts["vllm_init_s"] = float(m.group(1))
@@ -122,18 +122,18 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", required=True)
     ap.add_argument("--system", action="append", default=[],
-                    choices=["pagedserve", "vllm", "vllm_tuned", "vllm_eager"])
+                    choices=["emberserve", "vllm", "vllm_tuned", "vllm_eager"])
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--dtype", default="float16")
     ap.add_argument("--max-model-len", type=int, default=4096)
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--vllm-bin", default="vllm")
-    ap.add_argument("--pagedserve-args", default="")
+    ap.add_argument("--emberserve-args", default="")
     ap.add_argument("--runai", action="store_true", help="vllm_tuned: --load-format runai_streamer")
     ap.add_argument("--timeout-s", type=float, default=900)
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
-    systems = args.system or ["pagedserve"]
+    systems = args.system or ["emberserve"]
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     results = []
@@ -163,7 +163,7 @@ def main() -> int:
             if rec["ok"]:
                 print(f"{system:<11} run {r + 1}: healthy {rec['healthy_s']:6.1f} s  first token "
                       f"{rec['first_token_s']:6.1f} s  | " + ", ".join(
-                          f"{k} {v}" for k, v in rec.items() if k.startswith(("pagedserve_boot", "vllm_"))),
+                          f"{k} {v}" for k, v in rec.items() if k.startswith(("emberserve_boot", "vllm_"))),
                       flush=True)
             else:
                 print(f"{system:<11} run {r + 1}: FAILED {rec['error']} (log {log_path})", flush=True)

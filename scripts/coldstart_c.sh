@@ -2,9 +2,9 @@
 # Cold start, phase C + Qwen3-8B (one A100 SXM pod, after `bash scripts/pod_setup.sh`). ~40 min.
 # Everything lands in results/coldstart/ (c_*) and results/qwen3/. Commit both afterwards.
 #   1. Qwen3-8B golden gate (fp16 and bf16) through the streaming loader
-#   2. process start -> first token: pagedserve 7B with the early core (vs 10.3 s before),
-#      pagedserve Qwen3-8B, vLLM Qwen3-8B default and --enforce-eager
-#   3. Qwen3-8B sweep, pagedserve vs vLLM, 1/4/16 req/s + saturation
+#   2. process start -> first token: emberserve 7B with the early core (vs 10.3 s before),
+#      emberserve Qwen3-8B, vLLM Qwen3-8B default and --enforce-eager
+#   3. Qwen3-8B sweep, emberserve vs vLLM, 1/4/16 req/s + saturation
 set -euo pipefail
 cd "$(dirname "$0")/.."
 Q=models/Qwen3-8B
@@ -23,14 +23,14 @@ for dt in float16 bfloat16; do
   python scripts/check_golden.py --model $Q --golden golden/Qwen3-8B --device cuda --dtype $dt \
     --backends paged_flash --block-size 256 2>&1 | tail -9
 done | tee results/qwen3/golden.txt
-python scripts/bench_coldstart.py --model $M7 --repeats 3 --system pagedserve \
+python scripts/bench_coldstart.py --model $M7 --repeats 3 --system emberserve \
   --out results/coldstart/c_local_7b.json | tee results/coldstart/c_local_7b.txt
-python scripts/bench_coldstart.py --model $Q --repeats 3 --system pagedserve --system vllm \
+python scripts/bench_coldstart.py --model $Q --repeats 3 --system emberserve --system vllm \
   --system vllm_eager --vllm-bin $V --out results/coldstart/c_local_qwen3_8b.json | tee results/coldstart/c_local_qwen3_8b.txt
 R="--rates 1,4,16,inf --trace-n 200 --max-model-len 4096 --out-dir results/qwen3"
-python -m pagedserve.bench.run_vllm_baseline --server pagedserve --model $Q --dtype float16 $R \
+python -m emberserve.bench.run_vllm_baseline --server emberserve --model $Q --dtype float16 $R \
   --server-args "--device cuda --attn-backend paged_flash --block-size 256 --enable-cuda-graphs" --name pagedserve_qwen3_8b
-python -m pagedserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $Q --dtype float16 $R --name vllm_qwen3_8b
+python -m emberserve.bench.run_vllm_baseline --server vllm --vllm-bin $V --model $Q --dtype float16 $R --name vllm_qwen3_8b
 python - <<'PY' | tee results/qwen3/summary.txt
 import json
 for name in ("pagedserve_qwen3_8b", "vllm_qwen3_8b"):

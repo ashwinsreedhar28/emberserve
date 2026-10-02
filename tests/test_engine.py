@@ -9,11 +9,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from pagedserve.config import EngineConfig, ModelConfig
-from pagedserve.engine import LLMEngine
-from pagedserve.llm import LLM
-from pagedserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
-from pagedserve.sched.request import FinishReason, SamplingParams
+from emberserve.config import EngineConfig, ModelConfig
+from emberserve.engine import LLMEngine
+from emberserve.llm import LLM
+from emberserve.model.qwen2 import Qwen2ForCausalLM, reset_parameters_deterministic
+from emberserve.sched.request import FinishReason, SamplingParams
 
 torch.set_num_threads(2)
 
@@ -262,7 +262,7 @@ def test_kv_budget_does_not_subtract_resident_weights() -> None:
     24 GB card at the 64-block floor (the Serverless 4090 run: ~30 sequences, 1,118 tok/s),
     and a hand-set 512 blocks on the same card OOMed at graph capture, so the reserve has
     to cover the busiest step's activations."""
-    from pagedserve.engine import (KV_WORKSPACE_BYTES, MIN_GPU_BLOCKS, activation_reserve_bytes,
+    from emberserve.engine import (KV_WORKSPACE_BYTES, MIN_GPU_BLOCKS, activation_reserve_bytes,
                                    kv_blocks_for)
 
     qwen7b = ModelConfig(vocab_size=152064, hidden_size=3584, intermediate_size=18944,
@@ -296,8 +296,8 @@ def test_kv_budget_does_not_subtract_resident_weights() -> None:
 def test_finished_text_retention_is_bounded_and_reset(monkeypatch) -> None:
     """Every finished request's text used to stay in `_final_text` forever (nothing in the
     server or LLM.generate pops it) and survived `reset()`."""
-    from pagedserve import engine as engine_mod
-    from pagedserve.sched.request import SamplingParams
+    from emberserve import engine as engine_mod
+    from emberserve.sched.request import SamplingParams
 
     monkeypatch.setattr(engine_mod, "FINAL_TEXT_KEEP", 5)
     eng = make_engine()

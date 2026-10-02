@@ -12,7 +12,7 @@ try:
     _HAS_CUDA = _torch_probe.cuda.is_available()
 except Exception:  # noqa: BLE001
     _HAS_CUDA = False
-if _HAS_CUDA and os.environ.get("PAGEDSERVE_FORCE_INTERPRETER") != "1":
+if _HAS_CUDA and os.environ.get("EMBERSERVE_FORCE_INTERPRETER") != "1":
     pytest.skip("CUDA present: interpreter tests skipped", allow_module_level=True)
 import importlib.util  # noqa: E402
 
@@ -24,7 +24,7 @@ import torch  # noqa: E402
 
 pytest.importorskip("triton")
 
-from pagedserve.model.quant import Int8Linear, int8_gemm, int8_gemm_torch, quantize_int8_weight  # noqa: E402
+from emberserve.model.quant import Int8Linear, int8_gemm, int8_gemm_torch, quantize_int8_weight  # noqa: E402
 
 torch.set_num_threads(2)
 
@@ -47,7 +47,7 @@ def test_split_k_partials_reduce_to_the_reference():
     """Force several K pieces (including one past the end of K) and check the reduce."""
     import triton
 
-    from pagedserve.model import quant
+    from emberserve.model import quant
 
     g = torch.Generator().manual_seed(11)
     m, n, k = 3, 40, 300

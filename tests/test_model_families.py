@@ -11,12 +11,12 @@ import pytest
 import torch
 from safetensors.torch import save_file
 
-from pagedserve.config import ModelConfig
-from pagedserve.model.qwen2 import LlamaForCausalLM, Qwen2ForCausalLM, reset_parameters_deterministic
-from pagedserve.model.rope import RotaryEmbedding, llama3_scale_inv_freq
-from pagedserve.model.weights import hf_state_dict, load_model
-from pagedserve.sampling import check_stop
-from pagedserve.sched.request import FinishReason, Request, SamplingParams
+from emberserve.config import ModelConfig
+from emberserve.model.qwen2 import LlamaForCausalLM, Qwen2ForCausalLM, reset_parameters_deterministic
+from emberserve.model.rope import RotaryEmbedding, llama3_scale_inv_freq
+from emberserve.model.weights import hf_state_dict, load_model
+from emberserve.sampling import check_stop
+from emberserve.sched.request import FinishReason, Request, SamplingParams
 
 LLAMA3_SCALING = {"rope_type": "llama3", "factor": 32.0, "low_freq_factor": 1.0,
                   "high_freq_factor": 4.0, "original_max_position_embeddings": 8192}
@@ -121,7 +121,7 @@ def test_llama_checkpoint_round_trip(tmp_path: Path) -> None:
     loaded = load_model(tmp_path)
     assert isinstance(loaded, Qwen2ForCausalLM) and loaded.config.attention_bias is False
     assert loaded.config.all_eos_token_ids == {3, 5}
-    from pagedserve.attn.naive import NaiveAttentionBackend
+    from emberserve.attn.naive import NaiveAttentionBackend
     from tests.test_model import make_prefill_meta
 
     ids = torch.randint(0, cfg.vocab_size, (9,), generator=torch.Generator().manual_seed(2))

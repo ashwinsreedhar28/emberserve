@@ -49,10 +49,10 @@ def main() -> None:
         raise SystemExit("bench_mixed_attn needs a CUDA GPU with flash-attn")
     from flash_attn import flash_attn_varlen_func
 
-    from pagedserve.attn.base import AttnMetadata
-    from pagedserve.attn.paged_flash import PagedFlashAttentionBackend
-    from pagedserve.config import ModelConfig
-    from pagedserve.kv.cache import PagedKVCache
+    from emberserve.attn.base import AttnMetadata
+    from emberserve.attn.paged_flash import PagedFlashAttentionBackend
+    from emberserve.config import ModelConfig
+    from emberserve.kv.cache import PagedKVCache
 
     dev = torch.device("cuda")
     dt = torch.float16

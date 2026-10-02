@@ -27,15 +27,15 @@ import uvicorn
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pagedserve.bench.load import run_http_benchmark_procs, wait_for_health  # noqa: E402
-from pagedserve.bench.metrics import summarize  # noqa: E402
-from pagedserve.bench.trace import generate_trace  # noqa: E402
-from pagedserve.config import EngineConfig  # noqa: E402
-from pagedserve.server.app import create_app  # noqa: E402
-from pagedserve.server.async_engine import AsyncEngineCoreClient  # noqa: E402
-from pagedserve.server.engine_core import EngineSpec  # noqa: E402
-from pagedserve.server.fake_engine import ByteTokenizer  # noqa: E402
-from pagedserve.server.multi import MultiServer  # noqa: E402
+from emberserve.bench.load import run_http_benchmark_procs, wait_for_health  # noqa: E402
+from emberserve.bench.metrics import summarize  # noqa: E402
+from emberserve.bench.trace import generate_trace  # noqa: E402
+from emberserve.config import EngineConfig  # noqa: E402
+from emberserve.server.app import create_app  # noqa: E402
+from emberserve.server.async_engine import AsyncEngineCoreClient  # noqa: E402
+from emberserve.server.engine_core import EngineSpec  # noqa: E402
+from emberserve.server.fake_engine import ByteTokenizer  # noqa: E402
+from emberserve.server.multi import MultiServer  # noqa: E402
 
 
 _StubTokenizer = ByteTokenizer  # (kept for older notes)
